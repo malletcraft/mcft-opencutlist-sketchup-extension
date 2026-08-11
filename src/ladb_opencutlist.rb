@@ -19,8 +19,12 @@ module Ladb
       PLUGIN_DIR = File.join(File.dirname(_file_), PLUGIN_ID)
 
       # Create extension
-      ex = SketchupExtension.new('OpenCutList', File.join(PLUGIN_DIR, 'ruby', 'main'))
-      ex.version     = "7.1.0"  ## /!\ Auto-generated line, do not edit ##
+      # MCFT Edition — fork of L'Air du Bois' OpenCutList with an ERPNext
+      # bridge (github.com/malletcraft/mcft-opencutlist-sketchup-extension).
+      # INSTALLS OVER stock OpenCutList (same plugin id on purpose: same
+      # attribute dictionaries, same model data, superset of features).
+      ex = SketchupExtension.new('OpenCutList (MCFT Edition)', File.join(PLUGIN_DIR, 'ruby', 'main'))
+      ex.version     = "7.1.0-mcft.1"  ## upstream 7.1.0 + MCFT bridge ##
       ex.copyright   = "2016-#{Date.today.year} - GNU GPLv3"  ## /!\ Auto-generated line, do not edit ##
       ex.creator     = 'L\'Air du Bois - www.lairdubois.fr'
 

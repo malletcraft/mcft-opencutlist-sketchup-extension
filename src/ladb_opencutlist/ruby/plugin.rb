@@ -1366,6 +1366,12 @@ module Ladb::OpenCutList
     end
 
     def upgrade_command(url:)    # Expected params = { url: 'RBZ_URL' }
+      # MCFT Edition: upstream's updater would download the STOCK RBZ and
+      # silently remove the ERPNext bridge. Updates come from the malletcraft
+      # fork instead.
+      UI.messagebox("This is OpenCutList (MCFT Edition).\nUpdating from upstream would remove the ERPNext bridge.\nGet updates from github.com/malletcraft/mcft-opencutlist-sketchup-extension.")
+      return { :cancelled => true }
+
       # Just open URL for older Sketchup versions
       if Sketchup.version_number < 1700000000
         open_url_command(url)

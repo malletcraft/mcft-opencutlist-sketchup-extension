@@ -1,7 +1,7 @@
 module Ladb::OpenCutList
 
-    EXTENSION_NAME = 'OpenCutList'.freeze
-    EXTENSION_VERSION = '7.1.0'.freeze
+    EXTENSION_NAME = 'OpenCutList (MCFT Edition)'.freeze
+    EXTENSION_VERSION = '7.1.0-mcft.1'.freeze
     EXTENSION_BUILD = '202511301621'.freeze
 
     DEFAULT_LANGUAGE = 'en'
