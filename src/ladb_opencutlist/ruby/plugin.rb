@@ -17,6 +17,7 @@ module Ladb::OpenCutList
   require_relative 'controller/outliner_controller'
   require_relative 'controller/importer_controller'
   require_relative 'controller/settings_controller'
+  require_relative 'controller/mcft_controller'
   require_relative 'utils/dimension_utils'
   require_relative 'utils/path_utils'
   require_relative 'utils/hash_utils'
@@ -844,6 +845,10 @@ module Ladb::OpenCutList
 
       end
       submenu.add_separator
+      # MCFT menu entries — added here (not via @controllers) because setup()
+      # builds the menu at load time while the controller list is only
+      # populated in start(), on first dialog open.
+      McftController.new.setup_menu(submenu)
       submenu.add_item(get_i18n_string('core.menu.item.reset_dialog_position')) {
         tabs_dialog_reset_position if _assert_not_zzz
       }
@@ -952,6 +957,7 @@ module Ladb::OpenCutList
         @controllers.push(OutlinerController.new)
         @controllers.push(ImporterController.new)
         @controllers.push(SettingsController.new)
+        @controllers.push(McftController.new)
 
         # -- Commands --
 
