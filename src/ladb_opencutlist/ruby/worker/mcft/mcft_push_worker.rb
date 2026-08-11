@@ -3,7 +3,12 @@ module Ladb::OpenCutList
   require 'json'
   require_relative '../cutlist/cutlist_generate_worker'
 
-  # MCFT — push the model's part list to the ERPNext estimator with one click.
+  # MCFT — push the model's PANEL PART LIST to the ERPNext estimator with one
+  # click. "Panel part list" is the house term (Amit, 2026-08-11): every part
+  # is a pre-pasted panel — ply core with its laminate already pressed on both
+  # faces — so veneer entries have no separate identity and are never pushed;
+  # the server derives laminate and edge-band purchase quantities from the
+  # panels' faces and edges.
   #
   # v0 rides the SAME import path a human uses: the whitelisted
   # `mallet_estimator.api.import_parts_csv` endpoint. The plugin serialises the

@@ -27,7 +27,7 @@ module Ladb::OpenCutList
 
     def setup_menu(submenu)
       submenu.add_separator
-      submenu.add_item('MCFT: Push part list to ERPNext') { _push }
+      submenu.add_item('MCFT: Push panel part list to ERPNext') { _push }
       submenu.add_item('MCFT: Pull décor map from ERPNext') { _pull }
       submenu.add_item('MCFT: Settings…') { _edit_settings }
     end
