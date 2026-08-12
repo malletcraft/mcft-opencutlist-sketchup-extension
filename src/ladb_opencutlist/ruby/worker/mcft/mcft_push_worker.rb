@@ -27,7 +27,13 @@ module Ladb::OpenCutList
       1 => 'Sheet Goods',   # MaterialAttributes::TYPE_SOLID_WOOD is 2D-ambiguous; see map below
     }.freeze
 
-    def initialize(site_url:, api_key:, api_secret:, sku:)
+    # A component name is an SKU address when it follows the house grammar:
+    # CUSTOMER_ROOM_ARTICLE... (YS_MB_WAR, YS_KIT_BAS_CAB). The container model
+    # holds the floor plan plus one such component per article (Amit,
+    # 2026-08-11), so push DISCOVERS the SKUs instead of being told one.
+    SKU_COMPONENT_RE = /\A[A-Z]{2,3}(_[A-Z0-9]{2,})+\z/
+
+    def initialize(site_url:, api_key:, api_secret:, sku: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
@@ -38,14 +44,49 @@ module Ladb::OpenCutList
       model = Sketchup.active_model
       return { :errors => [ 'mcft.error.no_model' ] } unless model
 
-      cutlist = CutlistGenerateWorker.new(part_folding: false).run
-      return { :errors => cutlist.errors } if cutlist.errors.any?
+      targets = _sku_components(model)
+      if targets.empty?
+        # No SKU components: fall back to whole-model push at the configured
+        # SKU (the one-article-per-file workflow keeps working).
+        return { :errors => [ 'mcft.error.no_sku' ] } if @sku.to_s.empty?
+        cutlist = CutlistGenerateWorker.new(part_folding: false).run
+        return { :errors => cutlist.errors } if cutlist.errors.any?
+        _post_csv(_to_csv(cutlist), @sku)
+        return { :success => true, :pushed => [ @sku ] }
+      end
 
-      csv = _to_csv(cutlist)
-      _post_csv(csv)
+      pushed = []
+      targets.each do |instance|
+        code = instance.definition.name
+        cutlist = CutlistGenerateWorker.new(
+          part_folding: false,
+          active_entity: instance,
+          active_path: []
+        ).run
+        if cutlist.errors.any?
+          UI.messagebox("MCFT: #{code} skipped — #{cutlist.errors.join(', ')}")
+          next
+        end
+        _post_csv(_to_csv(cutlist), code)
+        pushed << code
+      end
+      { :success => true, :pushed => pushed }
     end
 
     private
+
+    # Top-level component instances whose definition name reads as an SKU
+    # code. Instances of the SAME definition collapse to one push — a
+    # repeated article is one SKU with the estimate deciding quantities.
+    def _sku_components(model)
+      seen = {}
+      model.entities.grep(Sketchup::ComponentInstance).select { |i|
+        name = i.definition.name
+        next false unless name =~ SKU_COMPONENT_RE
+        next false if seen[name]
+        seen[name] = true
+      }
+    end
 
     # One row per PART (grouped, with Quantity) — the shape the server's
     # opencutlist.parse_opencutlist_csv + part_qty already handle.
@@ -94,10 +135,10 @@ module Ladb::OpenCutList
       s.include?(';') || s.include?('"') || s.include?("\n") ? '"' + s.gsub('"', '""') + '"' : s
     end
 
-    def _post_csv(csv)
+    def _post_csv(csv, sku)
       uri = "#{@site_url}/api/method/mallet_estimator.api.import_parts_csv"
-      body = JSON.generate({ 'sku' => @sku, 'csv_content' => csv,
-                             'filename' => "#{@sku}_push.csv" })
+      body = JSON.generate({ 'sku' => sku, 'csv_content' => csv,
+                             'filename' => "#{sku}_push.csv" })
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)
       request.headers = {
         'Content-Type' => 'application/json',
@@ -106,7 +147,7 @@ module Ladb::OpenCutList
       request.body = body
       request.start do |req, response|
         if response && response.status_code == 200
-          UI.messagebox("MCFT: pushed to #{@sku} — open the SKU in ERPNext to review.")
+          UI.messagebox("MCFT: pushed #{sku} — open the SKU in ERPNext to review.")
         else
           code = response ? response.status_code : 'no response'
           UI.messagebox("MCFT: push FAILED (#{code}). Check site URL / API key in MCFT Settings.")

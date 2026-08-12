@@ -59,13 +59,16 @@ module Ladb::OpenCutList
       Sketchup.active_model.set_attribute('mcft', 'sku', input[3]) if Sketchup.active_model
     end
 
-    def _guarded
+    def _guarded(need_sku: false)
       s = _settings
       if s[:api_key].empty? || s[:api_secret].empty?
         UI.messagebox('MCFT: set the site URL and API key first (MCFT: Settings…).')
         return nil
       end
-      if s[:sku].to_s.empty?
+      # With a container model, push discovers SKUs from component names —
+      # the configured SKU is only the fallback for one-article-per-file
+      # models, and pull still needs one to know whose décor map to fetch.
+      if need_sku && s[:sku].to_s.empty?
         UI.messagebox('MCFT: set this model\'s Estimate SKU first (MCFT: Settings…).')
         return nil
       end
@@ -79,7 +82,7 @@ module Ladb::OpenCutList
     end
 
     def _pull
-      s = _guarded or return
+      s = _guarded(need_sku: true) or return
       McftPullWorker.new(site_url: s[:site_url], api_key: s[:api_key],
                          api_secret: s[:api_secret], sku: s[:sku]).run
     end
