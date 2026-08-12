@@ -39,6 +39,30 @@ fi
 # 3. symlink the live source
 ln -s "$REPO/src/ladb_opencutlist.rb" "$PLUG/ladb_opencutlist.rb"
 ln -s "$REPO/src/ladb_opencutlist"    "$PLUG/ladb_opencutlist"
-echo "Linked. Restart SketchUp — Extension Manager should show:"
-echo "  OpenCutList (MCFT Edition)"
-echo "From now on:  git pull && restart SketchUp"
+
+# 4. the auto-updater: every SketchUp start fast-forwards this clone from
+#    GitHub BEFORE OpenCutList loads, so "restart SketchUp" IS the update.
+#    The leading "!" makes it load first (SketchUp loads Plugins in sorted
+#    order). Fails silently and instantly when offline; never merges — if the
+#    clone has local edits it just skips, it cannot destroy work.
+cat > "$PLUG/!mcft_autoupdate.rb" <<RUBY
+# MCFT auto-update — written by dev-install-mac.sh; safe to delete to opt out.
+begin
+  repo = '$REPO'
+  if File.directory?(File.join(repo, '.git'))
+    out = \`git -C "#{repo}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=4 pull --ff-only --quiet 2>&1\`
+    if \$?.success?
+      rev = \`git -C "#{repo}" log -1 --format=%h\`.strip
+      puts "[MCFT] OpenCutList (MCFT Edition) up to date @ #{rev}"
+    else
+      puts "[MCFT] update skipped (#{out.lines.last.to_s.strip})"
+    end
+  end
+rescue StandardError => e
+  puts "[MCFT] update skipped (#{e.message})"
+end
+RUBY
+
+echo "Linked + auto-update installed. Restart SketchUp — Extension Manager"
+echo "should show:  OpenCutList (MCFT Edition)"
+echo "From now on the ONLY update step is: restart SketchUp."
