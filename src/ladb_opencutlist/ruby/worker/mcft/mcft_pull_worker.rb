@@ -49,14 +49,24 @@ module Ladb::OpenCutList
     def _apply(ctx)
       model = Sketchup.active_model
       return 'no model open' unless model
-      decors = (ctx['decors'] || []) + (ctx['decor_edges'] || [])
+      # get_sku_context returns ONE merged decor_map list, each row carrying
+      # slot/domain/brand/code/name/short (api.py) — the earlier decors/
+      # decor_edges keys never existed on the server, so nothing ever matched.
+      decors = ctx['decor_map'] || []
       stamped = 0
       model.start_operation('MCFT Pull', true)
       begin
+        # The strong link SketchUp-side: which ERPNext identity this model's
+        # component answers to. Rates are NOT stamped — they live in the
+        # session only (redaction rule); identity is safe and is what makes
+        # the .skp self-describing when it travels.
+        model.set_attribute('mcft', 'sku', ctx['sku_code'].to_s) unless ctx['sku_code'].to_s.empty?
+        model.set_attribute('mcft', 'project', ctx['project'].to_s)
+        model.set_attribute('mcft', 'customer', ctx['customer'].to_s)
         decors.each do |d|
           slot = d['slot'].to_s.strip.downcase
           next if slot.empty?
-          text = [ d['brand'], d['code'], d['decor_name'] ].compact.reject(&:empty?).join(' ')
+          text = [ d['brand'], d['code'], d['name'] ].compact.map(&:to_s).reject(&:empty?).join(' ')
           next if text.empty?
           side = slot[0] == 'a' ? 'Internal' : 'External'
           model.materials.each do |mat|
@@ -66,7 +76,7 @@ module Ladb::OpenCutList
             mat.set_attribute('mcft', 'slot', slot)
             # OCL reads the material DESCRIPTION blocks in its exports; keep
             # the house format the server's decor.parse_description expects.
-            desc = "#{slot} = #{side} #{kind}\nBrand = #{d['brand']}\nCode = #{d['code']}\nName = #{d['decor_name']}"
+            desc = "#{slot} = #{side} #{kind}\nBrand = #{d['brand']}\nCode = #{d['code']}\nName = #{d['name']}"
             attrs = MaterialAttributes.new(mat)
             attrs.description = desc if attrs.respond_to?(:description=)
             stamped += 1
@@ -77,6 +87,9 @@ module Ladb::OpenCutList
         model.abort_operation
         raise e
       end
+      who = [ ctx['project'], ctx['customer'] ].compact.map(&:to_s).reject(&:empty?).join(' · ')
+      frozen = ctx['rates_frozen'] ? ' [QUOTED — frozen]' : ''
+      "#{who.empty? ? 'no project/customer' : who}#{frozen}\n" \
       "#{decors.length} slot(s) in map, #{stamped} material(s) stamped"
     end
 
