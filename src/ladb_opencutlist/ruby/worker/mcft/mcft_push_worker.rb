@@ -109,7 +109,9 @@ module Ladb::OpenCutList
             group.material_name,
             _spec(edges[:ymin]), _spec(edges[:ymax]),
             _spec(edges[:xmin]), _spec(edges[:xmax]),
-            _spec(faces[:front]), _spec(faces[:back]),
+            # Veneer faces are keyed by geometry, not by role: zmax is what
+            # OCL's own export labels Frontside, zmin Backside (en.yml).
+            _spec(faces[:zmax]), _spec(faces[:zmin]),
             (part.tags || []).join(',')
           ].map { |v| _cell(v) }.join(';')
         end
