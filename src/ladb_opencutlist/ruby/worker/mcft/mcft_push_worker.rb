@@ -2,6 +2,7 @@ module Ladb::OpenCutList
 
   require 'json'
   require_relative '../cutlist/cutlist_generate_worker'
+  require_relative '../../model/attributes/material_attributes'
 
   # MCFT — push the model's PANEL PART LIST to the ERPNext estimator with one
   # click. "Panel part list" is the house term (Amit, 2026-08-11): every part
@@ -44,6 +45,19 @@ module Ladb::OpenCutList
       model = Sketchup.active_model
       return { :errors => [ 'mcft.error.no_model' ] } unless model
 
+      # Which plugin build is running and what the model's materials are typed
+      # as — the two facts a remote debugger cannot see. A push whose CSV lands
+      # wrong is diagnosed from these lines, not from guesswork about whether
+      # the auto-updater pulled (2026-08-12: an unstamped push hid exactly that).
+      rev = self.class.plugin_rev
+      puts "[MCFT] push — plugin #{rev}"
+      type_names = %w[Unknown SolidWood SheetGood Dimensional Edge Hardware Veneer]
+      model.materials.each do |m|
+        t = MaterialAttributes.new(m).type
+        puts "[MCFT]   material #{m.name} → #{type_names[t] || t}"
+      end
+      @veneer_faces = 0
+
       targets = _sku_components(model)
       if targets.empty?
         # No SKU components: fall back to whole-model push at the configured
@@ -52,6 +66,7 @@ module Ladb::OpenCutList
         cutlist = CutlistGenerateWorker.new(part_folding: false).run
         return { :errors => cutlist.errors } if cutlist.errors.any?
         _post_csv(_to_csv(cutlist), @sku)
+        _warn_if_no_laminate
         return { :success => true, :pushed => [ @sku ] }
       end
 
@@ -70,6 +85,7 @@ module Ladb::OpenCutList
         _post_csv(_to_csv(cutlist), code)
         pushed << code
       end
+      _warn_if_no_laminate
       { :success => true, :pushed => pushed }
     end
 
@@ -100,6 +116,7 @@ module Ladb::OpenCutList
           n += 1
           edges = part.edge_material_names || {}
           faces = part.face_material_names || {}
+          @veneer_faces += faces.length if @veneer_faces
           rows << [
             n,
             part.name,
@@ -137,10 +154,26 @@ module Ladb::OpenCutList
       s.include?(';') || s.include?('"') || s.include?("\n") ? '"' + s.gsub('"', '""') + '"' : s
     end
 
+    # Laminate purchase lines exist ONLY if parts carry Veneer-typed face
+    # materials — an empty count means the server will show ply/edges/hardware
+    # and silently no SG_LAM rows, which reads as "materials not created
+    # properly". Say it at the source instead.
+    def _warn_if_no_laminate
+      return unless @veneer_faces == 0
+      UI.messagebox(
+        "MCFT: no laminate faces found in the model.\n\n" \
+        "SG_LAM lines will be MISSING on the SKU. Laminate must be a " \
+        "material of type 'Veneer' (OpenCutList → Materials) painted onto " \
+        "the panel faces. Check the Ruby console for each material's type."
+      )
+    end
+
     def _post_csv(csv, sku)
       uri = "#{@site_url}/api/method/mallet_estimator.api.import_parts_csv"
+      # The filename carries the plugin revision so the File list on the SKU
+      # is a permanent record of WHICH build produced each import.
       body = JSON.generate({ 'sku' => sku, 'csv_content' => csv,
-                             'filename' => "#{sku}_push.csv" })
+                             'filename' => "#{sku}_push_#{self.class.plugin_rev}.csv" })
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)
       request.headers = {
         'Content-Type' => 'application/json',
@@ -149,7 +182,7 @@ module Ladb::OpenCutList
       request.body = body
       request.start do |req, response|
         if response && response.status_code == 200
-          UI.messagebox("MCFT: pushed #{sku} — open the SKU in ERPNext to review.")
+          UI.messagebox("MCFT: pushed #{sku} (plugin #{self.class.plugin_rev}) — open the SKU in ERPNext to review.")
         else
           UI.messagebox("MCFT: push #{sku} FAILED — #{self.class.frappe_error(response)}")
         end
@@ -158,6 +191,19 @@ module Ladb::OpenCutList
     end
 
     public
+
+    # Short git sha of the running checkout — the dev install loads straight
+    # from the clone, so this IS the plugin version. Best effort: 'unknown'
+    # for an rbz install or a machine without git.
+    def self.plugin_rev
+      @plugin_rev ||= begin
+        root = File.expand_path('../../../../..', __dir__)
+        sha = `git -C "#{root}" rev-parse --short HEAD 2>/dev/null`.strip
+        sha.empty? ? 'unknown' : sha
+      rescue StandardError
+        'unknown'
+      end
+    end
 
     # What the server ACTUALLY said. Frappe answers a validation refusal with
     # HTTP 417 and puts the human message in _server_messages (a stringified
