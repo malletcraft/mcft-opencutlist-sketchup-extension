@@ -26,15 +26,17 @@ echo "Plugins folder: $PLUG"
 # 1. clear stock OCL / previous copies (symlinks or real dirs)
 rm -rf "$PLUG/ladb_opencutlist" "$PLUG/ladb_opencutlist.rb"
 
-# 2. native engines from the built rbz -> src tree (gitignored; survives pulls)
-if [ ! -d "$REPO/src/ladb_opencutlist/bin/osx" ]; then
-  TMP=$(mktemp -d)
-  unzip -q "$REPO/dist/ladb_opencutlist.rbz" 'ladb_opencutlist/bin/osx/*' -d "$TMP"
-  mkdir -p "$REPO/src/ladb_opencutlist/bin"
-  cp -R "$TMP/ladb_opencutlist/bin/osx" "$REPO/src/ladb_opencutlist/bin/osx"
-  rm -rf "$TMP"
-  echo "Native engines extracted (bin/osx)"
-fi
+# 2. BUILD OUTPUTS from the shipped rbz -> src tree. The repo holds SOURCE
+#    (twig templates, less, i18n-src); SketchUp loads the BUILT files —
+#    compiled dialog html, bundled js/css, i18n yml, native engines — which
+#    upstream's gulp build writes into src/ and .gitignore excludes. Without
+#    them the extension dies at first get_i18n_string (missing en.yml).
+#    Copy every rbz file missing from src; NEVER overwrite src files, so the
+#    branded loader and live source always win. Re-runs just top up.
+#    (unzip -n = never overwrite; rbz entries are 'ladb_opencutlist/...' so
+#    -d src lands them exactly at src/ladb_opencutlist/...)
+unzip -nq "$REPO/dist/ladb_opencutlist.rbz" 'ladb_opencutlist/*' -d "$REPO/src"
+echo "Build outputs synced from dist rbz (i18n, dialog html, js/css, native engines)"
 
 # 3. symlink the live source
 ln -s "$REPO/src/ladb_opencutlist.rb" "$PLUG/ladb_opencutlist.rb"
