@@ -45,19 +45,39 @@ ln -s "$REPO/src/ladb_opencutlist"    "$PLUG/ladb_opencutlist"
 # 4. the auto-updater: every SketchUp start fast-forwards this clone from
 #    GitHub BEFORE OpenCutList loads, so "restart SketchUp" IS the update.
 #    The leading "!" makes it load first (SketchUp loads Plugins in sorted
-#    order). Fails silently and instantly when offline; never merges — if the
-#    clone has local edits it just skips, it cannot destroy work.
+#    order). Never merges — if the clone has local edits it just skips, it
+#    cannot destroy work. A REAL failure (auth, ssh-in-GUI, local edits) is
+#    LOUD — a messagebox with the reason and the Terminal fix — because two
+#    silent no-op "updates" cost a day of debugging a stale plugin
+#    (2026-08-12). Offline stays quiet: that is a normal way to start
+#    SketchUp, not a fault. Every attempt is appended to
+#    ~/Library/Application Support/mcft-ocl-update.log either way.
 cat > "$PLUG/!mcft_autoupdate.rb" <<RUBY
 # MCFT auto-update — written by dev-install-mac.sh; safe to delete to opt out.
 begin
   repo = '$REPO'
   if File.directory?(File.join(repo, '.git'))
-    out = \`git -C "#{repo}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=4 pull --ff-only --quiet 2>&1\`
-    if \$?.success?
-      rev = \`git -C "#{repo}" log -1 --format=%h\`.strip
+    # GUI SketchUp gets the bare launchd PATH; make sure git resolves.
+    ENV['PATH'] = "#{ENV['PATH']}:/usr/bin:/opt/homebrew/bin:/usr/local/bin"
+    out = \`git -C "#{repo}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 pull --ff-only 2>&1\`
+    ok = \$?.success?
+    rev = \`git -C "#{repo}" log -1 --format=%h\`.strip
+    begin
+      log = File.expand_path('~/Library/Application Support/mcft-ocl-update.log')
+      File.open(log, 'a') { |f| f.puts "#{Time.now} ok=#{ok} rev=#{rev} #{out.lines.last.to_s.strip}" }
+    rescue StandardError
+    end
+    if ok
       puts "[MCFT] OpenCutList (MCFT Edition) up to date @ #{rev}"
     else
-      puts "[MCFT] update skipped (#{out.lines.last.to_s.strip})"
+      reason = out.lines.last.to_s.strip
+      puts "[MCFT] update FAILED @ #{rev}: #{reason}"
+      offline = reason =~ /resolve host|unable to access|timed out|network is unreachable|no route to host/i
+      unless offline
+        UI.messagebox("MCFT plugin update FAILED — still running #{rev}.\n\n" \
+                      "#{reason}\n\n" \
+                      "Fix in Terminal:\n  cd #{repo} && git pull\nthen restart SketchUp.")
+      end
     end
   end
 rescue StandardError => e
