@@ -1,6 +1,7 @@
 module Ladb::OpenCutList
 
   require 'json'
+  require_relative 'mcft_push_worker'
   require_relative '../../model/attributes/material_attributes'
 
   # MCFT — pull the SKU's context (décor slot map + current material lines
@@ -33,8 +34,7 @@ module Ladb::OpenCutList
             UI.messagebox("MCFT: pull parse error — #{e.message}")
           end
         else
-          code = response ? response.status_code : 'no response'
-          UI.messagebox("MCFT: pull FAILED (#{code}). Check MCFT Settings.")
+          UI.messagebox("MCFT: pull FAILED — #{McftPushWorker.frappe_error(response)}")
         end
       end
       { :success => true }

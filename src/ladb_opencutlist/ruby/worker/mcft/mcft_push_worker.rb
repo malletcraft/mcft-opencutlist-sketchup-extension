@@ -149,11 +149,41 @@ module Ladb::OpenCutList
         if response && response.status_code == 200
           UI.messagebox("MCFT: pushed #{sku} — open the SKU in ERPNext to review.")
         else
-          code = response ? response.status_code : 'no response'
-          UI.messagebox("MCFT: push FAILED (#{code}). Check site URL / API key in MCFT Settings.")
+          UI.messagebox("MCFT: push #{sku} FAILED — #{self.class.frappe_error(response)}")
         end
       end
       { :success => true }
+    end
+
+    public
+
+    # What the server ACTUALLY said. Frappe answers a validation refusal with
+    # HTTP 417 and puts the human message in _server_messages (a stringified
+    # JSON list of stringified JSON dicts — twice-encoded, faithfully undone
+    # here) or in `exception`. Blaming the URL/API key for every non-200 hid
+    # the real reason on the first live run (Amit, 2026-08-11); auth failures
+    # are 401/403 and say so, everything else deserves its own words.
+    def self.frappe_error(response)
+      return 'no response — is the site reachable?' unless response
+      code = response.status_code
+      body = response.body.to_s
+      puts "[MCFT] HTTP #{code}: #{body[0, 600]}"     # full detail -> Ruby console
+      begin
+        data = JSON.parse(body)
+        if data['_server_messages']
+          msgs = JSON.parse(data['_server_messages']).map { |m|
+            JSON.parse(m)['message'] rescue m
+          }
+          return "#{msgs.join(' / ')} (HTTP #{code})"
+        end
+        return "#{data['exception'].to_s.split("\n").first} (HTTP #{code})" if data['exception']
+      rescue StandardError
+      end
+      case code
+      when 401, 403 then "not authorised (HTTP #{code}) — check the API key in MCFT Settings"
+      when 404 then "endpoint not found (HTTP 404) — check the site URL in MCFT Settings"
+      else "HTTP #{code} — see the Ruby console for the full response"
+      end
     end
 
   end
