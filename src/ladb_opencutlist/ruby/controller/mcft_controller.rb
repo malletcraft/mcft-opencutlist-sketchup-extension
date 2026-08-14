@@ -1,5 +1,6 @@
 module Ladb::OpenCutList
 
+  require 'json'
   require_relative 'controller'
   require_relative '../worker/mcft/mcft_push_worker'
   require_relative '../worker/mcft/mcft_pull_worker'
@@ -22,6 +23,7 @@ module Ladb::OpenCutList
     def setup_commands
       PLUGIN.register_command('mcft_push') { |settings| _push }
       PLUGIN.register_command('mcft_pull') { |settings| _pull }
+      PLUGIN.register_command('mcft_link') { |settings| _link_project }
       PLUGIN.register_command('mcft_settings') { |settings| _edit_settings }
     end
 
@@ -29,19 +31,70 @@ module Ladb::OpenCutList
       submenu.add_separator
       submenu.add_item('MCFT: Push panel part list to ERPNext') { _push }
       submenu.add_item('MCFT: Pull décor map from ERPNext') { _pull }
+      submenu.add_item('MCFT: Link model to project…') { _link_project }
       submenu.add_item('MCFT: Settings…') { _edit_settings }
     end
 
     private
 
     def _settings
+      model = Sketchup.active_model
       {
         site_url: Sketchup.read_default(SETTINGS_SECTION, 'site_url', 'https://mcft-stg.frappe.cloud'),
         api_key: Sketchup.read_default(SETTINGS_SECTION, 'api_key', ''),
         api_secret: Sketchup.read_default(SETTINGS_SECTION, 'api_secret', ''),
-        sku: Sketchup.active_model ?
-               Sketchup.active_model.get_attribute('mcft', 'sku', '') : '',
+        sku: model ? model.get_attribute('mcft', 'sku', '') : '',
+        # The file binding (execution/DESIGN.md §1): which project — and
+        # therefore whose initials — this model's MCFT_ components belong to.
+        # Set by the select-only picker, stored IN the model file so the
+        # binding travels with the .skp, never with the machine.
+        project: model ? model.get_attribute('mcft', 'project', '') : '',
+        project_title: model ? model.get_attribute('mcft', 'project_title', '') : '',
+        customer: model ? model.get_attribute('mcft', 'customer', '') : '',
+        initials: model ? model.get_attribute('mcft', 'initials', '') : '',
       }
+    end
+
+    # Select-only by design: clients and projects are born in the
+    # lead/opportunity phase in ERPNext — the plugin role cannot create
+    # them, and this picker only chooses among what exists.
+    def _link_project
+      s = _guarded or return
+      uri = "#{s[:site_url].sub(/\/+\z/, '')}/api/method/mallet_estimator.api.list_projects"
+      request = Sketchup::Http::Request.new(uri, Sketchup::Http::GET)
+      request.headers = { 'Authorization' => "token #{s[:api_key]}:#{s[:api_secret]}" }
+      request.start do |req, response|
+        if response && response.status_code == 200
+          begin
+            projects = JSON.parse(response.body)['message'] || []
+            if projects.empty?
+              UI.messagebox('MCFT: no open Projects on the site — create the project in ERPNext (lead/opportunity phase) first.')
+            else
+              labels = projects.map { |p| "#{p['title']} — #{p['customer_name']} (#{p['initials']})" }
+              current = s[:project_title].to_s.empty? ? labels.first : (labels.find { |l| l.start_with?(s[:project_title]) } || labels.first)
+              choice = UI.inputbox([ 'Project' ], [ current ], [ labels.join('|') ], 'MCFT: Link model to project')
+              if choice
+                p = projects[labels.index(choice[0])]
+                model = Sketchup.active_model
+                model.set_attribute('mcft', 'project', p['project'])
+                model.set_attribute('mcft', 'project_title', p['title'].to_s)
+                model.set_attribute('mcft', 'customer', p['customer_name'].to_s)
+                model.set_attribute('mcft', 'initials', p['initials'].to_s)
+                fname = File.basename(model.path.to_s)
+                warn = ''
+                if !fname.empty? && fname.start_with?('MCFT_') && !fname.upcase.include?("_#{p['initials']}".upcase)
+                  warn = "\n\nNote: filename #{fname} does not carry #{p['initials']} — the convention is MCFT_#{p['initials']}_<Project>.skp. Files cloned from another project keep the OLD name; rename to match."
+                end
+                UI.messagebox("MCFT: model linked to #{p['title']} — #{p['customer_name']} (#{p['initials']}).#{warn}")
+              end
+            end
+          rescue StandardError => e
+            UI.messagebox("MCFT: link failed — #{e.message}")
+          end
+        else
+          UI.messagebox("MCFT: link FAILED — #{McftPushWorker.frappe_error(response)}")
+        end
+      end
     end
 
     def _edit_settings
@@ -78,7 +131,8 @@ module Ladb::OpenCutList
     def _push
       s = _guarded or return
       McftPushWorker.new(site_url: s[:site_url], api_key: s[:api_key],
-                         api_secret: s[:api_secret], sku: s[:sku]).run
+                         api_secret: s[:api_secret], sku: s[:sku],
+                         project: s[:project], initials: s[:initials]).run
     end
 
     def _pull

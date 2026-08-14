@@ -28,17 +28,23 @@ module Ladb::OpenCutList
       1 => 'Sheet Goods',   # MaterialAttributes::TYPE_SOLID_WOOD is 2D-ambiguous; see map below
     }.freeze
 
-    # A component name is an SKU address when it follows the house grammar:
-    # CUSTOMER_ROOM_ARTICLE... (YS_MB_WAR, YS_KIT_BAS_CAB). The container model
-    # holds the floor plan plus one such component per article (Amit,
-    # 2026-08-11), so push DISCOVERS the SKUs instead of being told one.
-    SKU_COMPONENT_RE = /\A[A-Z]{2,3}(_[A-Z0-9]{2,})+\z/
+    # Discovery (execution/DESIGN.md §1): MCFT_ is THE marker — a top-level
+    # component named MCFT_<tail> is ERP-linked, everything else is invisible
+    # until promoted by naming. The tail is ROOM_ARTICLE (MCFT_MB_WAR_OPT.1);
+    # the customer prefix comes from the FILE's project binding, so the server
+    # composes YS_MB_WAR_OPT.1 — and creates the SKU if it does not exist.
+    MCFT_COMPONENT_RE = /\AMCFT_(.+)\z/
+    # The pre-convention grammar (bare YS_MB_WAR component names) stays legal
+    # so existing models keep pushing; resolve-only, never create.
+    LEGACY_COMPONENT_RE = /\A[A-Z]{2,3}(_[A-Z0-9]{2,})+\z/
 
-    def initialize(site_url:, api_key:, api_secret:, sku: nil)
+    def initialize(site_url:, api_key:, api_secret:, sku: nil, project: nil, initials: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
       @sku = sku
+      @project = project.to_s
+      @initials = initials.to_s
     end
 
     def run
@@ -70,20 +76,32 @@ module Ladb::OpenCutList
         return { :success => true, :pushed => [ @sku ] }
       end
 
+      mcft_targets = targets.any? { |i| i.definition.name =~ MCFT_COMPONENT_RE }
+      if mcft_targets && @project.empty?
+        UI.messagebox("MCFT: this model has MCFT_ components but no project binding — " \
+                      "run 'MCFT: Link model to project…' first. The binding decides " \
+                      "which client and project new SKUs belong to.")
+        return { :errors => [ 'mcft.error.no_binding' ] }
+      end
+
       pushed = []
       targets.each do |instance|
-        code = instance.definition.name
+        name = instance.definition.name
+        # The address the server resolves: an MCFT_ tail (creatable inside
+        # the binding) or a legacy full code (resolve-only).
+        address = (m = name.match(MCFT_COMPONENT_RE)) ? m[1] : name
+        creatable = !m.nil? && !@project.empty?
         cutlist = CutlistGenerateWorker.new(
           part_folding: false,
           active_entity: instance,
           active_path: []
         ).run
         if cutlist.errors.any?
-          UI.messagebox("MCFT: #{code} skipped — #{cutlist.errors.join(', ')}")
+          UI.messagebox("MCFT: #{name} skipped — #{cutlist.errors.join(', ')}")
           next
         end
-        _post_csv(_to_csv(cutlist), code)
-        pushed << code
+        _post_csv(_to_csv(cutlist), address, create: creatable)
+        pushed << name
       end
       _warn_if_no_laminate
       { :success => true, :pushed => pushed }
@@ -91,14 +109,15 @@ module Ladb::OpenCutList
 
     private
 
-    # Top-level component instances whose definition name reads as an SKU
-    # code. Instances of the SAME definition collapse to one push — a
-    # repeated article is one SKU with the estimate deciding quantities.
+    # Top-level component instances whose definition name is ERP-linked:
+    # MCFT_-marked (the convention) or a legacy full code. Instances of the
+    # SAME definition collapse to one push — a repeated article is one SKU
+    # with the estimate deciding quantities.
     def _sku_components(model)
       seen = {}
       model.entities.grep(Sketchup::ComponentInstance).select { |i|
         name = i.definition.name
-        next false unless name =~ SKU_COMPONENT_RE
+        next false unless name =~ MCFT_COMPONENT_RE || name =~ LEGACY_COMPONENT_RE
         next false if seen[name]
         seen[name] = true
       }
@@ -168,12 +187,20 @@ module Ladb::OpenCutList
       )
     end
 
-    def _post_csv(csv, sku)
+    def _post_csv(csv, sku, create: false)
       uri = "#{@site_url}/api/method/mallet_estimator.api.import_parts_csv"
       # The filename carries the plugin revision so the File list on the SKU
       # is a permanent record of WHICH build produced each import.
-      body = JSON.generate({ 'sku' => sku, 'csv_content' => csv,
-                             'filename' => "#{sku}_push_#{self.class.plugin_rev}.csv" })
+      payload = { 'sku' => sku, 'csv_content' => csv,
+                  'filename' => "#{sku.gsub(/[^A-Za-z0-9_.-]/, '_')}_push_#{self.class.plugin_rev}.csv" }
+      if create
+        # The file binding decides which project (and so whose initials) a
+        # new SKU belongs to; the server resolves-before-creating, so an
+        # existing SKU is never duplicated (execution/DESIGN.md §1).
+        payload['project'] = @project
+        payload['create_if_missing'] = 1
+      end
+      body = JSON.generate(payload)
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)
       request.headers = {
         'Content-Type' => 'application/json',
@@ -182,7 +209,13 @@ module Ladb::OpenCutList
       request.body = body
       request.start do |req, response|
         if response && response.status_code == 200
-          UI.messagebox("MCFT: pushed #{sku} (plugin #{self.class.plugin_rev}) — open the SKU in ERPNext to review.")
+          begin
+            msg = JSON.parse(response.body)['message'] || {}
+            landed = msg['sku_code'] || msg['sku'] || sku
+            UI.messagebox("MCFT: pushed #{sku} → #{landed} (plugin #{self.class.plugin_rev}) — open the SKU in ERPNext to review.")
+          rescue StandardError
+            UI.messagebox("MCFT: pushed #{sku} (plugin #{self.class.plugin_rev}) — open the SKU in ERPNext to review.")
+          end
         else
           UI.messagebox("MCFT: push #{sku} FAILED — #{self.class.frappe_error(response)}")
         end
