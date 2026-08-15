@@ -4,6 +4,7 @@ module Ladb::OpenCutList
   require_relative 'controller'
   require_relative '../worker/mcft/mcft_push_worker'
   require_relative '../worker/mcft/mcft_pull_worker'
+  require_relative '../worker/mcft/mcft_iso_worker'
 
   # MCFT — the ERPNext bridge. v0 is deliberately DIALOG-FREE: three commands
   # on the OpenCutList submenu, settings via UI.inputbox, stored per-user with
@@ -30,6 +31,7 @@ module Ladb::OpenCutList
     def setup_menu(submenu)
       submenu.add_separator
       submenu.add_item('MCFT: Push panel part list to ERPNext') { _push }
+      submenu.add_item('MCFT: Push ISO views to ERPNext') { _push_iso }
       submenu.add_item('MCFT: Pull décor map from ERPNext') { _pull }
       submenu.add_item('MCFT: Link model to project…') { _link_project }
       submenu.add_item('MCFT: Settings…') { _edit_settings }
@@ -133,6 +135,17 @@ module Ladb::OpenCutList
       McftPushWorker.new(site_url: s[:site_url], api_key: s[:api_key],
                          api_secret: s[:api_secret], sku: s[:sku],
                          project: s[:project], initials: s[:initials]).run
+    end
+
+    # Separate command while the render path proves itself in the field —
+    # folds into _push once trusted (execution/DESIGN.md §6.2).
+    def _push_iso
+      s = _guarded or return
+      sent = McftIsoWorker.new(site_url: s[:site_url], api_key: s[:api_key],
+                               api_secret: s[:api_secret], project: s[:project]).run
+      UI.messagebox(sent > 0 ?
+        "MCFT: #{sent} ISO view(s) rendered and sent — results in the Ruby console." :
+        'MCFT: no SKU components found to render (name them MCFT_<ROOM>_<ARTICLE>).')
     end
 
     def _pull
