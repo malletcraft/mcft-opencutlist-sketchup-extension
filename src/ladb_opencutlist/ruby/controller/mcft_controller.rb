@@ -150,6 +150,15 @@ module Ladb::OpenCutList
         'MCFT: Estimate this model')
       return unless answer
       mins = answer[0].to_s.strip
+      # to_f turns "ninety" into 0.0, and zero minutes is not a refusal — it
+      # is an assembly line worth nothing, badged "edited here" so it reads
+      # as deliberate. Anything that is not a positive number is rejected
+      # out loud and the run falls back to ERP's own standard.
+      unless mins.empty? || mins =~ /\A\d+(\.\d+)?\z/ && mins.to_f > 0
+        UI.messagebox("MCFT: \"#{mins}\" is not a number of minutes.\n\n" \
+                      'Using ERP standard assembly time instead.')
+        mins = ''
+      end
       Sketchup.write_default(SETTINGS_SECTION, 'assembly_min', mins)
       McftEstimateWorker.new(site_url: s[:site_url], api_key: s[:api_key],
                              api_secret: s[:api_secret],
