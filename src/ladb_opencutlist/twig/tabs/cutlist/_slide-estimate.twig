@@ -366,5 +366,34 @@
             </table>
         {% endfor %}
 
+        {#
+            MCFT — labour and ERP-priced material, on THIS screen.
+
+            Amit, 2026-08-22: "inbuilt estimate button should show complete
+            estimate that is labor and material both in that screen only ...
+            dont want one more menu which i have to click just to get labor
+            esimate." So the block lives here, under the material groups, and
+            the standalone menu item it replaces is gone.
+
+            It is only a CONTAINER. Everything inside is filled by the tab JS
+            once ERPNext answers, because the call is asynchronous — the
+            slide must not sit blank waiting on a network round trip. The
+            three states (loading / error / loaded) are all rendered there.
+        #}
+        <table data-group-id="mcft_erp" class="table table-bordered ladb-cutlist-group ladb-cutlist-group-dark">
+            <thead>
+            <tr class="table-heading">
+                <td>
+                    <div class="ladb-heading">MCFT &mdash; labour &amp; material, priced by ERPNext</div>
+                </td>
+            </tr>
+            </thead>
+            <tbody>
+            <tr><td id="ladb_mcft_estimate">
+                <div class="ladb-mcft-loading" style="color:#777;">Asking ERPNext for rates&hellip;</div>
+            </td></tr>
+            </tbody>
+        </table>
+
     </div>
 {% endblock %}

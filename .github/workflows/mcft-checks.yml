@@ -38,3 +38,32 @@ jobs:
 
       - name: No syntax newer than SketchUp 2017's Ruby 2.2.4
         run: ruby tools/check-ruby22.rb
+
+  templates:
+    name: Committed twig bundle matches its source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # js/templates/tabs-twig-templates.js is a BUILD OUTPUT that this branch
+      # tracks on purpose (see .gitignore for why git is the only delivery
+      # route). Tracking a generated file invites exactly one bug: someone
+      # edits a .twig, forgets to run gulp, and ships a bundle that does not
+      # contain the change — the plugin then looks stale for no visible
+      # reason, which is the failure this repo has already paid for once.
+      - name: Recompile and diff
+        run: |
+          cd build
+          npm install --no-audit --no-fund --silent
+          npx gulp compile
+          cd ..
+          if ! git diff --quiet -- src/ladb_opencutlist/js/templates/tabs-twig-templates.js; then
+            echo "::error::tabs-twig-templates.js is stale — run 'cd build && npx gulp compile' and commit the result"
+            git diff --stat -- src/ladb_opencutlist/js/templates/tabs-twig-templates.js
+            exit 1
+          fi
+          echo "committed bundle matches the twig it came from"

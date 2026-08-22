@@ -28,7 +28,8 @@ module Ladb::OpenCutList
       PLUGIN.register_command('mcft_pull') { |settings| _pull }
       PLUGIN.register_command('mcft_link') { |settings| _link_project }
       PLUGIN.register_command('mcft_settings') { |settings| _edit_settings }
-      PLUGIN.register_command('mcft_estimate') { |settings| _estimate }
+      PLUGIN.register_command('mcft_estimate') { |settings| _estimate(settings) }
+      PLUGIN.register_command('mcft_estimate_prefs') { |settings| _estimate_prefs }
     end
 
     def setup_menu(submenu)
@@ -36,7 +37,6 @@ module Ladb::OpenCutList
       submenu.add_item('MCFT: Push panel part list to ERPNext') { _push }
       submenu.add_item('MCFT: Push ISO views to ERPNext') { _push_iso }
       submenu.add_item('MCFT: Pull décor map from ERPNext') { _pull }
-      submenu.add_item('MCFT: Estimate this model (ERP priced)…') { _estimate }
       submenu.add_item('MCFT: Link model to project…') { _link_project }
       submenu.add_item('MCFT: Settings…') { _edit_settings }
     end
@@ -142,27 +142,37 @@ module Ladb::OpenCutList
     # Amit asked to be able to move them: "let me modify how much time assembly
     # can take". Blank keeps ERP's own standard, and the dialog says which of
     # the two produced every line.
-    def _estimate
-      s = _guarded or return
-      last = Sketchup.read_default(SETTINGS_SECTION, 'assembly_min', '').to_s
-      answer = UI.inputbox(
-        [ 'Minutes per assembly (blank = ERP standard)' ], [ last ],
-        'MCFT: Estimate this model')
-      return unless answer
-      mins = answer[0].to_s.strip
+    # Called BY THE ESTIMATE SLIDE, not by a menu. Amit, 2026-08-22: "inbuilt
+    # estimate button should show complete estimate that is labor and material
+    # both in that screen only ... dont want one more menu which i have to
+    # click just to get labor esimate."
+    #
+    # So there is no UI.inputbox here any more either. The assembly minutes
+    # arrive from the field in that section; a blank one means "use ERP's
+    # standard", exactly as before. The value is still remembered between
+    # runs so the box comes back filled with what was used last.
+    def _estimate(settings = nil)
+      s = _guarded or return { :errors => [ 'MCFT settings are incomplete' ] }
+      settings = {} unless settings.is_a?(Hash)
+      mins = (settings['assembly_min'] || settings[:assembly_min]).to_s.strip
+
       # to_f turns "ninety" into 0.0, and zero minutes is not a refusal — it
       # is an assembly line worth nothing, badged "edited here" so it reads
-      # as deliberate. Anything that is not a positive number is rejected
-      # out loud and the run falls back to ERP's own standard.
+      # as deliberate. Anything that is not a positive number falls back to
+      # ERP's own standard and says so in the returned payload.
       unless mins.empty? || mins =~ /\A\d+(\.\d+)?\z/ && mins.to_f > 0
-        UI.messagebox("MCFT: \"#{mins}\" is not a number of minutes.\n\n" \
-                      'Using ERP standard assembly time instead.')
-        mins = ''
+        return { :errors => [ "\"#{mins}\" is not a number of minutes" ] }
       end
       Sketchup.write_default(SETTINGS_SECTION, 'assembly_min', mins)
+
       McftEstimateWorker.new(site_url: s[:site_url], api_key: s[:api_key],
                              api_secret: s[:api_secret],
                              assembly_min: mins.empty? ? nil : mins.to_f).run
+    end
+
+    # The remembered assembly minutes, so the slide can prefill its field.
+    def _estimate_prefs
+      { :assembly_min => Sketchup.read_default(SETTINGS_SECTION, 'assembly_min', '').to_s }
     end
 
     def _push

@@ -33,11 +33,18 @@ module Ladb::OpenCutList
     # assemblies line of labor."
     ASSEMBLY_RE = /\AASMBL/i
 
-    def initialize(site_url:, api_key:, api_secret:, assembly_min: nil)
+    # into: :tab triggers an event the cutlist tab listens for, so the answer
+    # lands in the estimate slide the user is already looking at. :dialog opens
+    # the standalone printable window. The tab is the default because the
+    # estimate screen is where Amit asked for this to live; the dialog remains
+    # only because a print-only view is occasionally wanted.
+    def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
+                   into: :tab)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
       @assembly_min = assembly_min
+      @into = into
     end
 
     def run
@@ -68,18 +75,38 @@ module Ladb::OpenCutList
         if response && response.status_code == 200
           begin
             data = JSON.parse(response.body)['message'] || {}
-            McftEstimateDialog.show(data)
+            _deliver(data)
           rescue StandardError => e
-            UI.messagebox("MCFT: estimate parse error — #{e.message}")
+            _fail("estimate parse error — #{e.message}")
           end
         else
-          UI.messagebox("MCFT: estimate FAILED — #{McftPushWorker.frappe_error(response)}")
+          _fail(McftPushWorker.frappe_error(response))
         end
       end
       { :success => true }
     end
 
     private
+
+    def _deliver(data)
+      if @into == :dialog
+        McftEstimateDialog.show(data)
+      else
+        PLUGIN.trigger_event('mcft_estimate_ready', data)
+      end
+    end
+
+    # A failure must reach the SAME place the answer would have. In the tab
+    # that means the event, not a messagebox: the slide is sitting on
+    # "Asking ERPNext for rates..." and a modal dismissed in passing would
+    # leave it saying that forever.
+    def _fail(message)
+      if @into == :dialog
+        UI.messagebox("MCFT: estimate FAILED — #{message}")
+      else
+        PLUGIN.trigger_event('mcft_estimate_ready', { 'error' => message.to_s })
+      end
+    end
 
     # Distinct ASMBL component DEFINITIONS, each multiplied by how many
     # instances of it the model carries. Two wardrobes is two assemblies; one

@@ -1346,6 +1346,199 @@
 
     };
 
+    // -- MCFT --------------------------------------------------------------
+    //
+    // Labour and ERP-priced material, rendered INTO the estimate slide.
+    // Amit, 2026-08-22: "inbuilt estimate button should show complete estimate
+    // that is labor and material both in that screen only ... dont want one
+    // more menu which i have to click just to get labor esimate."
+    //
+    // The section fills in asynchronously: the Ruby side posts to ERPNext with
+    // Sketchup::Http (there is no synchronous HTTP in this plugin) and answers
+    // back through the mcft_estimate_ready event. The slide therefore renders
+    // immediately with a waiting state and is filled, or shown an error, when
+    // the answer lands.
+
+    LadbTabCutlist.prototype.mcftEsc = function (v) {
+        return String(v === null || v === undefined ? '' : v)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    };
+
+    // Grouped at the lakh, because that is how the number gets read aloud to
+    // the person sitting next to you.
+    LadbTabCutlist.prototype.mcftMoney = function (v) {
+        const n = Number(v) || 0;
+        const neg = n < 0;
+        const whole = Math.abs(n).toFixed(2).split('.');
+        let int = whole[0];
+        if (int.length > 3) {
+            const tail = int.slice(-3);
+            let head = int.slice(0, -3);
+            head = head.split('').reverse().join('')
+                       .replace(/(\d{2})(?=\d)/g, '$1,')
+                       .split('').reverse().join('');
+            int = head + ',' + tail;
+        }
+        return (neg ? '-' : '') + int + '.' + whole[1];
+    };
+
+    // Every number says where it came from. That is the requirement, not
+    // decoration: "i should clearly know from where cost data is coming erp or
+    // plugin as plugin also have capability to store material cost data."
+    // A warn badge is red, and warn means "this number is not a real ERP rate".
+    LadbTabCutlist.prototype.mcftBadge = function (src) {
+        const s = String(src || '');
+        if (s === 'not in erp')      return [ 'NOT IN ERP', true ];
+        if (/assumed$/.test(s))      return [ 'ERP assumed', false ];
+        if (/unset$/.test(s))        return [ 'ERP unset', true ];
+        if (/^plugin/.test(s))       return [ 'edited here', true ];
+        if (s === 'code default')    return [ 'seed default', true ];
+        return [ s.replace('erp:', 'ERP '), false ];
+    };
+
+    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin) {
+        const that = this;
+        const $box = $('#ladb_mcft_estimate', $slide);
+        if ($box.length === 0) {
+            return;     // slide without the MCFT block (older template)
+        }
+        that.$mcftBox = $box;
+        // Remember what the USER asked for, not what ERP standard turned out
+        // to be. Prefilling the box with ERP's own minutes would turn "blank =
+        // use the standard" into an explicit override the moment Recalculate
+        // is clicked again — the field would be lying about its own meaning.
+        that.mcftAssemblyMin = assemblyMin || '';
+        $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
+        rubyCallCommand('mcft_estimate', { assembly_min: assemblyMin || '' }, function (response) {
+            // Only refusals arrive here — a bad assembly time, or settings not
+            // filled in. The estimate itself comes later, via the event.
+            if (response && response.errors && response.errors.length > 0) {
+                that.mcftRender({ error: response.errors.join(', ') });
+            }
+        });
+    };
+
+    LadbTabCutlist.prototype.mcftRender = function (d) {
+        const that = this;
+        const $box = that.$mcftBox;
+        if (!$box || $box.length === 0) {
+            return;
+        }
+        if (d && d.error) {
+            $box.html('<div class="alert alert-danger" style="margin:0;">' +
+                      '<strong>ERPNext could not price this model.</strong> ' +
+                      that.mcftEsc(d.error) + '</div>' + that.mcftControls());
+            return;
+        }
+
+        const mats = d.materials || [];
+        const lab = d.labour || [];
+        let html = '';
+
+        html += '<p style="color:#777;margin:0 0 10px;">Priced by ERPNext (' +
+                that.mcftEsc(d.site) + ') from ' + that.mcftEsc(d.price_list) + ', ' +
+                that.mcftEsc(d.rates_are) + '. ' +
+                that.mcftEsc(d.assembly_count) + ' assemblies (' +
+                that.mcftEsc(d.assembly_source) + ') &middot; wastage: ' +
+                that.mcftEsc(d.wastage) + '</p>';
+
+        // Unpriced lines are shown, counted, and LEFT OUT of the total. A
+        // total that quietly omits three boards looks like an answer and is
+        // not one.
+        if (Number(d.unpriced_lines) > 0) {
+            html += '<div class="alert alert-danger" style="margin:0 0 10px;"><strong>' +
+                    d.unpriced_lines + ' material line' + (d.unpriced_lines == 1 ? '' : 's') +
+                    ' not priced in ERP</strong> &mdash; listed below and EXCLUDED from the ' +
+                    'total. Set a rate on the ' + that.mcftEsc(d.price_list) + ' price list.</div>';
+        }
+        if ((d.created_items || []).length > 0) {
+            html += '<div class="alert alert-warning" style="margin:0 0 10px;">' +
+                    d.created_items.length + ' new material(s) were added to ERP by this run ' +
+                    'and still need a rate: ' + that.mcftEsc(d.created_items.join(', ')) + '</div>';
+        }
+
+        const rowsOf = function (list, cells) {
+            let out = '';
+            for (let i = 0; i < list.length; i++) {
+                out += '<tr>' + cells(list[i]) + '</tr>';
+            }
+            return out;
+        };
+        const badgeCell = function (src) {
+            const b = that.mcftBadge(src);
+            return '<td><span class="label label-' + (b[1] ? 'danger' : 'default') + '">' +
+                   that.mcftEsc(b[0]) + '</span></td>';
+        };
+        const R = 'class="ladb-cutlist-value ladb-cutlist-value-right"';
+
+        html += '<h4 style="margin-top:0;">Material</h4>' +
+                '<table class="table table-bordered table-condensed"><thead><tr>' +
+                '<th>Item</th><th>Qty</th><th>UOM</th><th>Rate</th><th>Amount</th><th>Source</th>' +
+                '</tr></thead><tbody>' +
+                rowsOf(mats, function (r) {
+                    return '<td>' + that.mcftEsc(r.code) + '</td>' +
+                           '<td ' + R + '>' + that.mcftEsc(r.qty) + '</td>' +
+                           '<td>' + that.mcftEsc(r.uom) + '</td>' +
+                           '<td ' + R + '>' + that.mcftMoney(r.rate) + '</td>' +
+                           '<td ' + R + '>' + (r.quotable ? that.mcftMoney(r.amount) : '&mdash;') + '</td>' +
+                           badgeCell(r.source);
+                }) + '</tbody></table>';
+
+        html += '<h4>Labour &mdash; the 17 steps, through to installation</h4>' +
+                '<table class="table table-bordered table-condensed"><thead><tr>' +
+                '<th>Operation</th><th>Workstation</th><th>Qty</th><th>Min/unit</th>' +
+                '<th>Hours</th><th>Rate/hr</th><th>Amount</th><th>Std time</th>' +
+                '</tr></thead><tbody>' +
+                rowsOf(lab, function (r) {
+                    return '<td>' + that.mcftEsc(r.seq) + '. ' + that.mcftEsc(r.name) + '</td>' +
+                           '<td style="color:#777;">' + that.mcftEsc(r.workstation) + '</td>' +
+                           '<td ' + R + '>' + that.mcftEsc(r.qty) + '</td>' +
+                           '<td ' + R + '>' + that.mcftEsc(r.min_per_unit) + '</td>' +
+                           '<td ' + R + '>' + that.mcftEsc(r.hours) + '</td>' +
+                           '<td ' + R + '>' + that.mcftMoney(r.hour_rate) + '</td>' +
+                           '<td ' + R + '>' + that.mcftMoney(r.amount) + '</td>' +
+                           badgeCell(r.min_source);
+                }) + '</tbody></table>';
+
+        html += '<table class="table" style="width:auto;margin-left:auto;">' +
+                '<tr><td>Material</td><td ' + R + '>' + that.mcftMoney(d.material_total) + '</td></tr>' +
+                '<tr><td>Labour</td><td ' + R + '>' + that.mcftMoney(d.labour_total) + '</td></tr>' +
+                '<tr style="font-size:17px;font-weight:700;"><td>Total</td><td ' + R + '>' +
+                that.mcftMoney(d.total) + '</td></tr></table>';
+
+        html += '<p style="color:#777;font-size:11px;">A GAUGE, not a quotation. Excludes: ' +
+                that.mcftEsc((d.excludes || []).join(', ')) + '. Every rate here comes from ' +
+                'ERPNext &mdash; the plugin\'s own material prices are not used.</p>';
+
+        html += that.mcftControls();
+        $box.html(html);
+        that.mcftBindControls();
+    };
+
+    // The assembly time lives HERE now, not behind a menu prompt. Blank means
+    // "use ERP's standard", which is the documented way to not override.
+    LadbTabCutlist.prototype.mcftControls = function () {
+        const that = this;
+        const current = that.mcftAssemblyMin;
+        return '<div class="no-print" style="margin-top:12px;padding-top:10px;border-top:1px solid #e6e8eb;">' +
+               '<label style="font-weight:normal;margin-right:8px;">Minutes per assembly ' +
+               '<small style="color:#777;">(blank = ERP standard)</small></label>' +
+               '<input type="text" id="ladb_mcft_assembly_min" class="form-control" ' +
+               'style="width:110px;display:inline-block;" value="' +
+               that.mcftEsc(current === null || current === undefined ? '' : current) + '"> ' +
+               '<button id="ladb_mcft_btn_recalc" class="btn btn-default">Recalculate</button>' +
+               '</div>';
+    };
+
+    LadbTabCutlist.prototype.mcftBindControls = function () {
+        const that = this;
+        $('#ladb_mcft_btn_recalc').off('click').on('click', function () {
+            $(this).blur();
+            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'),
+                                   $('#ladb_mcft_assembly_min').val());
+        });
+    };
+
     LadbTabCutlist.prototype.generateEstimate = function (partIds, context, estimateOptions, callback) {
         const that = this;
 
@@ -1386,6 +1579,12 @@
                         estimate: response
                     }, function () {
                         that.dialog.setupTooltips($slide);
+                    });
+
+                    // MCFT: ask ERPNext for labour + priced material for this
+                    // same model, and fill the block at the foot of the slide.
+                    rubyCallCommand('mcft_estimate_prefs', null, function (prefs) {
+                        that.mcftStartEstimate($slide, prefs ? prefs.assembly_min : '');
                     });
 
                     // Fetch UI elements
@@ -6593,6 +6792,12 @@
         });
 
         // Events
+
+        // Registered ONCE for the tab. Binding this per slide would stack a
+        // listener on every estimate run and render the answer many times.
+        addEventCallback('mcft_estimate_ready', function (params) {
+            that.mcftRender(params);
+        });
 
         addEventCallback([ 'on_new_model', 'on_open_model', 'on_activate_model' ], function (params) {
             if (that.generateAt) {
