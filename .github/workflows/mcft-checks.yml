@@ -1,0 +1,40 @@
+# MCFT branch checks. Upstream OpenCutList ships no Ruby CI; this is ours and
+# is deliberately small — the plugin has no test bench, so the one thing worth
+# automating is the failure that takes the WHOLE extension down: a file that
+# SketchUp's Ruby cannot parse.
+name: MCFT checks
+
+on:
+  push:
+    branches: [mcft]
+  pull_request:
+    branches: [mcft]
+
+jobs:
+  ruby:
+    name: Ruby parses, and parses on SketchUp 2017
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          # Any modern Ruby. The 2.2 compatibility check is a source check,
+          # not an execution one — see tools/check-ruby22.rb for why running
+          # under a real 2.2 is neither available nor sufficient.
+          ruby-version: '3.3'
+
+      # Catches ordinary syntax errors. Cannot catch version-specific syntax,
+      # which is the entire reason the next step exists.
+      - name: ruby -c every file we own
+        run: |
+          set -e
+          n=0
+          while IFS= read -r f; do
+            ruby -c "$f" > /dev/null
+            n=$((n+1))
+          done < <(find src/ladb_opencutlist/ruby -name '*.rb' -not -path '*/ruby/lib/*')
+          echo "ruby -c: $n files OK"
+
+      - name: No syntax newer than SketchUp 2017's Ruby 2.2.4
+        run: ruby tools/check-ruby22.rb
