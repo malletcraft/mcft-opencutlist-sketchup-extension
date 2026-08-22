@@ -55,15 +55,33 @@ jobs:
       # edits a .twig, forgets to run gulp, and ships a bundle that does not
       # contain the change — the plugin then looks stale for no visible
       # reason, which is the failure this repo has already paid for once.
-      - name: Recompile and diff
+      #
+      # Compared SORTED, and that is not a way of being lenient. The bundle is
+      # built by `gulp.src('twig/tabs/**') | concat`, and a glob's order comes
+      # from the filesystem — so the same twig compiled on two machines yields
+      # the same 99 templates concatenated in a different order. The first
+      # version of this check diffed the bytes and failed on exactly that: 16
+      # insertions, 16 deletions, every one of them a line that had simply
+      # moved. A check that cannot pass gets deleted, and would have taken the
+      # real guarantee with it.
+      #
+      # Sorting is sound here because each line is one independent
+      # Twig.twig({id: "..."}) registration keyed by its id, so order carries
+      # no meaning. Content still has to match exactly: edit a .twig without
+      # recompiling and a line's text changes, which no amount of reordering
+      # can hide.
+      - name: Recompile and compare
         run: |
+          f=src/ladb_opencutlist/js/templates/tabs-twig-templates.js
+          sort "$f" > /tmp/committed.txt
           cd build
           npm install --no-audit --no-fund --silent
           npx gulp compile
           cd ..
-          if ! git diff --quiet -- src/ladb_opencutlist/js/templates/tabs-twig-templates.js; then
-            echo "::error::tabs-twig-templates.js is stale — run 'cd build && npx gulp compile' and commit the result"
-            git diff --stat -- src/ladb_opencutlist/js/templates/tabs-twig-templates.js
+          sort "$f" > /tmp/rebuilt.txt
+          if ! diff -q /tmp/committed.txt /tmp/rebuilt.txt > /dev/null; then
+            echo "::error::$f is stale — run 'cd build && npx gulp compile' and commit the result"
+            diff /tmp/committed.txt /tmp/rebuilt.txt | head -20
             exit 1
           fi
-          echo "committed bundle matches the twig it came from"
+          echo "committed bundle matches the twig it came from ($(grep -c '^Twig.twig({' "$f") templates)"
