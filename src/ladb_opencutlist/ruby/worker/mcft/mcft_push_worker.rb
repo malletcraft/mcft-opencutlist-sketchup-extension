@@ -123,6 +123,16 @@ module Ladb::OpenCutList
       }
     end
 
+    # The part-list CSV, for a caller that is not pushing.
+    #
+    # The estimate worker sends the SAME bytes to a different endpoint, and
+    # that matters: the server parses one shape with one parser, so a priced
+    # preview and an imported part list can never disagree about what the
+    # model contains. Building it twice would guarantee they eventually do.
+    def self.parts_csv(cutlist)
+      new(site_url: '', api_key: '', api_secret: '').send(:_to_csv, cutlist)
+    end
+
     # One row per PART (grouped, with Quantity) — the shape the server's
     # opencutlist.parse_opencutlist_csv + part_qty already handle.
     def _to_csv(cutlist)

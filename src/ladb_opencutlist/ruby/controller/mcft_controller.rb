@@ -5,6 +5,8 @@ module Ladb::OpenCutList
   require_relative '../worker/mcft/mcft_push_worker'
   require_relative '../worker/mcft/mcft_pull_worker'
   require_relative '../worker/mcft/mcft_iso_worker'
+  require_relative '../worker/mcft/mcft_estimate_worker'
+  require_relative '../worker/mcft/mcft_estimate_dialog'
 
   # MCFT — the ERPNext bridge. v0 is deliberately DIALOG-FREE: three commands
   # on the OpenCutList submenu, settings via UI.inputbox, stored per-user with
@@ -26,6 +28,7 @@ module Ladb::OpenCutList
       PLUGIN.register_command('mcft_pull') { |settings| _pull }
       PLUGIN.register_command('mcft_link') { |settings| _link_project }
       PLUGIN.register_command('mcft_settings') { |settings| _edit_settings }
+      PLUGIN.register_command('mcft_estimate') { |settings| _estimate }
     end
 
     def setup_menu(submenu)
@@ -33,6 +36,7 @@ module Ladb::OpenCutList
       submenu.add_item('MCFT: Push panel part list to ERPNext') { _push }
       submenu.add_item('MCFT: Push ISO views to ERPNext') { _push_iso }
       submenu.add_item('MCFT: Pull décor map from ERPNext') { _pull }
+      submenu.add_item('MCFT: Estimate this model (ERP priced)…') { _estimate }
       submenu.add_item('MCFT: Link model to project…') { _link_project }
       submenu.add_item('MCFT: Settings…') { _edit_settings }
     end
@@ -128,6 +132,28 @@ module Ladb::OpenCutList
         return nil
       end
       s
+    end
+
+    # The on-the-fly estimate. Needs no SKU: it prices what is IN THE MODEL,
+    # which is the whole point of being able to run it while a client is
+    # sitting next to you and the article does not exist in ERP yet.
+    #
+    # The assembly minutes are asked for here rather than baked in, because
+    # Amit asked to be able to move them: "let me modify how much time assembly
+    # can take". Blank keeps ERP's own standard, and the dialog says which of
+    # the two produced every line.
+    def _estimate
+      s = _guarded or return
+      last = Sketchup.read_default(SETTINGS_SECTION, 'assembly_min', '').to_s
+      answer = UI.inputbox(
+        [ 'Minutes per assembly (blank = ERP standard)' ], [ last ],
+        'MCFT: Estimate this model')
+      return unless answer
+      mins = answer[0].to_s.strip
+      Sketchup.write_default(SETTINGS_SECTION, 'assembly_min', mins)
+      McftEstimateWorker.new(site_url: s[:site_url], api_key: s[:api_key],
+                             api_secret: s[:api_secret],
+                             assembly_min: mins.empty? ? nil : mins.to_f).run
     end
 
     def _push
