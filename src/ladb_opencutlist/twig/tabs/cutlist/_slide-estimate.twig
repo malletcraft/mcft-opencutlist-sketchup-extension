@@ -41,12 +41,12 @@
     {% endif %}
 {% endmacro%}
 
-{% macro entry_std_cell(std, value) %}
-    <td class="ladb-cutlist-value ladb-cutlist-value-right"{% if std %} data-toggle="tooltip" data-html="true" title="{{ std }}{% if std and not value %}<br>{{ 'tab.cutlist.estimate.tooltip.incompatible_unit'|i18next }}{% endif %}"{% endif %}>{% if std and not value %}<div class="ladb-minitools ladb-minitools-left"><a href="#" class="ladb-tool-warning"><i class="ladb-opencutlist-icon-warning"></i></a></div>{% endif %}{{ value|default('-') }}</td>
+{% macro entry_std_cell(std, value, isCost) %}
+    <td class="ladb-cutlist-value ladb-cutlist-value-right{% if isCost %} mcft-plugin-cost{% endif %}"{% if std %} data-toggle="tooltip" data-html="true" title="{{ std }}{% if std and not value %}<br>{{ 'tab.cutlist.estimate.tooltip.incompatible_unit'|i18next }}{% endif %}"{% endif %}>{% if std and not value %}<div class="ladb-minitools ladb-minitools-left"><a href="#" class="ladb-tool-warning"><i class="ladb-opencutlist-icon-warning"></i></a></div>{% endif %}{{ value|default('-') }}</td>
 {% endmacro %}
 
-{% macro entry_item_std_cell(std, value) %}
-    <td class="ladb-cutlist-value ladb-cutlist-value-right"{% if std %} data-toggle="tooltip" title="{{ std }}"{% endif %}>{{ value|default('-') }}</td>
+{% macro entry_item_std_cell(std, value, isCost) %}
+    <td class="ladb-cutlist-value ladb-cutlist-value-right{% if isCost %} mcft-plugin-cost{% endif %}"{% if std %} data-toggle="tooltip" title="{{ std }}"{% endif %}>{{ value|default('-') }}</td>
 {% endmacro %}
 
 {% import _self as fn %}
@@ -80,6 +80,27 @@
 
 {% block containerInner %}
     {{ parent() }}
+
+    {#
+        MCFT — OpenCutList's OWN cost columns are hidden on this screen.
+
+        Amit, 2026-08-22: "as erp material and labor cost data matters, hide
+        the inbuilt material cost data on estimate as it confuses the user
+        which price to see." Two prices side by side, from two different rate
+        cards, is worse than one: the plugin holds its own per-material prices
+        and ERPNext holds the authority, and a reader cannot tell which column
+        they are quoting from.
+
+        Hidden, not deleted. The numbers still compute and still ride in the
+        payload, so nothing downstream changes and a single line here brings
+        them back. Every cost cell is tagged instead of the columns being
+        removed, because these tables carry colspans across seven group types
+        and dropping cells would misalign the headers from the rows.
+    #}
+    <style>
+        .mcft-plugin-cost { display: none !important; }
+    </style>
+
     <div class="ladb-page">
 
         {% include 'core/_alert-errors.twig' with { 'errors':estimate.errors } %}
@@ -104,7 +125,7 @@
                 </tr>
                 <tr class="table-column-heading">
                     <td width="50%">{{ 'tab.cutlist.estimate.total_mass'|i18next }}</td>
-                    <td width="50%">{{ 'tab.cutlist.estimate.total_cost'|i18next }}</td>
+                    <td width="50%" class="mcft-plugin-cost">{{ 'tab.cutlist.estimate.total_cost'|i18next }}</td>
                 </tr>
                 </thead>
                 <tbody>
@@ -112,7 +133,7 @@
                     <td>
                         {{ fn.summary_widget(estimate, 'mass') }}
                     </td>
-                    <td>
+                    <td class="mcft-plugin-cost">
                         {{ fn.summary_widget(estimate, 'cost') }}
                     </td>
                 </tr>
@@ -165,11 +186,11 @@
                     {% elseif group.type == -1 %} {# -1 = TYPE_CUT #}
                         <td width="10%">{{ 'tab.cutlist.estimate.total_count'|i18next }}</td>
                         <td width="10%">{{ 'tab.cutlist.estimate.total_length'|i18next }}</td>
-                        <td width="10%">{{ 'tab.cutlist.estimate.total_cost'|i18next }}</td>
+                        <td width="10%" class="mcft-plugin-cost">{{ 'tab.cutlist.estimate.total_cost'|i18next }}</td>
                     {% endif %}
                     {% if group.type >= 0 %}
                         <td colspan="2">{{ 'tab.cutlist.estimate.total_mass'|i18next }}</td>
-                        <td colspan="2">{{ 'tab.cutlist.estimate.total_cost'|i18next }}</td>
+                        <td colspan="2" class="mcft-plugin-cost">{{ 'tab.cutlist.estimate.total_cost'|i18next }}</td>
                     {% endif %}
                 </tr>
                 {% if group.type >= 0 %}
@@ -195,8 +216,8 @@
                         {% endif %}
                         <td width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
                         <td width="8%">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
-                        <td width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
-                        <td width="8%">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
+                        <td width="8%" class="mcft-plugin-cost">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
+                        <td width="8%" class="mcft-plugin-cost">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
                     </tr>
                 {% endif %}
                 </thead>
@@ -255,9 +276,9 @@
                         {% if group.type >= 0 %}
                             {{ fn.entry_std_cell(entry.std_volumic_mass, entry.total_used_mass) }}
                             {{ fn.entry_std_cell(entry.std_volumic_mass, entry.total_mass) }}
-                            {{ fn.entry_std_cell(entry.std_price, entry.total_used_cost) }}
+                            {{ fn.entry_std_cell(entry.std_price, entry.total_used_cost, true) }}
                         {% endif %}
-                        {{ fn.entry_std_cell(entry.std_price, entry.total_cost) }}
+                        {{ fn.entry_std_cell(entry.std_price, entry.total_cost, true) }}
                     </tr>
                     {% for error in entry.errors %}
                         <tr class="ladb-cutlist-row ladb-cutlist-row-child ladb-cutlist-row-error" data-folder-id="{{ entry.id }}">
@@ -274,8 +295,8 @@
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_area }}</td>
                                 {{ fn.entry_item_std_cell(bin.std_volumic_mass, bin.total_used_mass) }}
                                 {{ fn.entry_item_std_cell(bin.std_volumic_mass, bin.total_mass) }}
-                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_used_cost) }}
-                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_cost) }}
+                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_used_cost, true) }}
+                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_cost, true) }}
                             </tr>
                         {% endfor %}
                     {% elseif group.type == 3 or group.type == 4 %} {# 3 = TYPE_DIMENSIONAL, 4 = TYPE_EDGE #}
@@ -288,8 +309,8 @@
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_length }}</td>
                                 {{ fn.entry_item_std_cell(bin.std_volumic_mass, bin.total_used_mass) }}
                                 {{ fn.entry_item_std_cell(bin.std_volumic_mass, bin.total_mass) }}
-                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_used_cost) }}
-                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_cost) }}
+                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_used_cost, true) }}
+                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_cost, true) }}
                             </tr>
                         {% endfor %}
                     {% elseif group.type == 5 %} {# 5 = TYPE_HARDWARE #}
@@ -312,8 +333,8 @@
                                 <td class="text-center"data-toggle="tooltip" data-html="true" title="{{ 'tab.cutlist.tooltip.instance_count_by_part'|i18next({ 'count':part.instance_count_by_part }) }}">{{ part.total_instance_count }}</td>
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right"{% if part.mass %} data-toggle="tooltip" title="{{ part.mass }}"{% endif %}>{{ part.total_used_mass|default('-') }}</td>
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right"{% if part.mass %} data-toggle="tooltip" title="{{ part.mass }}"{% endif %}>{{ part.total_mass|default('-') }}</td>
-                                <td class="ladb-cutlist-value ladb-cutlist-value-right"{% if part.price %} data-toggle="tooltip" title="{{ part.price }}"{% endif %}>{{ part.total_used_cost|default('-') }}</td>
-                                <td class="ladb-cutlist-value ladb-cutlist-value-right"{% if part.price %} data-toggle="tooltip" title="{{ part.price }}"{% endif %}>{{ part.total_cost|default('-') }}</td>
+                                <td class="ladb-cutlist-value ladb-cutlist-value-right mcft-plugin-cost"{% if part.price %} data-toggle="tooltip" title="{{ part.price }}"{% endif %}>{{ part.total_used_cost|default('-') }}</td>
+                                <td class="ladb-cutlist-value ladb-cutlist-value-right mcft-plugin-cost"{% if part.price %} data-toggle="tooltip" title="{{ part.price }}"{% endif %}>{{ part.total_cost|default('-') }}</td>
                             </tr>
                         {% endfor %}
                     {% elseif group.type == -1 %} {# -1 = TYPE_CUT #}
@@ -330,7 +351,7 @@
                                 <td style="padding-left: 40px;">{{ binSize }} - <em>{{ ('tab.cutlist.packing.list.bin_'~binD~'_'~binStrippedName~'_type_'~bin.type)|i18next }}</em></td>
                                 <td class="text-center">{{ bin.count }}</td>
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_length }}</td>
-                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_cost) }}
+                                {{ fn.entry_item_std_cell(bin.std_price, bin.total_cost, true) }}
                             </tr>
                         {% endfor %}
                     {% endif %}
@@ -358,9 +379,9 @@
                     {% if group.type >= 0 %}
                         <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_used_mass|default('-') }}</td>
                         <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_mass|default('-') }}</td>
-                        <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_used_cost|default('-') }}</td>
+                        <td class="ladb-cutlist-value ladb-cutlist-value-right mcft-plugin-cost">{{ group.total_used_cost|default('-') }}</td>
                     {% endif %}
-                    <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_cost|default('-') }}</td>
+                    <td class="ladb-cutlist-value ladb-cutlist-value-right mcft-plugin-cost">{{ group.total_cost|default('-') }}</td>
                 </tr>
                 </tbody>
             </table>
