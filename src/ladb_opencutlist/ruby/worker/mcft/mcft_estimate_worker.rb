@@ -2,6 +2,7 @@ module Ladb::OpenCutList
 
   require 'json'
   require_relative 'mcft_push_worker'
+  require_relative 'mcft_estimate_dialog'
   require_relative '../cutlist/cutlist_generate_worker'
 
   # MCFT — the on-the-fly estimate, priced entirely by ERPNext.
