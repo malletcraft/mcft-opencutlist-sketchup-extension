@@ -1396,7 +1396,7 @@
         return [ s.replace('erp:', 'ERP '), false ];
     };
 
-    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin) {
+    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides) {
         const that = this;
         const $box = $('#ladb_mcft_estimate', $slide);
         if ($box.length === 0) {
@@ -1409,7 +1409,9 @@
         // is clicked again — the field would be lying about its own meaning.
         that.mcftAssemblyMin = assemblyMin || '';
         $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
-        rubyCallCommand('mcft_estimate', { assembly_min: assemblyMin || '' }, function (response) {
+        rubyCallCommand('mcft_estimate',
+                        { assembly_min: assemblyMin || '', overrides: overrides || {} },
+                        function (response) {
             // Only refusals arrive here — a bad assembly time, or settings not
             // filled in. The estimate itself comes later, via the event.
             if (response && response.errors && response.errors.length > 0) {
@@ -1490,10 +1492,24 @@
                 '<th>Hours</th><th>Rate/hr</th><th>Amount</th><th>Std time</th>' +
                 '</tr></thead><tbody>' +
                 rowsOf(lab, function (r) {
+                    // An editable cell is an input; a computed one is text.
+                    // Showing an input a person cannot change is the same lie
+                    // as showing text they can — both cost a retype.
+                    const cell = function (val, editable, kind) {
+                        if (!editable) {
+                            return '<td ' + R + '>' + that.mcftEsc(val) + '</td>';
+                        }
+                        return '<td ' + R + '><input type="text" ' +
+                               'class="mcft-ov mcft-ov-' + kind + ' no-print" ' +
+                               'data-op="' + that.mcftEsc(r.name) + '" ' +
+                               'style="width:64px;text-align:right;" value="' +
+                               that.mcftEsc(val) + '"><span class="only-print">' +
+                               that.mcftEsc(val) + '</span></td>';
+                    };
                     return '<td>' + that.mcftEsc(r.seq) + '. ' + that.mcftEsc(r.name) + '</td>' +
                            '<td style="color:#777;">' + that.mcftEsc(r.workstation) + '</td>' +
-                           '<td ' + R + '>' + that.mcftEsc(r.qty) + '</td>' +
-                           '<td ' + R + '>' + that.mcftEsc(r.min_per_unit) + '</td>' +
+                           cell(r.qty, r.qty_editable, 'qty') +
+                           cell(r.min_per_unit, r.min_editable, 'min') +
                            '<td ' + R + '>' + that.mcftEsc(r.hours) + '</td>' +
                            '<td ' + R + '>' + that.mcftMoney(r.hour_rate) + '</td>' +
                            '<td ' + R + '>' + that.mcftMoney(r.amount) + '</td>' +
@@ -1504,7 +1520,12 @@
                 '<tr><td>Material</td><td ' + R + '>' + that.mcftMoney(d.material_total) + '</td></tr>' +
                 '<tr><td>Labour</td><td ' + R + '>' + that.mcftMoney(d.labour_total) + '</td></tr>' +
                 '<tr style="font-size:17px;font-weight:700;"><td>Total</td><td ' + R + '>' +
-                that.mcftMoney(d.total) + '</td></tr></table>';
+                that.mcftMoney(d.total) + '</td></tr>' +
+                // The question a client asks straight after the price.
+                '<tr><td style="color:#777;">Working days <small>(' +
+                that.mcftEsc(d.hours_per_day) + ' h/day)</small></td><td ' + R +
+                ' style="color:#777;">' + that.mcftEsc(d.days) + '</td></tr>' +
+                '</table>';
 
         html += '<p style="color:#777;font-size:11px;">A GAUGE, not a quotation. Excludes: ' +
                 that.mcftEsc((d.excludes || []).join(', ')) + '. Every rate here comes from ' +
@@ -1517,16 +1538,16 @@
 
     // The assembly time lives HERE now, not behind a menu prompt. Blank means
     // "use ERP's standard", which is the documented way to not override.
+    // Assembly's minutes used to live in a box of their own here. They are
+    // row 8 of the table now, editable like every other step from 7 down, so
+    // one Recalculate reads the whole table and there is only one place to
+    // type a time.
     LadbTabCutlist.prototype.mcftControls = function () {
-        const that = this;
-        const current = that.mcftAssemblyMin;
-        return '<div class="no-print" style="margin-top:12px;padding-top:10px;border-top:1px solid #e6e8eb;">' +
-               '<label style="font-weight:normal;margin-right:8px;">Minutes per assembly ' +
-               '<small style="color:#777;">(blank = ERP standard)</small></label>' +
-               '<input type="text" id="ladb_mcft_assembly_min" class="form-control" ' +
-               'style="width:110px;display:inline-block;" value="' +
-               that.mcftEsc(current === null || current === undefined ? '' : current) + '"> ' +
-               '<button id="ladb_mcft_btn_recalc" class="btn btn-default">Recalculate</button>' +
+        return '<div class="no-print" style="margin-top:12px;padding-top:10px;' +
+               'border-top:1px solid #e6e8eb;">' +
+               '<button id="ladb_mcft_btn_recalc" class="btn btn-default">Recalculate</button> ' +
+               '<span style="color:#777;">Quantities come from the model. Times ' +
+               'from step 7 down are yours to set; Grooving\'s count is too.</span>' +
                '</div>';
     };
 
@@ -1534,8 +1555,20 @@
         const that = this;
         $('#ladb_mcft_btn_recalc').off('click').on('click', function () {
             $(this).blur();
-            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'),
-                                   $('#ladb_mcft_assembly_min').val());
+            // Only fields a person actually filled travel. Sending every cell
+            // back would turn a displayed number into an override and freeze
+            // the estimate against its own model.
+            const ov = {};
+            $('.mcft-ov', that.$mcftBox).each(function () {
+                const $i = $(this);
+                const v = $.trim($i.val());
+                if (v === '') return;
+                const op = $i.data('op');
+                const kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
+                if (!ov[op]) ov[op] = {};
+                ov[op][kind] = v;
+            });
+            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov);
         });
     };
 

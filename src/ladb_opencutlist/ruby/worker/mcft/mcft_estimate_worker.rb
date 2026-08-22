@@ -39,12 +39,17 @@ module Ladb::OpenCutList
     # estimate screen is where Amit asked for this to live; the dialog remains
     # only because a print-only view is occasionally wanted.
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
-                   into: :tab)
+                   into: :tab, overrides: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
       @assembly_min = assembly_min
       @into = into
+      # {"Grooving" => {"qty" => 4, "min" => 12}} — what a person typed into
+      # the estimate table. The SERVER decides which of those it will accept;
+      # sending one it refuses is an error there rather than a silent no-op
+      # here, which is the point.
+      @overrides = overrides
     end
 
     def run
@@ -63,6 +68,7 @@ module Ladb::OpenCutList
         'assembly_count' => _assembly_count(model),
       }
       payload['assembly_min'] = @assembly_min unless @assembly_min.nil?
+      payload['overrides'] = @overrides if @overrides.is_a?(Hash) && !@overrides.empty?
 
       uri = "#{@site_url}/api/method/mallet_estimator.api.estimate_preview"
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)

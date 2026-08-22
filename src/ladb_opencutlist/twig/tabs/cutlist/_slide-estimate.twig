@@ -99,6 +99,14 @@
     #}
     <style>
         .mcft-plugin-cost { display: none !important; }
+
+        /* An editable time or count is an input on screen and a plain number
+           on paper: a printed estimate showing empty boxes reads as a form to
+           fill in rather than as an answer. The input carries .no-print, which
+           this theme already hides; its twin carries .only-print, which it
+           does not define, so it is defined here. */
+        .only-print { display: none; }
+        @media print { .only-print { display: inline; } }
     </style>
 
     <div class="ladb-page">

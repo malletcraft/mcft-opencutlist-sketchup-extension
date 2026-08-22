@@ -155,6 +155,7 @@ module Ladb::OpenCutList
       s = _guarded or return { :errors => [ 'MCFT settings are incomplete' ] }
       settings = {} unless settings.is_a?(Hash)
       mins = (settings['assembly_min'] || settings[:assembly_min]).to_s.strip
+      overrides = settings['overrides'] || settings[:overrides]
 
       # to_f turns "ninety" into 0.0, and zero minutes is not a refusal — it
       # is an assembly line worth nothing, badged "edited here" so it reads
@@ -167,7 +168,8 @@ module Ladb::OpenCutList
 
       McftEstimateWorker.new(site_url: s[:site_url], api_key: s[:api_key],
                              api_secret: s[:api_secret],
-                             assembly_min: mins.empty? ? nil : mins.to_f).run
+                             assembly_min: mins.empty? ? nil : mins.to_f,
+                             overrides: overrides).run
     end
 
     # The remembered assembly minutes, so the slide can prefill its field.
