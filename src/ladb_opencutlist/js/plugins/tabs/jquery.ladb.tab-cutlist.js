@@ -1499,29 +1499,53 @@
                 '<th>Operation</th><th>Workstation</th><th>Qty</th><th>Min/unit</th>' +
                 '<th>Hours</th><th>Amount</th><th>Std time</th>' +
                 '</tr></thead><tbody>' +
-                rowsOf(lab, function (r) {
-                    // An editable cell is an input; a computed one is text.
-                    // Showing an input a person cannot change is the same lie
-                    // as showing text they can — both cost a retype.
-                    const cell = function (val, editable, kind) {
-                        if (!editable) {
-                            return '<td ' + R + '>' + that.mcftEsc(val) + '</td>';
-                        }
-                        return '<td ' + R + '><input type="text" ' +
-                               'class="mcft-ov mcft-ov-' + kind + ' no-print" ' +
-                               'data-op="' + that.mcftEsc(r.name) + '" ' +
-                               'style="width:64px;text-align:right;" value="' +
-                               that.mcftEsc(val) + '"><span class="only-print">' +
-                               that.mcftEsc(val) + '</span></td>';
-                    };
-                    return '<td>' + that.mcftEsc(r.seq) + '. ' + that.mcftEsc(r.name) + '</td>' +
-                           '<td style="color:#777;">' + that.mcftEsc(r.workstation) + '</td>' +
-                           cell(r.qty, r.qty_editable, 'qty') +
-                           cell(r.min_per_unit, r.min_editable, 'min') +
-                           '<td ' + R + '>' + that.mcftEsc(r.hours) + '</td>' +
-                           '<td ' + R + '>' + that.mcftMoney(r.amount) + '</td>' +
-                           badgeCell(r.min_source);
-                }) + '</tbody></table>';
+                (function () {
+                    let body = '';
+                    for (let i = 0; i < lab.length; i++) {
+                        const r = lab[i];
+                        // An editable cell is an input; a computed one is text.
+                        const cell = function (val, editable, kind, op, size) {
+                            if (!editable) {
+                                return '<td ' + R + '>' + that.mcftEsc(val) + '</td>';
+                            }
+                            return '<td ' + R + '><input type="text" ' +
+                                   'class="mcft-ov mcft-ov-' + kind + ' no-print" ' +
+                                   'data-op="' + that.mcftEsc(op) + '" ' +
+                                   (size ? 'data-size="' + that.mcftEsc(size) + '" ' : '') +
+                                   'style="width:64px;text-align:right;" value="' +
+                                   that.mcftEsc(val) + '"><span class="only-print">' +
+                                   that.mcftEsc(val) + '</span></td>';
+                        };
+                        body += '<tr>' +
+                            '<td>' + that.mcftEsc(r.seq) + '. ' + that.mcftEsc(r.name) + '</td>' +
+                            '<td style="color:#777;">' + that.mcftEsc(r.workstation) + '</td>' +
+                            cell(r.qty, r.qty_editable, 'qty', r.name) +
+                            // A parent that has children shows their total, never
+                            // an input: typing here and in a child at once would
+                            // be two answers to one question.
+                            (r.children ? '<td ' + R + ' style="color:#777;">' +
+                                that.mcftEsc(r.min_per_unit) + '</td>'
+                                : cell(r.min_per_unit, r.min_editable, 'min', r.name)) +
+                            '<td ' + R + '>' + that.mcftEsc(r.hours) + '</td>' +
+                            '<td ' + R + '>' + that.mcftMoney(r.amount) + '</td>' +
+                            badgeCell(r.min_source) + '</tr>';
+                        // Amit, 2026-08-23: "this should split into child rows
+                        // ... minutes should be changeable in line only. no
+                        // point in giving a box below on screen."
+                        (r.children || []).forEach(function (c) {
+                            body += '<tr style="background:#fbfbfc;">' +
+                                '<td style="padding-left:28px;color:#555;">' +
+                                that.mcftEsc(c.name) + '</td>' +
+                                '<td style="color:#777;"></td>' +
+                                '<td ' + R + '>' + that.mcftEsc(c.qty) + '</td>' +
+                                cell(c.min_per_unit, c.min_editable, 'min', r.name, c.size) +
+                                '<td ' + R + '>' + that.mcftEsc(c.hours) + '</td>' +
+                                '<td ' + R + '>' + that.mcftMoney(c.amount) + '</td>' +
+                                '<td></td></tr>';
+                        });
+                    }
+                    return body;
+                })() + '</tbody></table>';
 
         html += '<table class="table" style="width:auto;margin-left:auto;">' +
                 '<tr><td>Material</td><td ' + R + '>' + that.mcftMoney(d.material_total) + '</td></tr>' +
@@ -1550,19 +1574,6 @@
     // one Recalculate reads the whole table and there is only one place to
     // type a time.
     LadbTabCutlist.prototype.mcftControls = function (d) {
-        const that = this;
-        const sz = (d && d.assembly_sizes) || {};
-        const mn = (d && d.assembly_min_by_size) || {};
-        // A carcass, a drawer and a shelf are not the same job. One box each,
-        // so the estimate can say so — and the counts beside them come from
-        // the ASMBL_L_ / ASMBL_M_ / ASMBL_S_ names in the model.
-        const box = function (key, label) {
-            return '<label style="font-weight:normal;margin:0 10px 0 0;">' + label +
-                   ' <small style="color:#777;">(' + (sz[key] || 0) + ')</small> ' +
-                   '<input type="text" class="mcft-size-min" data-size="' + key + '" ' +
-                   'style="width:56px;text-align:right;" value="' +
-                   that.mcftEsc(mn[key] === undefined ? '' : mn[key]) + '"></label>';
-        };
         let warn = '';
         if (d && d.assembly_unsized) {
             warn = '<div style="color:#922;margin-top:6px;">' + d.assembly_unsized +
@@ -1572,13 +1583,11 @@
         }
         return '<div class="no-print" style="margin-top:12px;padding-top:10px;' +
                'border-top:1px solid #e6e8eb;">' +
-               '<div style="margin-bottom:8px;">Assembly minutes &mdash; ' +
-               box('large', 'Large') + box('medium', 'Medium') + box('small', 'Small') +
-               '</div>' +
                '<button id="ladb_mcft_btn_recalc" class="btn btn-default">Recalculate</button> ' +
                '<span style="color:#777;">Quantities come from the model. Times ' +
-               'from step 7 down are yours to set; Grooving\'s count is too. ' +
-               'Only LARGE assemblies are disassembled.</span>' + warn +
+               'from step 7 down are yours to set, Assembly one line per size; ' +
+               'Grooving\'s count is too. Only LARGE assemblies are ' +
+               'disassembled.</span>' + warn +
                '</div>';
     };
 
@@ -1595,16 +1604,13 @@
                 const v = $.trim($i.val());
                 if (v === '') return;
                 const op = $i.data('op');
-                const kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
+                let kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
+                const size = $i.data('size');
+                if (size) kind = 'min_' + size;   // Assembly's per-size children
                 if (!ov[op]) ov[op] = {};
                 ov[op][kind] = v;
             });
-            const sizeMin = {};
-            $('.mcft-size-min', that.$mcftBox).each(function () {
-                const v = $.trim($(this).val());
-                if (v !== '') sizeMin[$(this).data('size')] = v;
-            });
-            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov, sizeMin);
+            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov);
         });
     };
 
