@@ -1393,6 +1393,9 @@
         if (/unset$/.test(s))        return [ 'ERP unset', true ];
         if (/^plugin/.test(s))       return [ 'edited here', true ];
         if (s === 'code default')    return [ 'seed default', true ];
+        // Not a fallback — there is no standard for this operation to fall
+        // back to, and the row is the one place a person names their own work.
+        if (s === 'no standard')     return [ 'yours to set', true ];
         return [ s.replace('erp:', 'ERP '), false ];
     };
 
@@ -1512,6 +1515,10 @@
                                    'class="mcft-ov mcft-ov-' + kind + ' no-print" ' +
                                    'data-op="' + that.mcftEsc(op) + '" ' +
                                    (size ? 'data-size="' + that.mcftEsc(size) + '" ' : '') +
+                                   // What the server sent, kept beside what the
+                                   // box now shows, so a person's edit can be
+                                   // told apart from the number they were given.
+                                   'data-seed="' + that.mcftEsc(val) + '" ' +
                                    'style="width:64px;text-align:right;" value="' +
                                    that.mcftEsc(val) + '"><span class="only-print">' +
                                    that.mcftEsc(val) + '</span></td>';
@@ -1595,14 +1602,29 @@
         const that = this;
         $('#ladb_mcft_btn_recalc').off('click').on('click', function () {
             $(this).blur();
-            // Only fields a person actually filled travel. Sending every cell
-            // back would turn a displayed number into an override and freeze
-            // the estimate against its own model.
+            // Only fields a person actually CHANGED travel. That was always
+            // the intent, and the empty-string test used to implement it never
+            // could: the boxes are pre-filled with the server's own numbers,
+            // so none of them is ever empty and every one came back as an
+            // override. Amit, 2026-08-23: "I altered only large assembly time
+            // and its showing all edited here." Every row said a person had
+            // overruled it, and every row had — the plugin had handed the
+            // estimate back its own answer and called it a decision.
+            //
+            // Worse than a wrong badge: an echoed value is a real override, so
+            // the estimate froze against its own model. Change a material,
+            // recompute, and the minutes stayed at whatever the previous
+            // render happened to show.
             const ov = {};
             $('.mcft-ov', that.$mcftBox).each(function () {
                 const $i = $(this);
                 const v = $.trim($i.val());
                 if (v === '') return;
+                // Compared as NUMBERS, not as text: the server sends 30 and
+                // the box may hold "30." or " 30" after a person has clicked
+                // through it, and none of those is an edit.
+                const seed = $.trim($i.attr('data-seed') || '');
+                if (seed !== '' && parseFloat(v) === parseFloat(seed)) return;
                 const op = $i.data('op');
                 let kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
                 const size = $i.data('size');

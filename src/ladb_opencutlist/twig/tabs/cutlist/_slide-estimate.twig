@@ -100,6 +100,20 @@
     <style>
         .mcft-plugin-cost { display: none !important; }
 
+        /* Amit, 2026-08-23: "Hide Used from mcft plugin just show total. so
+           that we are clear on page as well that total is being charged."
+
+           OpenCutList shows each material twice — the area actually consumed
+           by the parts, and the area of the whole sheets that area comes out
+           of. Only the second is billable: you buy the sheet, not the offcut,
+           and the offcut does not come back. Two numbers side by side invited
+           the question of which one the price was built from, which is a bad
+           question to be asked across a screen share with a client.
+
+           The measure header above these used to span the pair; it now spans
+           the one column left, so the rows still line up under it. */
+        .mcft-plugin-used { display: none !important; }
+
         /* An editable time or count is an input on screen and a plain number
            on paper: a printed estimate showing empty boxes reads as a form to
            fill in rather than as an answer. The input carries .no-print, which
@@ -178,22 +192,22 @@
                 <tr class="table-column-heading">
                     <td rowspan="2">{{ 'tab.cutlist.list.material_thickness'|i18next }}</td>
                     {% if group.type == 1 %} {# 1 = TYPE_SOLID_WOOD #}
-                        <td colspan="2">{{ 'tab.cutlist.estimate.total_volume'|i18next }}</td>
+                        <td>{{ 'tab.cutlist.estimate.total_volume'|i18next }}</td>
                     {% elseif group.type == 2 %} {# 2 = TYPE_SHEET_GOOD #}
                         <td width="10%" rowspan="2">{{ 'tab.cutlist.estimate.total_count'|i18next }}</td>
-                        <td colspan="2">{{ 'tab.cutlist.estimate.total_area'|i18next }}</td>
+                        <td>{{ 'tab.cutlist.estimate.total_area'|i18next }}</td>
                     {% elseif group.type == 3 %} {# 3 = TYPE_DIMENSIONAL #}
                         <td width="10%" rowspan="2">{{ 'tab.cutlist.estimate.total_count'|i18next }}</td>
-                        <td colspan="2">{{ 'tab.cutlist.estimate.total_length'|i18next }}</td>
+                        <td>{{ 'tab.cutlist.estimate.total_length'|i18next }}</td>
                     {% elseif group.type == 4 %} {# 4 = TYPE_EDGE #}
                         <td width="10%" rowspan="2">{{ 'tab.cutlist.estimate.total_count'|i18next }}</td>
-                        <td colspan="2">{{ 'tab.cutlist.estimate.total_length'|i18next }}</td>
+                        <td>{{ 'tab.cutlist.estimate.total_length'|i18next }}</td>
                     {% elseif group.type == 5 %} {# 5 = TYPE_HARDWARE #}
                         <td width="10%" rowspan="2">{{ 'tab.cutlist.estimate.total_count'|i18next }}</td>
-                        <td colspan="2">{{ 'tab.cutlist.estimate.total_instance_count'|i18next }}</td>
+                        <td>{{ 'tab.cutlist.estimate.total_instance_count'|i18next }}</td>
                     {% elseif group.type == 6 %} {# 2 = TYPE_VENEER #}
                         <td width="10%" rowspan="2">{{ 'tab.cutlist.estimate.total_count'|i18next }}</td>
-                        <td colspan="2">{{ 'tab.cutlist.estimate.total_area'|i18next }}</td>
+                        <td>{{ 'tab.cutlist.estimate.total_area'|i18next }}</td>
                     {% elseif group.type == -1 %} {# -1 = TYPE_CUT #}
                         <td width="10%">{{ 'tab.cutlist.estimate.total_count'|i18next }}</td>
                         <td width="10%">{{ 'tab.cutlist.estimate.total_length'|i18next }}</td>
@@ -207,22 +221,22 @@
                 {% if group.type >= 0 %}
                     <tr class="table-column-heading">
                         {% if group.type == 1 %} {# 1 = TYPE_SOLID_WOOD #}
-                            <td width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
+                            <td class="mcft-plugin-used" width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
                             <td width="8%">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
                         {% elseif group.type == 2 %} {# 2 = TYPE_SHEET_GOOD #}
-                            <td width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
+                            <td class="mcft-plugin-used" width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
                             <td width="8%">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
                         {% elseif group.type == 3 %} {# 3 = TYPE_DIMENSIONAL #}
-                            <td width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
+                            <td class="mcft-plugin-used" width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
                             <td width="8%">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
                         {% elseif group.type == 4 %} {# 4 = TYPE_EDGE #}
-                            <td width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
+                            <td class="mcft-plugin-used" width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
                             <td width="8%">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
                         {% elseif group.type == 5 %} {# 5 = TYPE_HARDWARE #}
-                            <td width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
+                            <td class="mcft-plugin-used" width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
                             <td width="8%">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
                         {% elseif group.type == 6 %} {# 2 = TYPE_VENEER #}
-                            <td width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
+                            <td class="mcft-plugin-used" width="8%">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
                             <td width="8%">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
                         {% endif %}
                         <td width="8%" class="mcft-plugin-cost">{{ 'tab.cutlist.estimate.total_used'|i18next }}</td>
@@ -267,21 +281,21 @@
                             {% endif %}
                         </td>
                         {% if group.type == 1 %} {# 1 = TYPE_SOLID_WOOD #}
-                            <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_used_volume }}</td>
+                            <td class="mcft-plugin-used ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_used_volume }}</td>
                             <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_volume }}</td>
                         {% elseif group.type == 2 or group.type == 6 %} {# 2 = TYPE_SHEET_GOOD, 6 = TYPE_VENEER #}
                             <td class="text-center">{{ entry.total_count|default('-') }}</td>
-                            <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_used_area|default('-') }}</td>
+                            <td class="mcft-plugin-used ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_used_area|default('-') }}</td>
                             <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_area|default('-') }}</td>
                         {% elseif group.type == 3 or group.type == 4 or group.type == -1 %} {# 3 = TYPE_DIMENSIONAL, 4 = TYPE_EDGE, -1 = TYPE_CUT #}
                             <td class="text-center">{{ entry.total_count|default('-') }}</td>
                             {% if group.type == 3 or group.type == 4 %} {# 3 = TYPE_DIMENSIONAL, 4 = TYPE_EDGE #}
-                                <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_used_length|default('-') }}</td>
+                                <td class="mcft-plugin-used ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_used_length|default('-') }}</td>
                             {% endif %}
                             <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ entry.total_length|default('-') }}</td>
                         {% elseif group.type == 5 %} {# 5 = TYPE_HARDWARE #}
                             <td class="text-center">{{ entry.total_count }}</td>
-                            <td class="text-center">{{ entry.total_used_instance_count }}</td>
+                            <td class="mcft-plugin-used text-center">{{ entry.total_used_instance_count }}</td>
                             <td class="text-center">{{ entry.total_instance_count }}</td>
                         {% endif %}
                         {% if group.type >= 0 %}
@@ -302,7 +316,7 @@
                             <tr class="ladb-cutlist-row ladb-cutlist-row-child{% if entry.errors|length == 0 %} hide{% endif %}" data-folder-id="{{ entry.id }}">
                                 <td style="padding-left: 40px;">{{ bin.length}} x {{ bin.width }} - <em>{{ ('tab.cutlist.packing.list.bin_2d_'~binStrippedName~'_type_'~bin.type)|i18next }}</em></td>
                                 <td class="text-center">{{ bin.count }}</td>
-                                <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_used_area }}</td>
+                                <td class="mcft-plugin-used ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_used_area }}</td>
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_area }}</td>
                                 {{ fn.entry_item_std_cell(bin.std_volumic_mass, bin.total_used_mass, true) }}
                                 {{ fn.entry_item_std_cell(bin.std_volumic_mass, bin.total_mass, true) }}
@@ -316,7 +330,7 @@
                             <tr class="ladb-cutlist-row ladb-cutlist-row-child{% if entry.errors|length == 0 %} hide{% endif %}" data-folder-id="{{ entry.id }}">
                                 <td style="padding-left: 40px;">{{ bin.length}} - <em>{{ ('tab.cutlist.packing.list.bin_1d_'~binStrippedName~'_type_'~bin.type)|i18next }}</em></td>
                                 <td class="text-center">{{ bin.count }}</td>
-                                <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_used_length }}</td>
+                                <td class="mcft-plugin-used ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_used_length }}</td>
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ bin.total_length }}</td>
                                 {{ fn.entry_item_std_cell(bin.std_volumic_mass, bin.total_used_mass, true) }}
                                 {{ fn.entry_item_std_cell(bin.std_volumic_mass, bin.total_mass, true) }}
@@ -340,7 +354,7 @@
                                     </div>
                                 </td>
                                 <td class="text-center">{{ part.count }}</td>
-                                <td class="text-center">{{ part.total_used_instance_count }}</td>
+                                <td class="mcft-plugin-used text-center">{{ part.total_used_instance_count }}</td>
                                 <td class="text-center"data-toggle="tooltip" data-html="true" title="{{ 'tab.cutlist.tooltip.instance_count_by_part'|i18next({ 'count':part.instance_count_by_part }) }}">{{ part.total_instance_count }}</td>
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right mcft-plugin-cost"{% if part.mass %} data-toggle="tooltip" title="{{ part.mass }}"{% endif %}>{{ part.total_used_mass|default('-') }}</td>
                                 <td class="ladb-cutlist-value ladb-cutlist-value-right mcft-plugin-cost"{% if part.mass %} data-toggle="tooltip" title="{{ part.mass }}"{% endif %}>{{ part.total_mass|default('-') }}</td>
@@ -370,21 +384,21 @@
                 <tr class="ladb-cutlist-row ladb-cutlist-row-total">
                     <td class="text-right">{{ 'tab.cutlist.estimate.total'|i18next }}</td>
                     {% if group.type == 1 %} {# 1 = TYPE_SOLID_WOOD #}
-                        <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_used_volume }}</td>
+                        <td class="mcft-plugin-used ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_used_volume }}</td>
                         <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_volume }}</td>
                     {% elseif group.type == 2 or group.type == 6 %} {# 2 = TYPE_SHEET_GOOD, 6 = TYPE_VENEER #}
                         <td class="text-center">{{ group.total_count|default('-') }}</td>
-                        <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_used_area }}</td>
+                        <td class="mcft-plugin-used ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_used_area }}</td>
                         <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_area }}</td>
                     {% elseif group.type == 3 or group.type == 4 or group.type == -1 %} {# 3 = TYPE_DIMENSIONAL, 4 = TYPE_EDGE, -1 = TYPE_CUT #}
                         <td class="text-center">{{ group.total_count|default('-') }}</td>
                         {% if group.type == 3 or group.type == 4 %} {# 3 = TYPE_DIMENSIONAL, 4 = TYPE_EDGE #}
-                            <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_used_length }}</td>
+                            <td class="mcft-plugin-used ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_used_length }}</td>
                         {% endif %}
                         <td class="ladb-cutlist-value ladb-cutlist-value-right">{{ group.total_length }}</td>
                     {% elseif group.type == 5 %} {# 5 = TYPE_HARDWARE #}
                         <td class="text-center">{{ group.total_count }}</td>
-                        <td class="text-center">{{ group.total_used_instance_count }}</td>
+                        <td class="mcft-plugin-used text-center">{{ group.total_used_instance_count }}</td>
                         <td class="text-center">{{ group.total_instance_count }}</td>
                     {% endif %}
                     {% if group.type >= 0 %}
