@@ -1396,7 +1396,7 @@
         return [ s.replace('erp:', 'ERP '), false ];
     };
 
-    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides) {
+    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin) {
         const that = this;
         const $box = $('#ladb_mcft_estimate', $slide);
         if ($box.length === 0) {
@@ -1410,7 +1410,8 @@
         that.mcftAssemblyMin = assemblyMin || '';
         $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
         rubyCallCommand('mcft_estimate',
-                        { assembly_min: assemblyMin || '', overrides: overrides || {} },
+                        { assembly_min: assemblyMin || '', overrides: overrides || {},
+                          size_min: sizeMin || {} },
                         function (response) {
             // Only refusals arrive here — a bad assembly time, or settings not
             // filled in. The estimate itself comes later, via the event.
@@ -1429,7 +1430,7 @@
         if (d && d.error) {
             $box.html('<div class="alert alert-danger" style="margin:0;">' +
                       '<strong>ERPNext could not price this model.</strong> ' +
-                      that.mcftEsc(d.error) + '</div>' + that.mcftControls());
+                      that.mcftEsc(d.error) + '</div>' + that.mcftControls(d));
             return;
         }
 
@@ -1440,7 +1441,10 @@
         html += '<p style="color:#777;margin:0 0 10px;">Priced by ERPNext (' +
                 that.mcftEsc(d.site) + ') from ' + that.mcftEsc(d.price_list) + ', ' +
                 that.mcftEsc(d.rates_are) + '. ' +
-                that.mcftEsc(d.assembly_count) + ' assemblies (' +
+                that.mcftEsc(d.assembly_count) + ' assemblies' +
+                (d.assembly_sizes ? ' (' + (d.assembly_sizes.large || 0) + ' large, ' +
+                    (d.assembly_sizes.medium || 0) + ' medium, ' +
+                    (d.assembly_sizes.small || 0) + ' small)' : '') + ' (' +
                 that.mcftEsc(d.assembly_source) + ') &middot; wastage: ' +
                 that.mcftEsc(d.wastage) + '</p>';
 
@@ -1488,8 +1492,12 @@
 
         html += '<h4>Labour &mdash; the 17 steps, through to installation</h4>' +
                 '<table class="table table-bordered table-condensed"><thead><tr>' +
+                // No ₹/hr. Amit, 2026-08-23: "no need to show rate / hr on
+                // plugin as i will be live sharing screen it with client."
+                // The Amount stays — that is the quote; the shop's hourly
+                // cost is nobody else's business.
                 '<th>Operation</th><th>Workstation</th><th>Qty</th><th>Min/unit</th>' +
-                '<th>Hours</th><th>Rate/hr</th><th>Amount</th><th>Std time</th>' +
+                '<th>Hours</th><th>Amount</th><th>Std time</th>' +
                 '</tr></thead><tbody>' +
                 rowsOf(lab, function (r) {
                     // An editable cell is an input; a computed one is text.
@@ -1511,7 +1519,6 @@
                            cell(r.qty, r.qty_editable, 'qty') +
                            cell(r.min_per_unit, r.min_editable, 'min') +
                            '<td ' + R + '>' + that.mcftEsc(r.hours) + '</td>' +
-                           '<td ' + R + '>' + that.mcftMoney(r.hour_rate) + '</td>' +
                            '<td ' + R + '>' + that.mcftMoney(r.amount) + '</td>' +
                            badgeCell(r.min_source);
                 }) + '</tbody></table>';
@@ -1531,7 +1538,7 @@
                 that.mcftEsc((d.excludes || []).join(', ')) + '. Every rate here comes from ' +
                 'ERPNext &mdash; the plugin\'s own material prices are not used.</p>';
 
-        html += that.mcftControls();
+        html += that.mcftControls(d);
         $box.html(html);
         that.mcftBindControls();
     };
@@ -1542,12 +1549,36 @@
     // row 8 of the table now, editable like every other step from 7 down, so
     // one Recalculate reads the whole table and there is only one place to
     // type a time.
-    LadbTabCutlist.prototype.mcftControls = function () {
+    LadbTabCutlist.prototype.mcftControls = function (d) {
+        const that = this;
+        const sz = (d && d.assembly_sizes) || {};
+        const mn = (d && d.assembly_min_by_size) || {};
+        // A carcass, a drawer and a shelf are not the same job. One box each,
+        // so the estimate can say so — and the counts beside them come from
+        // the ASMBL_L_ / ASMBL_M_ / ASMBL_S_ names in the model.
+        const box = function (key, label) {
+            return '<label style="font-weight:normal;margin:0 10px 0 0;">' + label +
+                   ' <small style="color:#777;">(' + (sz[key] || 0) + ')</small> ' +
+                   '<input type="text" class="mcft-size-min" data-size="' + key + '" ' +
+                   'style="width:56px;text-align:right;" value="' +
+                   that.mcftEsc(mn[key] === undefined ? '' : mn[key]) + '"></label>';
+        };
+        let warn = '';
+        if (d && d.assembly_unsized) {
+            warn = '<div style="color:#922;margin-top:6px;">' + d.assembly_unsized +
+                   ' assembly component(s) carry no size token and are counted as ' +
+                   'LARGE. Name them ASMBL_L_… / ASMBL_M_… / ASMBL_S_… to price ' +
+                   'them properly.</div>';
+        }
         return '<div class="no-print" style="margin-top:12px;padding-top:10px;' +
                'border-top:1px solid #e6e8eb;">' +
+               '<div style="margin-bottom:8px;">Assembly minutes &mdash; ' +
+               box('large', 'Large') + box('medium', 'Medium') + box('small', 'Small') +
+               '</div>' +
                '<button id="ladb_mcft_btn_recalc" class="btn btn-default">Recalculate</button> ' +
                '<span style="color:#777;">Quantities come from the model. Times ' +
-               'from step 7 down are yours to set; Grooving\'s count is too.</span>' +
+               'from step 7 down are yours to set; Grooving\'s count is too. ' +
+               'Only LARGE assemblies are disassembled.</span>' + warn +
                '</div>';
     };
 
@@ -1568,7 +1599,12 @@
                 if (!ov[op]) ov[op] = {};
                 ov[op][kind] = v;
             });
-            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov);
+            const sizeMin = {};
+            $('.mcft-size-min', that.$mcftBox).each(function () {
+                const v = $.trim($(this).val());
+                if (v !== '') sizeMin[$(this).data('size')] = v;
+            });
+            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov, sizeMin);
         });
     };
 
