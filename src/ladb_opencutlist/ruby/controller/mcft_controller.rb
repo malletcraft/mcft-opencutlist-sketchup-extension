@@ -158,13 +158,6 @@ module Ladb::OpenCutList
       mins = (settings['assembly_min'] || settings[:assembly_min]).to_s.strip
       overrides = settings['overrides'] || settings[:overrides]
       size_min = settings['size_min'] || settings[:size_min]
-      # nil and "" mean different things here and must stay distinguishable:
-      # nil is "the caller has no opinion, keep what the model remembers", ""
-      # is "the person emptied the box". Collapsing them would make a remark
-      # impossible to clear.
-      remarks = settings.key?('misc_remarks') ? settings['misc_remarks'] :
-                settings[:misc_remarks]
-
       # to_f turns "ninety" into 0.0, and zero minutes is not a refusal — it
       # is an assembly line worth nothing, badged "edited here" so it reads
       # as deliberate. Anything that is not a positive number falls back to
@@ -177,8 +170,7 @@ module Ladb::OpenCutList
       McftEstimateWorker.new(site_url: s[:site_url], api_key: s[:api_key],
                              api_secret: s[:api_secret],
                              assembly_min: mins.empty? ? nil : mins.to_f,
-                             overrides: overrides, size_min: size_min,
-                             misc_remarks: remarks).run
+                             overrides: overrides, size_min: size_min).run
     end
 
     # The remembered assembly minutes, so the slide can prefill its field.
