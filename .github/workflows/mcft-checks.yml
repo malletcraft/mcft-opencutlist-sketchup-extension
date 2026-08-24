@@ -19,9 +19,9 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
-          # Any modern Ruby. The 2.2 compatibility check is a source check,
-          # not an execution one — see tools/check-ruby22.rb for why running
-          # under a real 2.2 is neither available nor sufficient.
+          # Any modern Ruby. The floor check is a SOURCE check, not an
+          # execution one — see tools/check-ruby-floor.rb for why running under
+          # the floor Ruby is neither available nor sufficient.
           ruby-version: '3.3'
 
       # Catches ordinary syntax errors. Cannot catch version-specific syntax,
@@ -36,8 +36,8 @@ jobs:
           done < <(find src/ladb_opencutlist/ruby -name '*.rb' -not -path '*/ruby/lib/*')
           echo "ruby -c: $n files OK"
 
-      - name: No syntax newer than SketchUp 2017's Ruby 2.2.4
-        run: ruby tools/check-ruby22.rb
+      - name: No syntax newer than the Ruby floor (SketchUp 2021 / Ruby 2.7)
+        run: ruby tools/check-ruby-floor.rb
 
       # Neither check above can see a require pointing at a file the COMMIT
       # does not carry: both walk files that exist on disk, and the missing

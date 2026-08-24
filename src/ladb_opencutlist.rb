@@ -7,8 +7,12 @@ module Ladb
 
     unless file_loaded?(__FILE__)
 
-      if Sketchup.version_number < 1700000000
-        UI.messagebox("/!\ CAUTION\nOpenCutList requires SketchUp 2017 or above to run correctly.\nDowngrade to version 3.x to run on prior version of SketchUp.", MB_OK)
+      # MCFT edition: SketchUp 2021 (Ruby 2.7) is the floor. Amit, 2026-08-24:
+      # "2017 is not a target, drop the ruby 2.2 constraint." Kept as a real
+      # gate rather than removed, so somebody on an older SketchUp is told why
+      # rather than left with an extension that half works.
+      if Sketchup.version_number < 2100000000
+        UI.messagebox("/!\ CAUTION\nOpenCutList (MCFT Edition) requires SketchUp 2021 or above to run correctly.", MB_OK)
       end
 
       # Plugin ID and DIR
