@@ -39,6 +39,14 @@ jobs:
       - name: No syntax newer than SketchUp 2017's Ruby 2.2.4
         run: ruby tools/check-ruby22.rb
 
+      # Neither check above can see a require pointing at a file the COMMIT
+      # does not carry: both walk files that exist on disk, and the missing
+      # file existed on disk — it was only absent from git. 2026-08-24 shipped
+      # exactly that and every install raised LoadError, taking down the whole
+      # of OpenCutList rather than just the MCFT tab.
+      - name: Every require_relative points at a file git actually has
+        run: ruby tools/check-requires.rb
+
   templates:
     name: Committed twig bundle matches its source
     runs-on: ubuntu-latest
