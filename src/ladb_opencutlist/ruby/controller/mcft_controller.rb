@@ -5,6 +5,7 @@ module Ladb::OpenCutList
   require_relative '../worker/mcft/mcft_push_worker'
   require_relative '../worker/mcft/mcft_pull_worker'
   require_relative '../worker/mcft/mcft_iso_worker'
+  require_relative '../worker/mcft/mcft_estimate_store'
   require_relative '../worker/mcft/mcft_estimate_worker'
   require_relative '../worker/mcft/mcft_estimate_dialog'
 

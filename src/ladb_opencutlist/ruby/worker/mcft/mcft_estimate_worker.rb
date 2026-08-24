@@ -48,7 +48,8 @@ module Ladb::OpenCutList
     # estimate screen is where Amit asked for this to live; the dialog remains
     # only because a print-only view is occasionally wanted.
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
-                   into: :tab, overrides: nil, size_min: nil)
+                   into: :tab, overrides: nil, size_min: nil,
+                   misc_remarks: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
@@ -61,6 +62,7 @@ module Ladb::OpenCutList
       @overrides = overrides
       # {"large" => 90, "medium" => 30, "small" => 15}
       @size_min = size_min
+      @misc_remarks = misc_remarks
     end
 
     def run
@@ -79,10 +81,36 @@ module Ladb::OpenCutList
         'assembly_count' => _assembly_count(model),
         'assembly_counts' => _assembly_counts(model),
       }
+      # WHAT THE MODEL REMEMBERS, unless this run brought something newer.
+      #
+      # Amit, 2026-08-24: "time per operation i keyed in manually get lost when
+      # i re run the estimate. i don't want that." A recompute with no edits in
+      # hand — which is what pressing Estimate again is — used to send nothing
+      # and get ERP's standards back, wiping the screen.
+      #
+      # The typed value WINS, per Amit confirming that recommendation the same
+      # day. This run's values are merged OVER the stored ones rather than the
+      # other way round, so editing one row does not resurrect an old value in
+      # another, and the store is rewritten with the result.
+      stored = McftEstimateStore.read
+      merged_ov = _merge_overrides(stored['overrides'], @overrides)
+      merged_size = (stored['size_min'] || {}).merge(@size_min.is_a?(Hash) ? @size_min : {})
+      remarks = @misc_remarks.nil? ? stored['misc_remarks'].to_s : @misc_remarks.to_s
+
       payload['assembly_min'] = @assembly_min unless @assembly_min.nil?
-      payload['overrides'] = @overrides if @overrides.is_a?(Hash) && !@overrides.empty?
-      if @size_min.is_a?(Hash) && !@size_min.empty?
-        payload['assembly_min_by_size'] = @size_min
+      payload['overrides'] = merged_ov unless merged_ov.empty?
+      payload['assembly_min_by_size'] = merged_size unless merged_size.empty?
+      payload['misc_remarks'] = remarks unless remarks.empty?
+
+      # Written BEFORE the request, on purpose. What a person typed is theirs
+      # whether or not the bench is reachable — a basement, an expired key or a
+      # 503 must not be a reason to lose it.
+      begin
+        McftEstimateStore.write(:overrides => merged_ov,
+                                :size_min => merged_size,
+                                :misc_remarks => remarks)
+      rescue StandardError
+        # Never let bookkeeping stop the estimate itself.
       end
 
       uri = "#{@site_url}/api/method/mallet_estimator.api.estimate_preview"
@@ -108,6 +136,32 @@ module Ladb::OpenCutList
     end
 
     private
+
+    # Per-OPERATION merge, not a top-level Hash#merge.
+    #
+    # An override is {"Grooving" => {"qty" => 4, "min" => 12}}. A plain merge
+    # replaces the whole inner Hash, so typing a new qty for Grooving would
+    # silently drop the min stored beside it. Merging one level down keeps the
+    # untouched half of a row.
+    def _merge_overrides(stored, fresh)
+      out = {}
+      (stored || {}).each { |op, vals| out[op] = vals.is_a?(Hash) ? vals.dup : vals }
+      (fresh || {}).each do |op, vals|
+        if out[op].is_a?(Hash) && vals.is_a?(Hash)
+          out[op] = out[op].merge(vals)
+        else
+          out[op] = vals
+        end
+      end
+      # A blank is a DELETION, not a value. Without this a cleared box would
+      # travel as "" and be stored forever, and the row could never go back to
+      # ERP's standard.
+      out.each_key do |op|
+        next unless out[op].is_a?(Hash)
+        out[op] = out[op].reject { |_k, v| v.nil? || v.to_s.strip.empty? }
+      end
+      out.reject { |_op, vals| vals.nil? || (vals.is_a?(Hash) && vals.empty?) }
+    end
 
     def _deliver(data)
       if @into == :dialog
