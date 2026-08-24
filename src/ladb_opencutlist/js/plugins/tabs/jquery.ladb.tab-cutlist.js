@@ -1399,7 +1399,7 @@
         return [ s.replace('erp:', 'ERP '), false ];
     };
 
-    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin) {
+    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin, miscRemarks) {
         const that = this;
         const $box = $('#ladb_mcft_estimate', $slide);
         if ($box.length === 0) {
@@ -1414,7 +1414,11 @@
         $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
         rubyCallCommand('mcft_estimate',
                         { assembly_min: assemblyMin || '', overrides: overrides || {},
-                          size_min: sizeMin || {} },
+                          size_min: sizeMin || {},
+                          // null (not "") when the caller has no opinion, so
+                          // Ruby can tell "leave what the model remembers" from
+                          // "the person cleared the box".
+                          misc_remarks: (miscRemarks === undefined ? null : miscRemarks) },
                         function (response) {
             // Only refusals arrive here — a bad assembly time, or settings not
             // filled in. The estimate itself comes later, via the event.
@@ -1581,6 +1585,7 @@
     // one Recalculate reads the whole table and there is only one place to
     // type a time.
     LadbTabCutlist.prototype.mcftControls = function (d) {
+        const that = this;
         let warn = '';
         if (d && d.assembly_unsized) {
             warn = '<div style="color:#922;margin-top:6px;">' + d.assembly_unsized +
@@ -1588,7 +1593,30 @@
                    'LARGE. Name them ASMBL_L_… / ASMBL_M_… / ASMBL_S_… to price ' +
                    'them properly.</div>';
         }
-        return '<div class="no-print" style="margin-top:12px;padding-top:10px;' +
+        // WHAT MISCELLANEOUS ACTUALLY IS. Amit, 2026-08-24: "Steps 17 is
+        // whatever we can not typically fit into like removal of existing
+        // furniture or special shaping of parts. get me box where i can
+        // comment it as remarks to understand what miscellaneous is."
+        //
+        // A line called Miscellaneous with a number beside it and no words is
+        // a number nobody can defend a month later. It PRINTS — the .only-print
+        // span carries it onto the paper the input cannot, the same trick the
+        // editable time cells use — because the reader of a printed estimate is
+        // exactly the person who needs to know what the line was for.
+        const remarks = (d && d.misc_remarks) ? d.misc_remarks : '';
+        const remarksBlock =
+            '<div style="margin-top:12px;">' +
+            '<label for="ladb_mcft_misc_remarks" style="display:block;' +
+            'font-weight:600;margin-bottom:3px;">17. Miscellaneous — what is it?</label>' +
+            '<textarea id="ladb_mcft_misc_remarks" class="no-print" rows="2" ' +
+            'style="width:100%;" placeholder="e.g. removing the existing ' +
+            'wardrobe; special shaping of the sill">' + that.mcftEsc(remarks) +
+            '</textarea>' +
+            (remarks ? '<div class="only-print">' + that.mcftEsc(remarks) + '</div>' : '') +
+            '</div>';
+
+        return remarksBlock +
+               '<div class="no-print" style="margin-top:12px;padding-top:10px;' +
                'border-top:1px solid #e6e8eb;">' +
                '<button id="ladb_mcft_btn_recalc" class="btn btn-default">Recalculate</button> ' +
                '<span style="color:#777;">Quantities come from the model. Times ' +
@@ -1632,7 +1660,12 @@
                 if (!ov[op]) ov[op] = {};
                 ov[op][kind] = v;
             });
-            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov);
+            const $rem = $('#ladb_mcft_misc_remarks', that.$mcftBox);
+            // Sent even when EMPTY, deliberately: clearing the box has to mean
+            // the remark is gone. Omitting it would make an emptied field
+            // un-clearable, the same trap the per-row overrides hit.
+            const remarks = $rem.length ? $.trim($rem.val()) : null;
+            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov, null, remarks);
         });
     };
 
