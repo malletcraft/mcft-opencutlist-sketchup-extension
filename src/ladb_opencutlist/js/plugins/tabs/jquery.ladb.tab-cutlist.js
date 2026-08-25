@@ -1545,7 +1545,13 @@
                                 that.mcftEsc(c.name) + '</td>' +
                                 '<td style="color:#777;"></td>' +
                                 '<td ' + R + '>' + that.mcftEsc(c.qty) + '</td>' +
-                                cell(c.min_per_unit, c.min_editable, 'min', r.name, c.size) +
+                                // A child's wire TOKEN — "large" for a size,
+                                // "hinges" for a hardware type. Both travel as
+                                // min_<token> inside the parent's override, so
+                                // one mechanism carries both splits rather than
+                                // two that have to be kept in step.
+                                cell(c.min_per_unit, c.min_editable, 'min', r.name,
+                                     c.size || c.kind) +
                                 '<td ' + R + '>' + that.mcftEsc(c.hours) + '</td>' +
                                 '<td ' + R + '>' + that.mcftMoney(c.amount) + '</td>' +
                                 '<td></td></tr>';
@@ -1629,7 +1635,9 @@
                 const op = $i.data('op');
                 let kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
                 const size = $i.data('size');
-                if (size) kind = 'min_' + size;   // Assembly's per-size children
+                // Assembly's per-size children and Install Hardware's
+                // per-type children both arrive here as min_<token>.
+                if (size) kind = 'min_' + size;
                 if (!ov[op]) ov[op] = {};
                 ov[op][kind] = v;
             });
