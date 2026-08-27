@@ -42,6 +42,24 @@ module Ladb::OpenCutList
     ASSEMBLY_SIZE_RE = /\AASMBL[_\-]?([LMS])(?:[_\-]|\z)/i
     SIZE_OF = { 'L' => 'large', 'M' => 'medium', 'S' => 'small' }.freeze
 
+    # THE TOP-LEVEL MARKER. Amit, 2026-08-27, with the Outliner open beside
+    # the labour table: "Large / Medium / Small assemblies are not captured or
+    # identified correctly. Qualifier is TOp level component MCFT_ASMBL_L_
+    # MCFT_ASMBL_M_ MCFT_ASMBL_S_".
+    #
+    # Two faults with one cause. ASSEMBLY_RE anchors on ASMBL at the start of
+    # the name, so MCFT_ASMBL_M_BOOKCAB never matched — the real assembly was
+    # invisible — while the parts inside it (ASMBL_DRW_Box, ASMBL_Door_Loft_*,
+    # ASMBL_CARCASS_SHELF …) all matched, carried no size token, and were each
+    # counted as a LARGE assembly. A model holding two medium assemblies came
+    # out as ten large ones, and the estimate was priced on that.
+    #
+    # The MCFT_ prefix distinguishes the SKU from its own parts, so it is both
+    # the size qualifier and the top-level marker. The rule published on
+    # Estimate Settings has said MCFT_ASMBL_ since it was written; this
+    # matcher is what disagreed with it.
+    MCFT_ASSEMBLY_RE = /\AMCFT[_\-]?ASMBL[_\-]?(?:([LMS])(?:[_\-]|\z))?/i
+
     # into: :tab triggers an event the cutlist tab listens for, so the answer
     # lands in the estimate slide the user is already looking at. :dialog opens
     # the standalone printable window. The tab is the default because the
@@ -156,19 +174,35 @@ module Ladb::OpenCutList
 
     # The same instance count, split by the size token in the name.
     def _assembly_counts(model)
-      out = { 'large' => 0, 'medium' => 0, 'small' => 0, 'unsized' => 0 }
+      tops, bare = [], []
       model.definitions.each do |d|
-        next unless d.name =~ ASSEMBLY_RE
         next if d.image? || d.group?
         n = d.count_used_instances
-        m = ASSEMBLY_SIZE_RE.match(d.name)
-        if m
-          out[SIZE_OF[m[1].upcase]] += n
-        else
-          out['large'] += n
-          out['unsized'] += n
+        next if n <= 0
+        if (m = MCFT_ASSEMBLY_RE.match(d.name))
+          tok = m[1]
+          tops << [tok ? SIZE_OF[tok.upcase] : 'large', !tok.nil?, n]
+        elsif d.name =~ ASSEMBLY_RE
+          m2 = ASSEMBLY_SIZE_RE.match(d.name)
+          bare << [m2 ? SIZE_OF[m2[1].upcase] : 'large', !m2.nil?, n]
         end
       end
+
+      # TOP-LEVEL WINS OUTRIGHT when any is present. The parts inside an
+      # assembly are named ASMBL_* too, and counting them beside their parent
+      # is what turned two medium assemblies into ten large ones.
+      #
+      # The fallback is not laziness: every model drawn before this convention
+      # says plain ASMBL_WAR at top level with no MCFT_ prefix, and demanding
+      # the prefix outright would price those at zero assemblies without
+      # saying why.
+      chosen = tops.any? ? tops : bare
+      out = { 'large' => 0, 'medium' => 0, 'small' => 0, 'unsized' => 0 }
+      chosen.each do |size, sized, n|
+        out[size] += n
+        out['unsized'] += n unless sized
+      end
+      out['top_level'] = tops.any?
       out
     end
   end
