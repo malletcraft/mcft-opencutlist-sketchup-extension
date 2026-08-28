@@ -1466,13 +1466,32 @@
                     'and still need a rate: ' + that.mcftEsc(d.created_items.join(', ')) + '</div>';
         }
 
-        const rowsOf = function (list, cells) {
+        // rowAttrs is optional and exists for one reason. Amit, 2026-08-28:
+        // "not in erp line should be completetly highlighted in red." A red
+        // BADGE in the last column is a detail you find after you have already
+        // read the row and believed it; a red ROW is the thing you cannot miss
+        // while scanning, which is what a line excluded from the total needs
+        // to be. He reads this on a screen shared with a client.
+        //
+        // It returns a STYLE, not a Bootstrap class. `tr.danger` was the
+        // obvious answer and would have rendered nothing at all: OpenCutList
+        // ships a trimmed Bootstrap and ladb-opencutlist.min.css carries no
+        // tr.danger rule. Checked rather than assumed, because a class that
+        // silently does nothing is the exact failure this app keeps meeting —
+        // it would have looked done, shipped, and changed no pixel.
+        const rowsOf = function (list, cells, rowAttrs) {
             let out = '';
             for (let i = 0; i < list.length; i++) {
-                out += '<tr>' + cells(list[i]) + '</tr>';
+                const a = rowAttrs ? rowAttrs(list[i]) : '';
+                out += '<tr' + a + '>' + cells(list[i]) + '</tr>';
             }
             return out;
         };
+        // Bootstrap's own danger palette, written out because the rule is not
+        // in this stylesheet. The left bar is what carries at a glance down a
+        // column of twenty rows; the fill alone reads as a stripe.
+        const DANGER_ROW = ' style="background-color:#f2dede;color:#a94442;' +
+                           'font-weight:600;box-shadow:inset 4px 0 0 #a94442;"';
         const badgeCell = function (src) {
             const b = that.mcftBadge(src);
             return '<td><span class="label label-' + (b[1] ? 'danger' : 'default') + '">' +
@@ -1491,6 +1510,15 @@
                            '<td ' + R + '>' + that.mcftMoney(r.rate) + '</td>' +
                            '<td ' + R + '>' + (r.quotable ? that.mcftMoney(r.amount) : '&mdash;') + '</td>' +
                            badgeCell(r.source);
+                }, function (r) {
+                    // NOT QUOTABLE, not merely "not in erp". That is the set
+                    // the banner above already counts and the total already
+                    // leaves out — an item ERP has never heard of and one it
+                    // holds at no rate are the same fact to the person
+                    // reading: this line is missing from the number below.
+                    // Colouring only one of them would leave the other
+                    // silently excluded and looking priced.
+                    return r.quotable ? '' : DANGER_ROW;
                 }) + '</tbody></table>';
 
         html += '<h4>Labour &mdash; the 17 steps, through to installation</h4>' +
