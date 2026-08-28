@@ -1399,7 +1399,7 @@
         return [ s.replace('erp:', 'ERP '), false ];
     };
 
-    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin) {
+    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin, createMissing) {
         const that = this;
         const $box = $('#ladb_mcft_estimate', $slide);
         if ($box.length === 0) {
@@ -1414,7 +1414,12 @@
         $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
         rubyCallCommand('mcft_estimate',
                         { assembly_min: assemblyMin || '', overrides: overrides || {},
-                          size_min: sizeMin || {} },
+                          size_min: sizeMin || {},
+                          // Only ever true when the create button was pressed.
+                          // A Recalculate must not mint Items as a side effect
+                          // of looking at a number — creating a master is a
+                          // decision, not a refresh.
+                          create_missing: createMissing ? 1 : 0 },
                         function (response) {
             // Only refusals arrive here — a bad assembly time, or settings not
             // filled in. The estimate itself comes later, via the event.
@@ -1455,10 +1460,34 @@
         // total that quietly omits three boards looks like an answer and is
         // not one.
         if (Number(d.unpriced_lines) > 0) {
+            // The button sits IN the banner that reports the problem, not in
+            // the control strip at the bottom. Amit, 2026-08-29: "if a
+            // material is not in erp, give me a button so that it will be
+            // created in erp." The fix belongs where the fault is named —
+            // a remedy twenty rows below the complaint is one nobody
+            // connects to it.
+            //
+            // It is only offered when something is genuinely ABSENT. A line
+            // that exists in ERP and merely has no rate cannot be helped by
+            // creating it again, and a button that does nothing on half the
+            // rows it appears above teaches people to stop pressing it.
+            const missing = (d.materials || []).filter(function (r) {
+                return String(r.source || '') === 'not in erp';
+            }).length;
             html += '<div class="alert alert-danger" style="margin:0 0 10px;"><strong>' +
                     d.unpriced_lines + ' material line' + (d.unpriced_lines == 1 ? '' : 's') +
                     ' not priced in ERP</strong> &mdash; listed below and EXCLUDED from the ' +
-                    'total. Set a rate on the ' + that.mcftEsc(d.price_list) + ' price list.</div>';
+                    'total. Set a rate on the ' + that.mcftEsc(d.price_list) + ' price list.' +
+                    (missing > 0
+                        ? '<div style="margin-top:8px;">' +
+                          '<button id="ladb_mcft_btn_create" class="btn btn-danger">' +
+                          'Create ' + missing + ' missing material' +
+                          (missing == 1 ? '' : 's') + ' in ERP</button> ' +
+                          '<span style="color:#7a4b4b;">Creates the Item with its ' +
+                          'group, units and default store &mdash; never a rate. ' +
+                          'The line stays red until you price it.</span></div>'
+                        : '') +
+                    '</div>';
         }
         if ((d.created_items || []).length > 0) {
             html += '<div class="alert alert-warning" style="margin:0 0 10px;">' +
@@ -1670,6 +1699,17 @@
                 ov[op][kind] = v;
             });
             that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov);
+        });
+
+        // Same run, one flag different. Creating and then re-pricing in a
+        // single pass is deliberate: the person pressed a button because a
+        // number was wrong, and making them press Recalculate afterwards to
+        // find out whether it worked is a second step for no reason.
+        $('#ladb_mcft_btn_create').off('click').on('click', function () {
+            const $b = $(this);
+            $b.blur().prop('disabled', true).text('Creating in ERP\u2026');
+            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', {},
+                                   null, true);
         });
     };
 

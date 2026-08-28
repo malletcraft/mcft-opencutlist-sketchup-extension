@@ -158,6 +158,11 @@ module Ladb::OpenCutList
       mins = (settings['assembly_min'] || settings[:assembly_min]).to_s.strip
       overrides = settings['overrides'] || settings[:overrides]
       size_min = settings['size_min'] || settings[:size_min]
+      # Amit, 2026-08-29: "if a material is not in erp, give me a button so
+      # that it will be created in erp." Only ever true when the button sent
+      # it. A plain Recalculate must not mint Items as a side effect of
+      # looking at a number — creating masters is a decision, not a refresh.
+      create_missing = !!(settings['create_missing'] || settings[:create_missing])
       # to_f turns "ninety" into 0.0, and zero minutes is not a refusal — it
       # is an assembly line worth nothing, badged "edited here" so it reads
       # as deliberate. Anything that is not a positive number falls back to
@@ -170,7 +175,8 @@ module Ladb::OpenCutList
       McftEstimateWorker.new(site_url: s[:site_url], api_key: s[:api_key],
                              api_secret: s[:api_secret],
                              assembly_min: mins.empty? ? nil : mins.to_f,
-                             overrides: overrides, size_min: size_min).run
+                             overrides: overrides, size_min: size_min,
+                             create_missing: create_missing).run
     end
 
     # The remembered assembly minutes, so the slide can prefill its field.

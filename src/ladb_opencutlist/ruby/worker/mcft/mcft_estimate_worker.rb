@@ -66,7 +66,8 @@ module Ladb::OpenCutList
     # estimate screen is where Amit asked for this to live; the dialog remains
     # only because a print-only view is occasionally wanted.
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
-                   into: :tab, overrides: nil, size_min: nil)
+                   into: :tab, overrides: nil, size_min: nil,
+                   create_missing: false)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
@@ -79,6 +80,12 @@ module Ladb::OpenCutList
       @overrides = overrides
       # {"large" => 90, "medium" => 30, "small" => 15}
       @size_min = size_min
+      # Amit, 2026-08-29: "if a material is not in erp, give me a button so
+      # that it will be created in erp." Off unless the button was pressed —
+      # a recalculation must never mint Items as a side effect of looking at
+      # a number. The server has done the creating since 2026-08-22; nothing
+      # here had ever asked it to.
+      @create_missing = create_missing
     end
 
     def run
@@ -118,6 +125,7 @@ module Ladb::OpenCutList
       if @size_min.is_a?(Hash) && !@size_min.empty?
         payload['assembly_min_by_size'] = @size_min
       end
+      payload['create_missing'] = 1 if @create_missing
 
       uri = "#{@site_url}/api/method/mallet_estimator.api.estimate_preview"
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)
