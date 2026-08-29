@@ -7,6 +7,7 @@ module Ladb::OpenCutList
   require_relative '../worker/mcft/mcft_iso_worker'
   require_relative '../worker/mcft/mcft_estimate_store'
   require_relative '../worker/mcft/mcft_estimate_worker'
+  require_relative '../worker/mcft/mcft_create_materials_worker'
   require_relative '../worker/mcft/mcft_estimate_dialog'
 
   # MCFT — the ERPNext bridge. v0 is deliberately DIALOG-FREE: three commands
@@ -31,6 +32,7 @@ module Ladb::OpenCutList
       PLUGIN.register_command('mcft_settings') { |settings| _edit_settings }
       PLUGIN.register_command('mcft_estimate') { |settings| _estimate(settings) }
       PLUGIN.register_command('mcft_estimate_prefs') { |settings| _estimate_prefs }
+      PLUGIN.register_command('mcft_create_materials') { |settings| _create_materials(settings) }
     end
 
     def setup_menu(submenu)
@@ -158,11 +160,15 @@ module Ladb::OpenCutList
       mins = (settings['assembly_min'] || settings[:assembly_min]).to_s.strip
       overrides = settings['overrides'] || settings[:overrides]
       size_min = settings['size_min'] || settings[:size_min]
-      # Amit, 2026-08-29: "if a material is not in erp, give me a button so
-      # that it will be created in erp." Only ever true when the button sent
-      # it. A plain Recalculate must not mint Items as a side effect of
-      # looking at a number — creating masters is a decision, not a refresh.
-      create_missing = !!(settings['create_missing'] || settings[:create_missing])
+      # Re-price the LAST model scan rather than taking a new one. Amit,
+      # 2026-08-29: "one more button on the estimation page which will refresh
+      # cost data from erp ... withouth rerunning the estimate." After keying
+      # a rate at the desk the model has not moved, so walking it again only
+      # rebuilds the identical CSV.
+      #
+      # Creating Items is NOT reachable from here any more, by design. It has
+      # its own command below, so pricing has exactly one job.
+      reuse_scan = !!(settings['reuse_scan'] || settings[:reuse_scan])
       # to_f turns "ninety" into 0.0, and zero minutes is not a refusal — it
       # is an assembly line worth nothing, badged "edited here" so it reads
       # as deliberate. Anything that is not a positive number falls back to
@@ -176,7 +182,23 @@ module Ladb::OpenCutList
                              api_secret: s[:api_secret],
                              assembly_min: mins.empty? ? nil : mins.to_f,
                              overrides: overrides, size_min: size_min,
-                             create_missing: create_missing).run
+                             reuse_scan: reuse_scan).run
+    end
+
+    # Create the Items ERP has never heard of. Prices nothing, scans nothing.
+    #
+    # The codes come from the ROW the person clicked, or from every red row at
+    # once — the caller decides which, because "create all missing" and
+    # "create this one" are the same act on a different list, and giving them
+    # one command keeps them from drifting apart.
+    def _create_materials(settings = nil)
+      s = _guarded or return { :errors => [ 'MCFT settings are incomplete' ] }
+      settings = {} unless settings.is_a?(Hash)
+      codes = settings['codes'] || settings[:codes]
+      codes = [ codes ] if codes.is_a?(String)
+      return { :errors => [ 'no codes given' ] } unless codes.is_a?(Array) && codes.any?
+      McftCreateMaterialsWorker.new(site_url: s[:site_url], api_key: s[:api_key],
+                                    api_secret: s[:api_secret], codes: codes).run
     end
 
     # The remembered assembly minutes, so the slide can prefill its field.

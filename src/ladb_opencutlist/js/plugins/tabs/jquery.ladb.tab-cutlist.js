@@ -1399,7 +1399,7 @@
         return [ s.replace('erp:', 'ERP '), false ];
     };
 
-    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin, createMissing) {
+    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin, reuseScan) {
         const that = this;
         const $box = $('#ladb_mcft_estimate', $slide);
         if ($box.length === 0) {
@@ -1415,11 +1415,11 @@
         rubyCallCommand('mcft_estimate',
                         { assembly_min: assemblyMin || '', overrides: overrides || {},
                           size_min: sizeMin || {},
-                          // Only ever true when the create button was pressed.
-                          // A Recalculate must not mint Items as a side effect
-                          // of looking at a number — creating a master is a
-                          // decision, not a refresh.
-                          create_missing: createMissing ? 1 : 0 },
+                          // Re-price the LAST model scan instead of walking
+                          // the model again. Creating Items is not reachable
+                          // from this call at all any more — it has its own
+                          // command, so pricing has exactly one job.
+                          reuse_scan: reuseScan ? 1 : 0 },
                         function (response) {
             // Only refusals arrive here — a bad assembly time, or settings not
             // filled in. The estimate itself comes later, via the event.
@@ -1436,9 +1436,27 @@
             return;
         }
         if (d && d.error) {
-            $box.html('<div class="alert alert-danger" style="margin:0;">' +
+            // The note goes FIRST, and survives the failure. A create that
+            // worked followed by a re-price that did not must still say the
+            // Item was made — otherwise the only visible outcome is an error,
+            // and the person presses Create again on a row that already
+            // exists.
+            let head = '';
+            if (that.mcftCreateNote) {
+                head = that.mcftCreateNote;
+                that.mcftCreateNote = null;
+            }
+            $box.html(head + '<div class="alert alert-danger" style="margin:0;">' +
                       '<strong>ERPNext could not price this model.</strong> ' +
                       that.mcftEsc(d.error) + '</div>' + that.mcftControls(d));
+            // BOUND HERE TOO. It was not, and the buttons this branch draws
+            // did nothing at all: an estimate that failed left Recalculate on
+            // screen, looking live, with no handler on it — so the one action
+            // that could recover from the error was the one action that had
+            // been silently disconnected by it. Found 2026-08-29 while adding
+            // the create and refresh buttons, which would have inherited the
+            // same hole.
+            that.mcftBindControls();
             return;
         }
 
@@ -1481,18 +1499,23 @@
                     (missing > 0
                         ? '<div style="margin-top:8px;">' +
                           '<button id="ladb_mcft_btn_create" class="btn btn-danger">' +
-                          'Create ' + missing + ' missing material' +
+                          'Create all ' + missing + ' missing material' +
                           (missing == 1 ? '' : 's') + ' in ERP</button> ' +
                           '<span style="color:#7a4b4b;">Creates the Item with its ' +
                           'group, units and default store &mdash; never a rate. ' +
-                          'The line stays red until you price it.</span></div>'
+                          'The line stays red until you price it. Each row has ' +
+                          'its own button too.</span></div>'
                         : '') +
                     '</div>';
         }
-        if ((d.created_items || []).length > 0) {
-            html += '<div class="alert alert-warning" style="margin:0 0 10px;">' +
-                    d.created_items.length + ' new material(s) were added to ERP by this run ' +
-                    'and still need a rate: ' + that.mcftEsc(d.created_items.join(', ')) + '</div>';
+        // What the last CREATE did, carried across the re-price that follows
+        // it. The run itself no longer creates anything, so this can only
+        // come from a button — which is the point: the person pressed it and
+        // is owed a sentence about what happened, including the codes that
+        // were refused and why.
+        if (that.mcftCreateNote) {
+            html += that.mcftCreateNote;
+            that.mcftCreateNote = null;
         }
 
         // rowAttrs is optional and exists for one reason. Amit, 2026-08-28:
@@ -1531,14 +1554,30 @@
         html += '<h4 style="margin-top:0;">Material</h4>' +
                 '<table class="table table-bordered table-condensed"><thead><tr>' +
                 '<th>Item</th><th>Qty</th><th>UOM</th><th>Rate</th><th>Amount</th><th>Source</th>' +
+                '<th class="no-print"></th>' +
                 '</tr></thead><tbody>' +
                 rowsOf(mats, function (r) {
+                    // ONE BUTTON PER ROW, on the rows it can actually help.
+                    // Amit, 2026-08-29: "one to create all missing material
+                    // and one on each line."
+                    //
+                    // Offered only where the Item is ABSENT. A line ERP holds
+                    // at no rate is red for a different reason and creating it
+                    // again would do nothing — a button that no-ops on half
+                    // the red rows teaches people to stop pressing it, which
+                    // costs more than the button saves.
+                    const absent = String(r.source || '') === 'not in erp';
+                    const act = absent
+                        ? '<td class="no-print"><button class="btn btn-xs btn-danger ' +
+                          'mcft-create-one" data-code="' + that.mcftEsc(r.code) + '">' +
+                          'Create in ERP</button></td>'
+                        : '<td class="no-print"></td>';
                     return '<td>' + that.mcftEsc(r.code) + '</td>' +
                            '<td ' + R + '>' + that.mcftEsc(r.qty) + '</td>' +
                            '<td>' + that.mcftEsc(r.uom) + '</td>' +
                            '<td ' + R + '>' + that.mcftMoney(r.rate) + '</td>' +
                            '<td ' + R + '>' + (r.quotable ? that.mcftMoney(r.amount) : '&mdash;') + '</td>' +
-                           badgeCell(r.source);
+                           badgeCell(r.source) + act;
                 }, function (r) {
                     // NOT QUOTABLE, not merely "not in erp". That is the set
                     // the banner above already counts and the total already
@@ -1655,10 +1694,26 @@
         return '<div class="no-print" style="margin-top:12px;padding-top:10px;' +
                'border-top:1px solid #e6e8eb;">' +
                '<button id="ladb_mcft_btn_recalc" class="btn btn-default">Recalculate</button> ' +
+               // Amit, 2026-08-29: "one more button on the estimation page
+               // which will refresh cost data from erp so that i will get
+               // latest data withouth rerunning the estimate." The case is
+               // keying a rate at the desk with the client still sitting
+               // there — the model has not moved, so re-reading it is work
+               // done to rebuild an identical CSV.
+               //
+               // It is a SEPARATE button rather than a faster Recalculate
+               // because the two answer different questions. Recalculate says
+               // "what does this model cost now that I have changed it";
+               // refresh says "what does ERP say now about the model I
+               // already have". Merging them would silently make one of the
+               // two wrong whenever the model HAD changed.
+               '<button id="ladb_mcft_btn_refresh" class="btn btn-default">' +
+               'Refresh rates from ERP</button> ' +
                '<span style="color:#777;">Quantities come from the model. Times ' +
                'from step 7 down are yours to set, Assembly one line per size; ' +
                'Grooving\'s count is too. Only LARGE assemblies are ' +
-               'disassembled.</span>' + warn +
+               'disassembled. Refresh re-prices the same model without ' +
+               'reading it again &mdash; use it after keying a rate in ERP.</span>' + warn +
                '</div>';
     };
 
@@ -1679,38 +1734,130 @@
             // the estimate froze against its own model. Change a material,
             // recompute, and the minutes stayed at whatever the previous
             // render happened to show.
-            const ov = {};
-            $('.mcft-ov', that.$mcftBox).each(function () {
-                const $i = $(this);
-                const v = $.trim($i.val());
-                if (v === '') return;
-                // Compared as NUMBERS, not as text: the server sends 30 and
-                // the box may hold "30." or " 30" after a person has clicked
-                // through it, and none of those is an edit.
-                const seed = $.trim($i.attr('data-seed') || '');
-                if (seed !== '' && parseFloat(v) === parseFloat(seed)) return;
-                const op = $i.data('op');
-                let kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
-                const size = $i.data('size');
-                // Assembly's per-size children and Install Hardware's
-                // per-type children both arrive here as min_<token>.
-                if (size) kind = 'min_' + size;
-                if (!ov[op]) ov[op] = {};
-                ov[op][kind] = v;
-            });
-            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', ov);
+            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '',
+                                   that.mcftReadOverrides());
         });
 
-        // Same run, one flag different. Creating and then re-pricing in a
-        // single pass is deliberate: the person pressed a button because a
-        // number was wrong, and making them press Recalculate afterwards to
-        // find out whether it worked is a second step for no reason.
+        // A price refresh with no model read. Same overrides the table is
+        // showing, because a refresh must not silently discard minutes
+        // somebody typed thirty seconds ago.
+        $('#ladb_mcft_btn_refresh').off('click').on('click', function () {
+            $(this).blur();
+            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '',
+                                   that.mcftReadOverrides(), null, true);
+        });
+
+        // CREATE ALL, and CREATE ONE, are the same act on a different list —
+        // so they are one code path. Amit, 2026-08-29: "one to create all
+        // missing material and one on each line."
         $('#ladb_mcft_btn_create').off('click').on('click', function () {
             const $b = $(this);
+            const codes = [];
+            $('.mcft-create-one', that.$mcftBox).each(function () {
+                codes.push($(this).data('code'));
+            });
             $b.blur().prop('disabled', true).text('Creating in ERP\u2026');
-            that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '', {},
-                                   null, true);
+            that.mcftCreateMaterials(codes);
         });
+
+        $('.mcft-create-one', that.$mcftBox).off('click').on('click', function () {
+            const $b = $(this);
+            $b.blur().prop('disabled', true).text('Creating\u2026');
+            that.mcftCreateMaterials([ $b.data('code') ]);
+        });
+    };
+
+    // What a person has actually CHANGED in the labour table, read off the
+    // screen. Factored out of the Recalculate handler because the refresh
+    // button needs exactly the same reading — a refresh that dropped typed
+    // minutes would look like the estimate quietly undoing someone's work.
+    LadbTabCutlist.prototype.mcftReadOverrides = function () {
+        const that = this;
+        const ov = {};
+        $('.mcft-ov', that.$mcftBox).each(function () {
+            const $i = $(this);
+            const v = $.trim($i.val());
+            if (v === '') return;
+            // Compared as NUMBERS: the server sends 30 and the box may hold
+            // "30." or " 30" after a click through it, and none of those is
+            // an edit.
+            const seed = $.trim($i.attr('data-seed') || '');
+            if (seed !== '' && parseFloat(v) === parseFloat(seed)) return;
+            const op = $i.data('op');
+            let kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
+            const size = $i.data('size');
+            // Assembly's per-size children and Install Hardware's per-type
+            // children both arrive here as min_<token>.
+            if (size) kind = 'min_' + size;
+            if (!ov[op]) ov[op] = {};
+            ov[op][kind] = v;
+        });
+        return ov;
+    };
+
+    LadbTabCutlist.prototype.mcftCreateMaterials = function (codes) {
+        const that = this;
+        rubyCallCommand('mcft_create_materials', { codes: codes || [] },
+                        function (response) {
+            // Only refusals arrive here — no settings, no codes. The outcome
+            // comes back through the mcft_materials_created event.
+            if (response && response.errors && response.errors.length > 0) {
+                that.mcftCreateNote =
+                    '<div class="alert alert-danger" style="margin:0 0 10px;">' +
+                    '<strong>Could not create.</strong> ' +
+                    that.mcftEsc(response.errors.join(', ')) + '</div>';
+                that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '',
+                                       that.mcftReadOverrides(), null, true);
+            }
+        });
+    };
+
+    // The answer to a create, turned into a sentence and then followed by a
+    // re-price. Re-pricing is not optional: the person pressed the button
+    // because a number was wrong, and leaving them to press Refresh
+    // afterwards to find out whether it worked is a second step for no
+    // reason. It reuses the cached scan, so it costs one HTTP call.
+    LadbTabCutlist.prototype.mcftMaterialsCreated = function (d) {
+        const that = this;
+        d = d || {};
+        let note;
+        if (d.error) {
+            note = '<div class="alert alert-danger" style="margin:0 0 10px;">' +
+                   '<strong>Could not create in ERP.</strong> ' +
+                   that.mcftEsc(d.error) + '</div>';
+        } else {
+            const made = d.created || [], had = d.existed || [], bad = d.failed || {};
+            const badCodes = Object.keys(bad);
+            let body = '';
+            if (made.length > 0) {
+                body += '<strong>' + made.length + ' material' +
+                        (made.length == 1 ? '' : 's') + ' created in ERP</strong> ' +
+                        '&mdash; still unrated, so the line stays red until you ' +
+                        'price it: ' + that.mcftEsc(made.join(', '));
+            }
+            // Reported rather than swallowed. "Already there" after pressing
+            // Create is a surprise worth a sentence — it usually means the
+            // Item exists under a code the model spells differently.
+            if (had.length > 0) {
+                body += (body ? '<br>' : '') + had.length + ' already existed: ' +
+                        that.mcftEsc(had.join(', '));
+            }
+            if (badCodes.length > 0) {
+                body += (body ? '<br>' : '') + '<strong>' + badCodes.length +
+                        ' refused:</strong> ' + that.mcftEsc(badCodes.map(function (c) {
+                            return c + ' (' + bad[c] + ')';
+                        }).join('; '));
+            }
+            if (body === '') {
+                body = 'Nothing to create.';
+            }
+            note = '<div class="alert alert-' +
+                   (badCodes.length > 0 ? 'danger' : 'warning') +
+                   '" style="margin:0 0 10px;">' + body + '</div>';
+        }
+        that.mcftCreateNote = note;
+        that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '',
+                               that.mcftReadOverrides(), null, true);
     };
 
     LadbTabCutlist.prototype.generateEstimate = function (partIds, context, estimateOptions, callback) {
@@ -6971,6 +7118,10 @@
         // listener on every estimate run and render the answer many times.
         addEventCallback('mcft_estimate_ready', function (params) {
             that.mcftRender(params);
+        });
+
+        addEventCallback('mcft_materials_created', function (params) {
+            that.mcftMaterialsCreated(params);
         });
 
         addEventCallback([ 'on_new_model', 'on_open_model', 'on_activate_model' ], function (params) {

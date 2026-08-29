@@ -65,9 +65,34 @@ module Ladb::OpenCutList
     # the standalone printable window. The tab is the default because the
     # estimate screen is where Amit asked for this to live; the dialog remains
     # only because a print-only view is occasionally wanted.
+    # THE LAST MODEL SCAN, kept so a price refresh does not need another one.
+    #
+    # Amit, 2026-08-29: "one more button on the estimation page which will
+    # refresh cost data from erp so that i will get latest data withouth
+    # rerunning the estimate." The expensive half of a run is
+    # CutlistGenerateWorker walking the model; the half he wants repeated is
+    # the POST. After keying a rate in ERP the model has not changed, so
+    # re-reading it is work done to produce the identical CSV.
+    #
+    # Deliberately NOT persisted to the .skp. Amit, 2026-08-24, on storing
+    # labour in the model: "it defeats purpose of live estimation." The same
+    # objection applies here — a cached scan that outlived the session would
+    # re-price a selection nobody is looking at any more. This lives for as
+    # long as SketchUp is open and no longer, and a refresh with nothing
+    # cached falls back to a full run rather than refusing.
+    @@last_scan = nil
+
+    def self.last_scan
+      @@last_scan
+    end
+
+    def self.forget_scan
+      @@last_scan = nil
+    end
+
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
                    into: :tab, overrides: nil, size_min: nil,
-                   create_missing: false)
+                   reuse_scan: false)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
@@ -80,30 +105,50 @@ module Ladb::OpenCutList
       @overrides = overrides
       # {"large" => 90, "medium" => 30, "small" => 15}
       @size_min = size_min
-      # Amit, 2026-08-29: "if a material is not in erp, give me a button so
-      # that it will be created in erp." Off unless the button was pressed —
-      # a recalculation must never mint Items as a side effect of looking at
-      # a number. The server has done the creating since 2026-08-22; nothing
-      # here had ever asked it to.
-      @create_missing = create_missing
+      # THIS RUN CREATES NOTHING, and cannot be asked to.
+      #
+      # It used to carry a create_missing flag, set only when the red banner's
+      # button was pressed. That was already safe — a plain Recalculate never
+      # minted an Item — but it made creating a rider on a full re-price, so
+      # the only way to add one Item was to re-run the whole estimate and read
+      # back an answer nobody had asked for. Amit, 2026-08-29: "give me a
+      # button to create material in erp. dont directly create on run."
+      #
+      # Creating now has its own worker and its own endpoint, and pricing has
+      # no opinion about it. One path, not two.
+      # Re-price the LAST scan instead of taking a new one. The overrides and
+      # assembly minutes still come from the screen being looked at — it is
+      # the model reading that is reused, never the answer.
+      @reuse_scan = reuse_scan
     end
 
     def run
       model = Sketchup.active_model
       return { :errors => ['no model open'] } unless model
 
-      cutlist = CutlistGenerateWorker.new(part_folding: false).run
-      return { :errors => cutlist.errors } if cutlist.errors.any?
+      if @reuse_scan && @@last_scan
+        # A refresh answers "what does ERP say NOW about the same model",
+        # so the scan is copied rather than shared: the overrides written
+        # onto it below belong to this run only.
+        payload = @@last_scan.dup
+      else
+        cutlist = CutlistGenerateWorker.new(part_folding: false).run
+        return { :errors => cutlist.errors } if cutlist.errors.any?
 
-      csv = McftPushWorker.parts_csv(cutlist)
-      payload = {
-        'csv_content' => csv,
-        # Counted HERE, from the model, because OpenCutList reports a PART's
-        # name and not the assembly that contains it — the server can only see
-        # what the CSV carries. The model is the one place that knows.
-        'assembly_count' => _assembly_count(model),
-        'assembly_counts' => _assembly_counts(model),
-      }
+        csv = McftPushWorker.parts_csv(cutlist)
+        payload = {
+          'csv_content' => csv,
+          # Counted HERE, from the model, because OpenCutList reports a PART's
+          # name and not the assembly that contains it — the server can only see
+          # what the CSV carries. The model is the one place that knows.
+          'assembly_count' => _assembly_count(model),
+          'assembly_counts' => _assembly_counts(model),
+        }
+        # Cached BEFORE the per-run fields are added, so a later refresh
+        # starts from the model reading alone and not from somebody else's
+        # typed minutes.
+        @@last_scan = payload.dup
+      end
       # NOTHING IS REMEMBERED HERE, and that is now the design.
       #
       # This used to read typed minutes back out of the .skp and merge them
@@ -125,7 +170,6 @@ module Ladb::OpenCutList
       if @size_min.is_a?(Hash) && !@size_min.empty?
         payload['assembly_min_by_size'] = @size_min
       end
-      payload['create_missing'] = 1 if @create_missing
 
       uri = "#{@site_url}/api/method/mallet_estimator.api.estimate_preview"
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)
