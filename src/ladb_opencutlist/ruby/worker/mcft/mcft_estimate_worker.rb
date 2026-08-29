@@ -196,6 +196,11 @@ module Ladb::OpenCutList
     private
 
     def _deliver(data)
+      # The site the numbers came from, as a URL a browser can open.
+      # frappe.local.site is a HOSTNAME, and the row-level "open this Item"
+      # link needs a scheme — the plugin is the only side that holds the
+      # configured URL, so it is the side that adds it.
+      data['site_url'] = @site_url if data.is_a?(Hash)
       if @into == :dialog
         McftEstimateDialog.show(data)
       else

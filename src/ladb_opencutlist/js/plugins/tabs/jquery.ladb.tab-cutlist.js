@@ -1566,12 +1566,31 @@
                     // again would do nothing — a button that no-ops on half
                     // the red rows teaches people to stop pressing it, which
                     // costs more than the button saves.
+                    //
+                    // A row that EXISTS but carries no rate gets a link to
+                    // the Item instead. Amit, 2026-08-29, choosing this over
+                    // leaving the cell empty: both rows are red, both are
+                    // excluded from the total, and only one of them was
+                    // offering a way forward. Create cannot help this one —
+                    // the Item is already there — but keying the rate can,
+                    // and the fastest route to that is the Item itself.
                     const absent = String(r.source || '') === 'not in erp';
-                    const act = absent
-                        ? '<td class="no-print"><button class="btn btn-xs btn-danger ' +
-                          'mcft-create-one" data-code="' + that.mcftEsc(r.code) + '">' +
-                          'Create in ERP</button></td>'
-                        : '<td class="no-print"></td>';
+                    let act = '<td class="no-print"></td>';
+                    if (absent) {
+                        act = '<td class="no-print"><button class="btn btn-xs btn-danger ' +
+                              'mcft-create-one" data-code="' + that.mcftEsc(r.code) + '">' +
+                              'Create in ERP</button></td>';
+                    } else if (!r.quotable && r.item_code && d.site_url) {
+                        // Guarded on all three: an unrated row we cannot name
+                        // an Item for, or a site we hold no URL for, gets no
+                        // link rather than a dead one. A button that opens
+                        // nothing is worse than no button.
+                        act = '<td class="no-print"><a class="btn btn-xs btn-warning" ' +
+                              'target="_blank" href="' +
+                              that.mcftEsc(d.site_url + '/app/item/' +
+                                           encodeURIComponent(r.item_code)) +
+                              '">Set rate in ERP</a></td>';
+                    }
                     return '<td>' + that.mcftEsc(r.code) + '</td>' +
                            '<td ' + R + '>' + that.mcftEsc(r.qty) + '</td>' +
                            '<td>' + that.mcftEsc(r.uom) + '</td>' +
