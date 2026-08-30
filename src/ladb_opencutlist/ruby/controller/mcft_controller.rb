@@ -182,7 +182,12 @@ module Ladb::OpenCutList
                              api_secret: s[:api_secret],
                              assembly_min: mins.empty? ? nil : mins.to_f,
                              overrides: overrides, size_min: size_min,
-                             reuse_scan: reuse_scan).run
+                             reuse_scan: reuse_scan,
+                             # The BOUND SKU, so the server can resolve the
+                             # décor slots. Without it the preview prices the
+                             # placeholders — on a real wardrobe that read 47%
+                             # high while reporting nothing wrong (2026-08-30).
+                             sku: s[:sku]).run
     end
 
     # Create the Items ERP has never heard of. Prices nothing, scans nothing.

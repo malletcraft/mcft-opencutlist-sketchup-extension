@@ -92,7 +92,7 @@ module Ladb::OpenCutList
 
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
                    into: :tab, overrides: nil, size_min: nil,
-                   reuse_scan: false)
+                   reuse_scan: false, sku: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
@@ -116,6 +116,13 @@ module Ladb::OpenCutList
       #
       # Creating now has its own worker and its own endpoint, and pricing has
       # no opinion about it. One path, not two.
+      # The SKU this model is bound to. It is the only thing that knows which
+      # real laminate the abstract slot `a` means, and the server resolves
+      # against its décor map. Blank is allowed and honest: the placeholder
+      # stays a placeholder and comes back marked unpriced, rather than being
+      # costed off a stale stub Item that happens to carry a rate.
+      @sku = sku
+
       # Re-price the LAST scan instead of taking a new one. The overrides and
       # assembly minutes still come from the screen being looked at — it is
       # the model reading that is reused, never the answer.
@@ -170,6 +177,8 @@ module Ladb::OpenCutList
       if @size_min.is_a?(Hash) && !@size_min.empty?
         payload['assembly_min_by_size'] = @size_min
       end
+
+      payload['sku'] = @sku unless @sku.to_s.strip.empty?
 
       uri = "#{@site_url}/api/method/mallet_estimator.api.estimate_preview"
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)
