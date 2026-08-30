@@ -92,7 +92,8 @@ module Ladb::OpenCutList
 
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
                    into: :tab, overrides: nil, size_min: nil,
-                   reuse_scan: false, sku: nil)
+                   reuse_scan: false, sku: nil,
+                   trip_qty: nil, trip_rate: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
@@ -122,6 +123,11 @@ module Ladb::OpenCutList
       # stays a placeholder and comes back marked unpriced, rather than being
       # costed off a stale stub Item that happens to carry a rate.
       @sku = sku
+      # Typed trip counts and rates. The SERVER decides what it accepts; the
+      # rate itself is never stored here, and never in this repo — trip costs
+      # are sensitive and live in Estimate Settings on the site.
+      @trip_qty = trip_qty
+      @trip_rate = trip_rate
 
       # Re-price the LAST scan instead of taking a new one. The overrides and
       # assembly minutes still come from the screen being looked at — it is
@@ -179,6 +185,8 @@ module Ladb::OpenCutList
       end
 
       payload['sku'] = @sku unless @sku.to_s.strip.empty?
+      payload['trip_qty'] = @trip_qty if @trip_qty.is_a?(Hash) && !@trip_qty.empty?
+      payload['trip_rate'] = @trip_rate if @trip_rate.is_a?(Hash) && !@trip_rate.empty?
 
       uri = "#{@site_url}/api/method/mallet_estimator.api.estimate_preview"
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)

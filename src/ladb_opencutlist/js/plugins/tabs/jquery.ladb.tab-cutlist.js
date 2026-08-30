@@ -1412,9 +1412,14 @@
         // is clicked again — the field would be lying about its own meaning.
         that.mcftAssemblyMin = assemblyMin || '';
         $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
+        const trips = that.$mcftBox ? that.mcftReadTrips() : { qty: {}, rate: {} };
         rubyCallCommand('mcft_estimate',
                         { assembly_min: assemblyMin || '', overrides: overrides || {},
                           size_min: sizeMin || {},
+                          // Typed trip counts and rates survive a Recalculate
+                          // and a Refresh — a table that forgot them would be
+                          // worse than not offering the edit.
+                          trip_qty: trips.qty, trip_rate: trips.rate,
                           // Re-price the LAST model scan instead of walking
                           // the model again. Creating Items is not reachable
                           // from this call at all any more — it has its own
@@ -1686,6 +1691,68 @@
                 ' style="color:#777;">' + that.mcftEsc(d.days) + '</td></tr>' +
                 '</table>';
 
+        // LOGISTICS — the trips one planned execution needs.
+        //
+        // Amit, 2026-08-30: "Below trips are required in a estimate of skus
+        // within one planned execution for each work order. Show this and
+        // make quantity and rate both editable under head logistics."
+        //
+        // Its own subtotal, deliberately NOT folded into the article total
+        // above. A tempo carries the boards for every SKU in the execution,
+        // so adding it into one wardrobe's figure would bill the same trip
+        // once per wardrobe. The Estimate consolidates them; this says what
+        // the execution costs beside what the article costs.
+        const logi = d.logistics || [];
+        if (logi.length > 0) {
+            html += '<h4>Logistics &mdash; trips for this execution</h4>';
+            if ((d.logistics_unset || []).length > 0) {
+                html += '<div class="alert alert-danger" style="margin:0 0 10px;">' +
+                        '<strong>' + d.logistics_unset.length + ' trip rate' +
+                        (d.logistics_unset.length == 1 ? '' : 's') + ' not set in ERP</strong> ' +
+                        '&mdash; excluded from the logistics subtotal: ' +
+                        that.mcftEsc(d.logistics_unset.join(', ')) +
+                        '. Key them in Estimate Settings, or type a rate here for this run.</div>';
+            }
+            html += '<table class="table table-bordered table-condensed"><thead><tr>' +
+                    '<th>Trip</th><th>Trips</th><th>Rate</th><th>Amount</th><th>Source</th>' +
+                    '</tr></thead><tbody>' +
+                    rowsOf(logi, function (r) {
+                        // Both columns are inputs, because Amit asked for both
+                        // to be editable. data-seed carries what the server
+                        // sent, so an untouched box is not mistaken for an
+                        // override — the same trap the labour table hit when
+                        // every pre-filled row came back as "edited here".
+                        const box = function (kind, val) {
+                            return '<td ' + R + '><input type="text" ' +
+                                   'class="mcft-trip mcft-trip-' + kind + ' no-print" ' +
+                                   'data-trip="' + that.mcftEsc(r.trip) + '" ' +
+                                   'data-seed="' + that.mcftEsc(val) + '" ' +
+                                   'style="width:70px;text-align:right;" value="' +
+                                   that.mcftEsc(val) + '"><span class="only-print">' +
+                                   that.mcftEsc(val) + '</span></td>';
+                        };
+                        const edited = (r.qty_source === 'edited here' ||
+                                        r.rate_source === 'edited here');
+                        return '<td>' + that.mcftEsc(r.name) + '</td>' +
+                               box('qty', r.qty) + box('rate', r.rate) +
+                               '<td ' + R + '>' + (r.quotable ? that.mcftMoney(r.amount) : '&mdash;') + '</td>' +
+                               '<td><span class="label label-' +
+                               (r.quotable ? (edited ? 'info' : 'default') : 'danger') + '">' +
+                               that.mcftEsc(r.quotable ? (edited ? 'edited here' : r.rate_source)
+                                                       : 'rate not set') + '</span></td>';
+                    }, function (r) {
+                        return r.quotable ? '' : DANGER_ROW;
+                    }) +
+                    '</tbody><tfoot><tr>' +
+                    '<th>Logistics subtotal</th><th></th><th></th>' +
+                    '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
+                    that.mcftMoney(d.logistics_total) + '</th><th></th>' +
+                    '</tr></tfoot></table>' +
+                    '<p style="color:#777;font-size:11px;">Shared across every SKU in ' +
+                    'this execution &mdash; counted once on the Estimate, not once per ' +
+                    'article, so it is NOT inside the total above.</p>';
+        }
+
         html += '<p style="color:#777;font-size:11px;">A GAUGE, not a quotation. Excludes: ' +
                 that.mcftEsc((d.excludes || []).join(', ')) + '. Every rate here comes from ' +
                 'ERPNext &mdash; the plugin\'s own material prices are not used.</p>';
@@ -1812,6 +1879,24 @@
             ov[op][kind] = v;
         });
         return ov;
+    };
+
+    // What a person typed into the Logistics table. Same contract as the
+    // labour reader above: only CHANGED boxes travel, compared as numbers, so
+    // clicking through a field is not an override.
+    LadbTabCutlist.prototype.mcftReadTrips = function () {
+        const that = this;
+        const qty = {}, rate = {};
+        $('.mcft-trip', that.$mcftBox).each(function () {
+            const $i = $(this);
+            const v = $.trim($i.val());
+            if (v === '') return;
+            const seed = $.trim($i.attr('data-seed') || '');
+            if (seed !== '' && parseFloat(v) === parseFloat(seed)) return;
+            const t = $i.data('trip');
+            if ($i.hasClass('mcft-trip-qty')) { qty[t] = v; } else { rate[t] = v; }
+        });
+        return { qty: qty, rate: rate };
     };
 
     LadbTabCutlist.prototype.mcftCreateMaterials = function (codes) {

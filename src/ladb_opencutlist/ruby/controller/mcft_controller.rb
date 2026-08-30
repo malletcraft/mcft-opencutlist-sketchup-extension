@@ -169,6 +169,8 @@ module Ladb::OpenCutList
       # Creating Items is NOT reachable from here any more, by design. It has
       # its own command below, so pricing has exactly one job.
       reuse_scan = !!(settings['reuse_scan'] || settings[:reuse_scan])
+      trip_qty = settings['trip_qty'] || settings[:trip_qty]
+      trip_rate = settings['trip_rate'] || settings[:trip_rate]
       # to_f turns "ninety" into 0.0, and zero minutes is not a refusal — it
       # is an assembly line worth nothing, badged "edited here" so it reads
       # as deliberate. Anything that is not a positive number falls back to
@@ -187,7 +189,8 @@ module Ladb::OpenCutList
                              # décor slots. Without it the preview prices the
                              # placeholders — on a real wardrobe that read 47%
                              # high while reporting nothing wrong (2026-08-30).
-                             sku: s[:sku]).run
+                             sku: s[:sku],
+                             trip_qty: trip_qty, trip_rate: trip_rate).run
     end
 
     # Create the Items ERP has never heard of. Prices nothing, scans nothing.
