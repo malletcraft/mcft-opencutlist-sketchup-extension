@@ -1513,6 +1513,24 @@
                         : '') +
                     '</div>';
         }
+        // A GROUPED cut list understates hardware, and must say so where the
+        // number is read. Hardware quantity is OpenCutList's Qty — the row
+        // count, what you buy — so a row standing for 24 MiniFix reports 1.
+        // The saved import refuses such a CSV outright; the preview is a
+        // gauge, so it prices and shouts.
+        const gh = d.grouped_hardware || [];
+        if (gh.length > 0) {
+            html += '<div class="alert alert-danger" style="margin:0 0 10px;">' +
+                    '<strong>Grouped cut list &mdash; hardware is UNDERSTATED.</strong> ' +
+                    gh.length + ' hardware line(s) put several pieces on one row, ' +
+                    'so the quantity below counts rows, not pieces: ' +
+                    that.mcftEsc(gh.map(function (h) {
+                        return h.code + ' (' + h.rows + ' row' + (h.rows == 1 ? '' : 's') +
+                               ', ' + h.pieces + ' pieces)';
+                    }).join(', ')) +
+                    '. Re-export the part list with grouping OFF.</div>';
+        }
+
         // What the last CREATE did, carried across the re-price that follows
         // it. The run itself no longer creates anything, so this can only
         // come from a button — which is the point: the person pressed it and
