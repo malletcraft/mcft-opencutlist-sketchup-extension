@@ -1411,8 +1411,20 @@
         // use the standard" into an explicit override the moment Recalculate
         // is clicked again — the field would be lying about its own meaning.
         that.mcftAssemblyMin = assemblyMin || '';
+
+        // READ BEFORE THE WIPE. The line below replaces the whole box with
+        // "Asking ERPNext…", which destroys every input in it — so reading
+        // the trip boxes afterwards found nothing and sent an empty override
+        // on every Recalculate. Amit, 2026-08-31: "When i change trip count
+        // and recalculate, it does not show change on same screen."
+        //
+        // Labour edits escaped this only by luck: the Recalculate handler
+        // reads them before calling in here. Anything read inside this
+        // function had to move above the wipe.
+        that.mcftRecordTrips();
+        const trips = that.mcftEdits.trips;
+
         $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
-        const trips = that.$mcftBox ? that.mcftReadTrips() : { qty: {}, rate: {} };
         rubyCallCommand('mcft_estimate',
                         { assembly_min: assemblyMin || '', overrides: overrides || {},
                           size_min: sizeMin || {},
@@ -1875,46 +1887,96 @@
     // screen. Factored out of the Recalculate handler because the refresh
     // button needs exactly the same reading — a refresh that dropped typed
     // minutes would look like the estimate quietly undoing someone's work.
+    // Labour edits, on the same persistent record as the trips and for the
+    // same reason: the server echoes an accepted override, the re-render
+    // seeds the box with it, and the next Recalculate would read the box as
+    // unchanged and quietly drop it. Amit, 2026-08-31: "Check and Fix it for
+    // all." This is the "all".
     LadbTabCutlist.prototype.mcftReadOverrides = function () {
         const that = this;
-        const ov = {};
+        const ov = that.mcftEditStore().ops;
+        if (!that.$mcftBox || that.$mcftBox.length === 0) {
+            return ov;
+        }
         $('.mcft-ov', that.$mcftBox).each(function () {
             const $i = $(this);
-            const v = $.trim($i.val());
-            if (v === '') return;
-            // Compared as NUMBERS: the server sends 30 and the box may hold
-            // "30." or " 30" after a click through it, and none of those is
-            // an edit.
-            const seed = $.trim($i.attr('data-seed') || '');
-            if (seed !== '' && parseFloat(v) === parseFloat(seed)) return;
             const op = $i.data('op');
-            let kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
             const size = $i.data('size');
+            let kind = $i.hasClass('mcft-ov-qty') ? 'qty' : 'min';
             // Assembly's per-size children and Install Hardware's per-type
             // children both arrive here as min_<token>.
             if (size) kind = 'min_' + size;
+            const v = $.trim($i.val());
+            if (v === '') {
+                // Emptied on purpose: back to ERP's standard, and the only
+                // way to get back to one.
+                if (ov[op]) {
+                    delete ov[op][kind];
+                    if ($.isEmptyObject(ov[op])) delete ov[op];
+                }
+                return;
+            }
+            const seed = $.trim($i.attr('data-seed') || '');
+            const held = ov[op] && ov[op].hasOwnProperty(kind);
+            // Compared as NUMBERS: the server sends 30 and the box may hold
+            // "30." or " 30" after a click through it, and none of those is
+            // an edit.
+            if (seed !== '' && parseFloat(v) === parseFloat(seed) && !held) {
+                return;
+            }
             if (!ov[op]) ov[op] = {};
             ov[op][kind] = v;
         });
         return ov;
     };
 
-    // What a person typed into the Logistics table. Same contract as the
-    // labour reader above: only CHANGED boxes travel, compared as numbers, so
-    // clicking through a field is not an override.
-    LadbTabCutlist.prototype.mcftReadTrips = function () {
+    // WHAT THE PERSON HAS TYPED, kept OUTSIDE the DOM.
+    //
+    // Deriving overrides from the boxes on every send cannot work, and the
+    // reason is worth stating because it looked fine for a week. The server
+    // ECHOES an accepted override back, and the re-render seeds the box with
+    // what the server sent — so on the next Recalculate the box equals its
+    // own seed, reads as "unchanged", is not sent, and the value silently
+    // reverts to the standard. An edit survived exactly one round trip.
+    //
+    // So the record is the truth and the boxes are a view of it. A typed
+    // value stays until the person clears the box, which is the only thing
+    // that means "go back to the standard".
+    LadbTabCutlist.prototype.mcftEditStore = function () {
         const that = this;
-        const qty = {}, rate = {};
+        if (!that.mcftEdits) {
+            that.mcftEdits = { trips: { qty: {}, rate: {} }, ops: {} };
+        }
+        return that.mcftEdits;
+    };
+
+    LadbTabCutlist.prototype.mcftRecordTrips = function () {
+        const that = this;
+        const store = that.mcftEditStore().trips;
+        if (!that.$mcftBox || that.$mcftBox.length === 0) {
+            return store;
+        }
         $('.mcft-trip', that.$mcftBox).each(function () {
             const $i = $(this);
-            const v = $.trim($i.val());
-            if (v === '') return;
-            const seed = $.trim($i.attr('data-seed') || '');
-            if (seed !== '' && parseFloat(v) === parseFloat(seed)) return;
             const t = $i.data('trip');
-            if ($i.hasClass('mcft-trip-qty')) { qty[t] = v; } else { rate[t] = v; }
+            const into = $i.hasClass('mcft-trip-qty') ? store.qty : store.rate;
+            const v = $.trim($i.val());
+            if (v === '') {
+                // An emptied box is a deliberate "use the standard", and the
+                // only way back to one.
+                delete into[t];
+                return;
+            }
+            const seed = $.trim($i.attr('data-seed') || '');
+            // Compared as NUMBERS: the server sends 3 and the box may hold
+            // "3." or " 3" after a click through it, and neither is an edit.
+            if (seed !== '' && parseFloat(v) === parseFloat(seed)
+                && !into.hasOwnProperty(t)) {
+                return;
+            }
+            into[t] = v;
         });
-        return { qty: qty, rate: rate };
+        return store;
     };
 
     LadbTabCutlist.prototype.mcftCreateMaterials = function (codes) {
