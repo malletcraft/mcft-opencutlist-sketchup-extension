@@ -171,6 +171,9 @@ module Ladb::OpenCutList
       reuse_scan = !!(settings['reuse_scan'] || settings[:reuse_scan])
       trip_qty = settings['trip_qty'] || settings[:trip_qty]
       trip_rate = settings['trip_rate'] || settings[:trip_rate]
+      # What Miscellaneous covers, in the estimator's own words. The server
+      # has accepted this since 2026-08-24; nothing sent one until now.
+      misc_remarks = settings['misc_remarks'] || settings[:misc_remarks]
       # to_f turns "ninety" into 0.0, and zero minutes is not a refusal — it
       # is an assembly line worth nothing, badged "edited here" so it reads
       # as deliberate. Anything that is not a positive number falls back to
@@ -190,7 +193,8 @@ module Ladb::OpenCutList
                              # placeholders — on a real wardrobe that read 47%
                              # high while reporting nothing wrong (2026-08-30).
                              sku: s[:sku],
-                             trip_qty: trip_qty, trip_rate: trip_rate).run
+                             trip_qty: trip_qty, trip_rate: trip_rate,
+                             misc_remarks: misc_remarks).run
     end
 
     # Create the Items ERP has never heard of. Prices nothing, scans nothing.

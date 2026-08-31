@@ -1422,6 +1422,7 @@
         // reads them before calling in here. Anything read inside this
         // function had to move above the wipe.
         that.mcftRecordTrips();
+        const misc = that.mcftRecordMisc();
         const trips = that.mcftEditStore().trips;
 
         $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
@@ -1432,6 +1433,7 @@
                           // and a Refresh — a table that forgot them would be
                           // worse than not offering the edit.
                           trip_qty: trips.qty, trip_rate: trips.rate,
+                          misc_remarks: misc,
                           // Re-price the LAST model scan instead of walking
                           // the model again. Creating Items is not reachable
                           // from this call at all any more — it has its own
@@ -1721,6 +1723,29 @@
                 ' style="color:#777;">' + that.mcftEsc(d.days) + '</td></tr>' +
                 '</table>';
 
+        // WHAT MISCELLANEOUS ACTUALLY COVERS. Amit, 2026-08-24: "Steps 17 is
+        // whatever we can not typically fit into like removal of existing
+        // furniture or special shaping of parts. get me box where i can
+        // comment it as remarks to understand what miscellaneous is."
+        //
+        // The server has accepted misc_remarks since that day and echoed it
+        // back; nothing ever sent one, so the box existed everywhere except
+        // where a person could type in it. It sits under the labour table
+        // because that is where the line it explains lives, and it travels
+        // on Recalculate like every other typed value.
+        //
+        // It PRINTS. A line called Miscellaneous with a number beside it and
+        // no words is a number nobody can defend a month later — least of
+        // all on a screen shared with a client.
+        html += '<div style="margin:-4px 0 14px;">' +
+                '<label style="font-weight:600;display:block;margin-bottom:3px;">' +
+                'Miscellaneous &mdash; what this covers</label>' +
+                '<input type="text" id="ladb_mcft_misc" class="mcft-misc" ' +
+                'maxlength="500" style="width:100%;" ' +
+                'placeholder="e.g. removing the existing wardrobe, special shaping on the bed head" ' +
+                'value="' + that.mcftEsc(d.misc_remarks || '') + '">' +
+                '</div>';
+
         // LOGISTICS — the trips one planned execution needs.
         //
         // Amit, 2026-08-30: "Below trips are required in a estimate of skus
@@ -1948,6 +1973,21 @@
             that.mcftEdits = { trips: { qty: {}, rate: {} }, ops: {} };
         }
         return that.mcftEdits;
+    };
+
+    // The Miscellaneous remark, on the same record as every other typed
+    // value and for the same reason: the panel is wiped before each send, so
+    // anything read from the DOM afterwards is gone.
+    LadbTabCutlist.prototype.mcftRecordMisc = function () {
+        const that = this;
+        const store = that.mcftEditStore();
+        if (that.$mcftBox && that.$mcftBox.length > 0) {
+            const $m = $('.mcft-misc', that.$mcftBox);
+            if ($m.length > 0) {
+                store.misc = $.trim($m.val());
+            }
+        }
+        return store.misc || '';
     };
 
     LadbTabCutlist.prototype.mcftRecordTrips = function () {

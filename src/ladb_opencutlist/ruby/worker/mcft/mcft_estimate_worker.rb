@@ -93,7 +93,7 @@ module Ladb::OpenCutList
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
                    into: :tab, overrides: nil, size_min: nil,
                    reuse_scan: false, sku: nil,
-                   trip_qty: nil, trip_rate: nil)
+                   trip_qty: nil, trip_rate: nil, misc_remarks: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
@@ -128,6 +128,9 @@ module Ladb::OpenCutList
       # are sensitive and live in Estimate Settings on the site.
       @trip_qty = trip_qty
       @trip_rate = trip_rate
+      # Free text, capped server-side at 500 characters. It explains a line
+      # that is otherwise a number with no words next to it.
+      @misc_remarks = misc_remarks
 
       # Re-price the LAST scan instead of taking a new one. The overrides and
       # assembly minutes still come from the screen being looked at — it is
@@ -187,6 +190,7 @@ module Ladb::OpenCutList
       payload['sku'] = @sku unless @sku.to_s.strip.empty?
       payload['trip_qty'] = @trip_qty if @trip_qty.is_a?(Hash) && !@trip_qty.empty?
       payload['trip_rate'] = @trip_rate if @trip_rate.is_a?(Hash) && !@trip_rate.empty?
+      payload['misc_remarks'] = @misc_remarks unless @misc_remarks.to_s.strip.empty?
 
       uri = "#{@site_url}/api/method/mallet_estimator.api.estimate_preview"
       request = Sketchup::Http::Request.new(uri, Sketchup::Http::POST)
