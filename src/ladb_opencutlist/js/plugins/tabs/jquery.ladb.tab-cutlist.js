@@ -1422,7 +1422,7 @@
         // reads them before calling in here. Anything read inside this
         // function had to move above the wipe.
         that.mcftRecordTrips();
-        const trips = that.mcftEdits.trips;
+        const trips = that.mcftEditStore().trips;
 
         $box.html('<div style="color:#777;">Asking ERPNext for rates&hellip;</div>');
         rubyCallCommand('mcft_estimate',
@@ -2088,6 +2088,19 @@
 
                     // MCFT: ask ERPNext for labour + priced material for this
                     // same model, and fill the block at the foot of the slide.
+                    // A NEW ESTIMATE FORGETS WHAT WAS TYPED INTO THE LAST ONE.
+                    //
+                    // The edit record survives a Recalculate and a Refresh on
+                    // purpose — that is the whole point of it. It must NOT
+                    // survive a fresh Estimate run, because that is a new
+                    // selection and possibly a different model, and Amit's
+                    // rule from 2026-08-24 is exactly this: "saving data in
+                    // the model for labor when selection changes is not a
+                    // good idea. because it defeats purpose of live
+                    // estimation." Keeping the record here would have
+                    // reintroduced that, in memory instead of in the .skp —
+                    // a stale answer overruling a fresh question.
+                    that.mcftEdits = null;
                     rubyCallCommand('mcft_estimate_prefs', null, function (prefs) {
                         that.mcftStartEstimate($slide, prefs ? prefs.assembly_min : '');
                     });
