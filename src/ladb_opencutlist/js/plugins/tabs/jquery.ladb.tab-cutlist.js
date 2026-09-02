@@ -1590,7 +1590,8 @@
 
         html += '<h4 style="margin-top:0;">Material</h4>' +
                 '<table class="table table-bordered table-condensed"><thead><tr>' +
-                '<th>Item</th><th>Qty</th><th>UOM</th><th>Rate</th><th>Amount</th><th>Source</th>' +
+                '<th>Item</th><th>Qty</th><th>UOM</th><th>Rate</th><th>Amount</th>' +
+                '<th>Consumed</th><th>Not consumed</th><th>Source</th>' +
                 '<th class="no-print"></th>' +
                 '</tr></thead><tbody>' +
                 rowsOf(mats, function (r) {
@@ -1628,11 +1629,23 @@
                                            encodeURIComponent(r.item_code)) +
                               '">Set rate in ERP</a></td>';
                     }
+                    // Per line, the same split the summary totals. Blank
+                    // where it does not apply — hardware is counted pieces,
+                    // and inventing an area for it would be worse than a gap.
+                    const u = r.use_unit;
+                    const cell = function (units, money) {
+                        if (!u) return '<td></td>';
+                        return '<td ' + R + '>' + that.mcftEsc(units) + ' ' +
+                               that.mcftEsc(u) + '<br><span style="color:#777;">' +
+                               that.mcftMoney(money) + '</span></td>';
+                    };
                     return '<td>' + that.mcftEsc(r.code) + '</td>' +
                            '<td ' + R + '>' + that.mcftEsc(r.qty) + '</td>' +
                            '<td>' + that.mcftEsc(r.uom) + '</td>' +
                            '<td ' + R + '>' + that.mcftMoney(r.rate) + '</td>' +
                            '<td ' + R + '>' + (r.quotable ? that.mcftMoney(r.amount) : '&mdash;') + '</td>' +
+                           cell(r.consumed_units, r.consumed_amount) +
+                           cell(r.unused_units, r.unused_amount) +
                            badgeCell(r.source) + act;
                 }, function (r) {
                     // NOT QUOTABLE, not merely "not in erp". That is the set
@@ -1644,6 +1657,45 @@
                     // silently excluded and looking priced.
                     return r.quotable ? '' : DANGER_ROW;
                 }) + '</tbody></table>';
+
+        // CONSUMED vs NOT CONSUMED. Amit, 2026-09-02: "show consumed material
+        // and non consumed material in term of cost and square foot and
+        // meters on estimate screen."
+        //
+        // The wastage was always in the estimate — the rule is "charge full
+        // board", so an offcut is bought and billed — but it was visible only
+        // as a percentage inside one line's description. That reads as a
+        // quality score. As money it is a different conversation: this is
+        // what the client pays for material that never becomes furniture,
+        // and it is the number that justifies nesting two articles together.
+        //
+        // Square feet and metres are totalled SEPARATELY and never summed.
+        // Adding a square foot to a metre is not a number, and one blended
+        // "waste %" over both would look authoritative and mean nothing.
+        const util = d.utilisation || [];
+        if (util.length > 0) {
+            const unitName = { sqft: 'sq ft', m: 'metres' };
+            html += '<h4>Material consumed vs bought</h4>' +
+                    '<table class="table table-bordered table-condensed"><thead><tr>' +
+                    '<th>Measured in</th><th>Bought</th><th>Consumed</th>' +
+                    '<th>Not consumed</th><th>Used</th>' +
+                    '<th>Consumed &#8377;</th><th>Not consumed &#8377;</th>' +
+                    '</tr></thead><tbody>' +
+                    rowsOf(util, function (u) {
+                        return '<td>' + that.mcftEsc(unitName[u.unit] || u.unit) + '</td>' +
+                               '<td ' + R + '>' + that.mcftEsc(u.bought) + '</td>' +
+                               '<td ' + R + '>' + that.mcftEsc(u.consumed) + '</td>' +
+                               '<td ' + R + '>' + that.mcftEsc(u.unused) + '</td>' +
+                               '<td ' + R + '>' + that.mcftEsc(u.used_pct) + '%</td>' +
+                               '<td ' + R + '>' + that.mcftMoney(u.consumed_cost) + '</td>' +
+                               '<td ' + R + '>' + that.mcftMoney(u.unused_cost) + '</td>';
+                    }) +
+                    '</tbody></table>' +
+                    '<p style="color:#777;font-size:11px;">Sheet goods are charged as WHOLE ' +
+                    'boards and edge banding as whole rolls, so what is not consumed here is ' +
+                    'bought and billed, not missing from the total. Hardware and joinery are ' +
+                    'counted pieces and carry no area, so they are not in this table.</p>';
+        }
 
         html += '<h4>Labour &mdash; the 17 steps, through to installation</h4>' +
                 '<table class="table table-bordered table-condensed"><thead><tr>' +
