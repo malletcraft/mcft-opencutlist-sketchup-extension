@@ -1900,14 +1900,24 @@
                     '<tr><th>Logistics</th><th></th><th></th><th></th><th></th><th></th>' +
                     '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
                     that.mcftMoney(sm.logistics) + '</th></tr>' +
+                    '<tr><td>Material + Labour</td><td></td><td></td><td></td><td></td><td></td>' +
+                    '<td class="ladb-cutlist-value ladb-cutlist-value-right">' +
+                    that.mcftMoney(sm.material_plus_labour) + '</td></tr>' +
                     '</tbody><tfoot><tr>' +
-                    '<th>Material + Labour</th><th></th><th></th><th></th><th></th><th></th>' +
-                    '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
-                    that.mcftMoney((sm.material || 0) + (sm.labour || 0)) + '</th>' +
+                    // THE FINAL NUMBER, logistics included. Amit, 2026-09-02:
+                    // "estimate total table must show final cost for which
+                    // estimate is run including logistics." Material + Labour
+                    // stays directly above it so the composition is readable
+                    // rather than something to be worked out.
+                    '<th style="font-size:115%;">Estimate total</th>' +
+                    '<th></th><th></th><th></th><th></th><th></th>' +
+                    '<th class="ladb-cutlist-value ladb-cutlist-value-right" ' +
+                    'style="font-size:115%;">' +
+                    that.mcftMoney(sm.grand_total) + '</th>' +
                     '</tr></tfoot></table>' +
-                    '<p style="color:#777;font-size:11px;">Logistics is listed but NOT in the ' +
-                    'Material + Labour figure: those trips are shared across every SKU in the ' +
-                    'execution and are counted once on the Estimate, not once per article. ' +
+                    '<p style="color:#777;font-size:11px;">Logistics is the trips for one ' +
+                    'planned execution and is counted ONCE, not once per article &mdash; so ' +
+                    'on an estimate covering several SKUs, add it once rather than per SKU. ' +
                     'Hardware and joinery are counted pieces, so every one bought is consumed.</p>';
         }
 
