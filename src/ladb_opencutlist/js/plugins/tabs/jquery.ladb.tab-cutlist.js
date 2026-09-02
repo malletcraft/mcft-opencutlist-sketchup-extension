@@ -1860,6 +1860,57 @@
                     'article, so it is NOT inside the total above.</p>';
         }
 
+        // THE THREE TOTALS, at the end, where a person stops reading.
+        //
+        // Amit, 2026-09-02: "i need to see three totals material, labor and
+        // logistics in a separate table at the end of estimate screen ...
+        // Material is further subdivided in total for below items row wise."
+        //
+        // Logistics is shown but NOT added into the grand total, for the same
+        // reason it has its own subtotal above: those trips are shared across
+        // every SKU in the execution, so adding them to one article's figure
+        // would bill the same tempo once per wardrobe.
+        const sm = d.summary;
+        if (sm) {
+            const uLabel = { sqft: 'sq ft', m: 'm', nos: 'nos' };
+            html += '<h4>Totals</h4>' +
+                    '<table class="table table-bordered table-condensed"><thead><tr>' +
+                    '<th>Item</th><th>Unit</th><th>Consumed</th><th>Total</th>' +
+                    '<th>Used</th><th>Cost consumed</th><th>Cost total</th>' +
+                    '</tr></thead><tbody>' +
+                    rowsOf(sm.families || [], function (f) {
+                        // A counted family is fully consumed by definition —
+                        // every piece bought gets fitted — so the percentage
+                        // is suppressed rather than printed as a proud 100%.
+                        const counted = (f.unit === 'nos');
+                        return '<td style="padding-left:18px;">' + that.mcftEsc(f.label) + '</td>' +
+                               '<td>' + that.mcftEsc(uLabel[f.unit] || f.unit || '') + '</td>' +
+                               '<td ' + R + '>' + that.mcftEsc(f.consumed_units) + '</td>' +
+                               '<td ' + R + '>' + that.mcftEsc(f.total_units) + '</td>' +
+                               '<td ' + R + '>' + (counted ? '&mdash;' : that.mcftEsc(f.used_pct) + '%') + '</td>' +
+                               '<td ' + R + '>' + that.mcftMoney(f.consumed_cost) + '</td>' +
+                               '<td ' + R + '>' + that.mcftMoney(f.total_cost) + '</td>';
+                    }) +
+                    '<tr><th>Material</th><th></th><th></th><th></th><th></th><th></th>' +
+                    '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
+                    that.mcftMoney(sm.material) + '</th></tr>' +
+                    '<tr><th>Labour</th><th></th><th></th><th></th><th></th><th></th>' +
+                    '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
+                    that.mcftMoney(sm.labour) + '</th></tr>' +
+                    '<tr><th>Logistics</th><th></th><th></th><th></th><th></th><th></th>' +
+                    '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
+                    that.mcftMoney(sm.logistics) + '</th></tr>' +
+                    '</tbody><tfoot><tr>' +
+                    '<th>Material + Labour</th><th></th><th></th><th></th><th></th><th></th>' +
+                    '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
+                    that.mcftMoney((sm.material || 0) + (sm.labour || 0)) + '</th>' +
+                    '</tr></tfoot></table>' +
+                    '<p style="color:#777;font-size:11px;">Logistics is listed but NOT in the ' +
+                    'Material + Labour figure: those trips are shared across every SKU in the ' +
+                    'execution and are counted once on the Estimate, not once per article. ' +
+                    'Hardware and joinery are counted pieces, so every one bought is consumed.</p>';
+        }
+
         html += '<p style="color:#777;font-size:11px;">A GAUGE, not a quotation. Excludes: ' +
                 that.mcftEsc((d.excludes || []).join(', ')) + '. Every rate here comes from ' +
                 'ERPNext &mdash; the plugin\'s own material prices are not used.</p>';
