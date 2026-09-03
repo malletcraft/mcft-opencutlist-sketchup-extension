@@ -75,10 +75,17 @@ jobs:
       # stubs only the SketchUp bridge, and clicks through the MCFT actions.
       # Proved by reintroducing the TypeError of 2026-09-03: 4 checks fail and
       # it exits 1. A test that has only ever passed proves nothing.
+      # THE OTHER THREE TEMPLATE BUNDLES ARE NOT IN GIT. .gitignore tracks
+      # only tabs-twig-templates.js (git is the Mac's delivery route for it);
+      # core/, components/ and modals/ are build outputs. They exist on a dev
+      # machine because gulp has been run there, and NOT on a fresh checkout —
+      # which is why this passed locally and died in CI on the first attempt
+      # with ENOENT for core-twig-templates.js. Compile before running.
       - name: Headless dialog smoke test
         run: |
           cd build
           npm install --no-audit --no-fund --silent
+          npx gulp twig_compile
           cd ..
           NODE_PATH=build/node_modules node test/smoke/dialog-smoke.js
 
