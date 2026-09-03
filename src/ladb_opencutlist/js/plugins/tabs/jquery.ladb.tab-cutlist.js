@@ -1680,13 +1680,27 @@
                 // Item, Qty, UOM, Rate are not addable — a count of boards
                 // plus a count of screws is not a quantity, and an average
                 // rate is not a rate. Only the three money columns total.
-                totalRow(4, [
-                    mats.reduce(function (a, r) {
-                        return a + (r.quotable ? (Number(r.amount) || 0) : 0); }, 0),
-                    sumOf(mats, 'consumed_amount'),
-                    sumOf(mats, 'unused_amount'),
-                    null, null
-                ]) + '</table>';
+                (function () {
+                    // The three money columns must reconcile: consumed plus
+                    // not consumed IS the amount. A hardware or joinery line
+                    // shows no consumed CELL because it has no area, but it is
+                    // fully consumed — every piece bought gets fitted — so it
+                    // counts as consumed here rather than falling out of both
+                    // and leaving the row totals short of the amount.
+                    let amt = 0, used = 0, left = 0;
+                    (mats || []).forEach(function (r) {
+                        if (!r.quotable) return;
+                        const a = Number(r.amount) || 0;
+                        amt += a;
+                        if (r.use_unit) {
+                            used += Number(r.consumed_amount) || 0;
+                            left += Number(r.unused_amount) || 0;
+                        } else {
+                            used += a;
+                        }
+                    });
+                    return totalRow(4, [amt, used, left, null, null]);
+                })() + '</table>';
 
         // CONSUMED vs NOT CONSUMED. Amit, 2026-09-02: "show consumed material
         // and non consumed material in term of cost and square foot and
