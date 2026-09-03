@@ -1,0 +1,37 @@
+#!/bin/sh
+# A .twig EDIT THAT IS NOT COMPILED CHANGES NOTHING, and it fails silently.
+#
+# The runtime does not read .twig files. They are precompiled by
+# `npx gulp twig_compile` into src/ladb_opencutlist/js/templates/*-twig-templates.js,
+# and those bundles are what SketchUp loads. Edit a template, commit, pull to
+# the Mac, restart SketchUp — and the screen is unchanged, with nothing
+# anywhere reporting a problem. That happened on 2026-09-03: a whole feature,
+# a new menu item and a 465-line refactor shipped, dispatched and confirmed
+# pulled, none of it capable of appearing. Amit went looking for a menu entry
+# that did not exist.
+#
+# So the commit is refused instead. Silence and success must not look
+# identical, which is the rule this project already pays for elsewhere.
+staged_twig=$(git diff --cached --name-only --diff-filter=ACMR | grep '\.twig$')
+[ -z "$staged_twig" ] && exit 0
+
+staged_bundle=$(git diff --cached --name-only --diff-filter=ACMR \
+    | grep 'js/templates/.*-twig-templates\.js$')
+if [ -n "$staged_bundle" ]; then
+    exit 0
+fi
+
+cat >&2 <<'MSG'
+REFUSED: .twig files are staged but no compiled template bundle is.
+
+The runtime loads src/ladb_opencutlist/js/templates/*-twig-templates.js, not
+the .twig sources, so this commit would change nothing on screen and say
+nothing about it.
+
+    cd build && npx gulp twig_compile
+    git add ../src/ladb_opencutlist/js/templates
+
+Staged templates:
+MSG
+echo "$staged_twig" | sed 's/^/    /' >&2
+exit 1
