@@ -1668,8 +1668,19 @@
                     const trade = r.trade_name
                         ? '<div style="color:#777;font-size:11px;">' +
                           that.mcftEsc(r.trade_name) + '</div>' : '';
+                    // WHOLE PACKETS, with the pieces that drove them beside
+                    // it. Amit, 2026-09-03: "we must buy full packet
+                    // irrespective of how many parts we need." A line reading
+                    // 1 where the model has 51 screws looks like the bug we
+                    // just fixed unless it says why.
+                    const qtyCell = r.pieces_needed
+                        ? that.mcftEsc(r.qty) +
+                          '<div style="color:#777;font-size:11px;">' +
+                          that.mcftEsc(r.pieces_needed) + ' pcs &divide; ' +
+                          that.mcftEsc(r.pieces_per_packet) + '</div>'
+                        : that.mcftEsc(r.qty);
                     return '<td>' + that.mcftEsc(r.code) + trade + '</td>' +
-                           '<td ' + R + '>' + that.mcftEsc(r.qty) + '</td>' +
+                           '<td ' + R + '>' + qtyCell + '</td>' +
                            '<td>' + that.mcftEsc(r.uom) + '</td>' +
                            '<td ' + R + '>' + that.mcftMoney(r.rate) + '</td>' +
                            '<td ' + R + '>' + (r.quotable ? that.mcftMoney(r.amount) : '&mdash;') + '</td>' +
