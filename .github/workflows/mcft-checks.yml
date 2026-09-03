@@ -47,6 +47,15 @@ jobs:
       - name: Every require_relative points at a file git actually has
         run: ruby tools/check-requires.rb
 
+      # `node --check` parses; it cannot know that dialog.stopProgress was
+      # never written. On 2026-09-03 a batch feature shipped calling two
+      # invented methods and the only thing that found them was Amit clicking
+      # the button and getting a red TypeError. The dialog API is a small
+      # closed set, so checking every call against it is cheap and exact —
+      # this fork's substitute for the unit tests it does not have.
+      - name: Every dialog.<method>() call names a method that exists
+        run: ruby tools/check-dialog-api.rb
+
   templates:
     name: Committed twig bundle matches its source
     runs-on: ubuntu-latest

@@ -6617,7 +6617,6 @@
         // would trample its own state.
         const fnGroup = function (i) {
             if (i >= groups.length) {
-                that.dialog.stopProgress();
                 that.mcftShowDiagramPack(packs, errors);
                 return;
             }
@@ -6635,6 +6634,7 @@
                             const done = (response.errors && response.errors.length > 0)
                                 || (response.sheets && response.sheets.length > 0);
                             if (done) {
+                                that.dialog.finishProgress();
                                 if (response.errors && response.errors.length > 0) {
                                     // NAMED, not swallowed. A board group that
                                     // could not be packed must not leave a
@@ -6648,7 +6648,7 @@
                                 }
                                 fnGroup(i + 1);
                             } else {
-                                that.dialog.advanceProgress(1);
+                                that.dialog.incProgress(1);
                                 fnAdvance();
                             }
                         });
@@ -6660,9 +6660,12 @@
                         $.extend({ group_id: group.id, part_ids: null }, options),
                         function (response) {
                             window.requestAnimationFrame(function () {
-                                if (i === 0) {
-                                    that.dialog.startProgress(response.estimated_steps);
-                                }
+                                // A BAR PER GROUP, started and finished the way
+                                // the single-diagram path does it. One bar
+                                // spanning the whole run would be sized by the
+                                // first group's estimate and then overrun by
+                                // every group after it.
+                                that.dialog.startProgress(response.estimated_steps);
                                 fnAdvance();
                             });
                         });
