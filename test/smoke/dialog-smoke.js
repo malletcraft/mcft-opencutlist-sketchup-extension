@@ -215,6 +215,59 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
   check(uncaught.length === 0,
         `nothing thrown inside a callback${uncaught.length ? ' — ' + uncaught.map(String).join(' | ').slice(0, 240) : ''}`);
 
+  
+  // -------------------------------------------------------------------------
+  // SCENARIO 2 — the estimate screen, which is the surface Amit uses daily and
+  // the one changed most this week: purchase list, totals, packet quantities,
+  // trade names, thickness order.
+  //
+  // The fixture is a REAL estimate_preview payload captured from mcft-stg, so
+  // the test breaks if the server's shape drifts from what the plugin reads —
+  // which no hand-written fixture would notice. Every money value in it is
+  // ZEROED: this fork is public, and cost data never enters a repo. The counts,
+  // units and codes are untouched, because those are what the rendering
+  // actually branches on.
+  console.log('\nmcftRender(estimate payload)');
+  const payload = JSON.parse(
+    fs.readFileSync(path.join(__dirname, 'estimate-payload.json'), 'utf8'));
+  const $box = $('<div id="mcftbox"></div>').appendTo($('#tab', win.document));
+  tab.$mcftBox = $box;
+  tab.mcftEdits = null;
+
+  let renderThrew = null;
+  const before = uncaught.length;
+  try {
+    tab.mcftRender(payload);
+  } catch (e) {
+    renderThrew = e;
+  }
+  await drain();
+
+  const html = $box.html() || '';
+  check(!renderThrew, `mcftRender did not throw${renderThrew ? ' — ' + renderThrew.message : ''}`);
+  check(uncaught.length === before, 'nothing thrown while rendering the estimate');
+  check(html.length > 5000, `the estimate rendered (${html.length} chars)`);
+
+  // The tables Amit asked for, each by the heading he reads.
+  [['Material', 'material table'],
+   ['Purchase list', 'purchase list'],
+   ['Labour', 'labour table'],
+   ['Logistics', 'logistics table'],
+   ['Totals', 'totals table'],
+   ['Material consumed vs bought', 'consumed vs bought']].forEach(([needle, what]) => {
+    check(html.indexOf(needle) !== -1, `${what} is on screen`);
+  });
+
+  // The things that were bugs this week, asserted as behaviour rather than
+  // trusted because the code looks right.
+  check(html.indexOf('Plywood 16 mm (8x4)') !== -1, 'ply carries its trade name');
+  check(html.indexOf('SG_LAM_V0_1mm_a') !== -1, 'internal laminate clubbed to one purchase code');
+  check(/16 mm[\s\S]*12 mm/.test(html), '16 mm is listed above 12 mm');
+  check(html.indexOf('laminate sheets for') !== -1, 'the sandwich line is stated');
+  check((html.match(/<tfoot>/g) || []).length >= 4,
+        `every amount column carries a total (${(html.match(/<tfoot>/g) || []).length} tfoots)`);
+  check(html.indexOf('UNDERSTATED') === -1, 'the withdrawn grouped-hardware banner is gone');
+
   console.log('');
   if (failures.length) {
     failures.forEach((f) => console.error(`::error::smoke: ${f}`));
