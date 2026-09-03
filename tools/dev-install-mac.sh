@@ -44,6 +44,14 @@ ln -s "$REPO/src/ladb_opencutlist"    "$PLUG/ladb_opencutlist"
 
 # 4. the auto-updater: every SketchUp start fast-forwards this clone from
 #    GitHub BEFORE OpenCutList loads, so "restart SketchUp" IS the update.
+#
+#    IT WILL NOT PULL A COMMIT WHOSE CI IS NOT GREEN. Added 2026-09-03, after
+#    a commit with a stale twig bundle went to this Mac and its feature could
+#    not appear: MCFT checks had ALREADY caught it and gone red, and the
+#    dispatch happened anyway because nobody read the run. A guard that is
+#    only consulted when someone remembers is not a guard, so the last gate
+#    now consults it — on the machine, every start, whether or not anybody
+#    looked.
 #    The leading "!" makes it load first (SketchUp loads Plugins in sorted
 #    order). Never merges — if the clone has local edits it just skips, it
 #    cannot destroy work. A REAL failure (auth, ssh-in-GUI, local edits) is
@@ -54,14 +62,77 @@ ln -s "$REPO/src/ladb_opencutlist"    "$PLUG/ladb_opencutlist"
 #    ~/Library/Application Support/mcft-ocl-update.log either way.
 cat > "$PLUG/!mcft_autoupdate.rb" <<RUBY
 # MCFT auto-update — written by dev-install-mac.sh; safe to delete to opt out.
+require 'json'
+require 'net/http'
+
+# THE CI GATE. Returns [verdict, detail] for a commit:
+#   :success  — MCFT checks passed; safe to fast-forward onto
+#   :failure  — it went red. This is the case that matters: a red commit
+#               reached this Mac on 2026-09-03 and its feature could not
+#               appear, because the bundle it shipped was stale and CI had
+#               said so an hour earlier.
+#   :pending  — still running, or no run yet. Not a fault; just not yet.
+#   :unknown  — the API could not be reached or read.
+#
+# :pending and :unknown both REFUSE. Loading code nobody has verified is the
+# thing this exists to prevent, and "we could not check" is not "it is fine".
+# Refusing costs one restart; the alternative cost half a day.
+MCFT_CI_VERDICT = lambda do |sha|
+  uri = URI("https://api.github.com/repos/malletcraft/mcft-opencutlist-sketchup-extension/actions/runs?head_sha=#{sha}&per_page=10")
+  res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 6, read_timeout: 8) do |http|
+    http.get(uri.request_uri, 'Accept' => 'application/vnd.github+json',
+                              'User-Agent' => 'mcft-autoupdate')
+  end
+  return [:unknown, "GitHub API HTTP #{res.code}"] unless res.code.to_i == 200
+
+  runs = JSON.parse(res.body)['workflow_runs'] || []
+  checks = runs.select { |r| r['name'].to_s.start_with?('MCFT checks') }
+  return [:pending, 'no MCFT checks run for this commit yet'] if checks.empty?
+
+  run = checks.first
+  return [:pending, "MCFT checks #{run['status']}"] unless run['status'] == 'completed'
+  return [:success, run['html_url'].to_s] if run['conclusion'] == 'success'
+
+  [:failure, "#{run['conclusion']} — #{run['html_url']}"]
+rescue StandardError => e
+  [:unknown, e.message]
+end
+
 begin
   repo = '$REPO'
   if File.directory?(File.join(repo, '.git'))
     # GUI SketchUp gets the bare launchd PATH; make sure git resolves.
     ENV['PATH'] = "#{ENV['PATH']}:/usr/bin:/opt/homebrew/bin:/usr/local/bin"
-    out = \`git -C "#{repo}" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 pull --ff-only 2>&1\`
+    git = lambda { |args| \`git -C "#{repo}" #{args} 2>&1\` }
+
+    # FETCH FIRST, then decide. The old one-shot pull merged before anything
+    # could object; splitting it is what makes a gate possible at all.
+    out = git.call('-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch origin mcft')
     ok = \$?.success?
-    rev = \`git -C "#{repo}" log -1 --format=%h\`.strip
+    rev = git.call('log -1 --format=%h').strip
+
+    if ok
+      target = git.call('rev-parse origin/mcft').strip
+      here   = git.call('rev-parse HEAD').strip
+
+      if target == here
+        # Nothing new. Say so and stop; no CI call, no rate limit spent.
+        out = 'Already up to date.'
+      else
+        verdict, detail = MCFT_CI_VERDICT.call(target)
+        if verdict == :success
+          out = git.call('merge --ff-only origin/mcft')
+          ok = \$?.success?
+          rev = git.call('log -1 --format=%h').strip
+        else
+          ok = false
+          # NOT a git failure, and it must not be reported as one. This is the
+          # gate doing its job, and the person needs to know the difference
+          # between "your clone is broken" and "that commit is not fit to run".
+          out = "MCFT_CI_BLOCKED #{verdict} #{target[0, 9]} #{detail}"
+        end
+      end
+    end
     begin
       log = File.expand_path('~/Library/Application Support/mcft-ocl-update.log')
       File.open(log, 'a') { |f| f.puts "#{Time.now} ok=#{ok} rev=#{rev} #{out.lines.last.to_s.strip}" }
@@ -71,12 +142,28 @@ begin
       puts "[MCFT] OpenCutList (MCFT Edition) up to date @ #{rev}"
     else
       reason = out.lines.last.to_s.strip
-      puts "[MCFT] update FAILED @ #{rev}: #{reason}"
-      offline = reason =~ /resolve host|unable to access|timed out|network is unreachable|no route to host/i
-      unless offline
-        UI.messagebox("MCFT plugin update FAILED — still running #{rev}.\n\n" \
-                      "#{reason}\n\n" \
-                      "Fix in Terminal:\n  cd #{repo} && git pull\nthen restart SketchUp.")
+
+      if reason.start_with?('MCFT_CI_BLOCKED')
+        # HELD BACK, not broken — and the wording has to say which, or the
+        # next person "fixes" it with a manual git pull and defeats the gate.
+        _, verdict, short, *rest = reason.split(' ')
+        detail = rest.join(' ')
+        puts "[MCFT] update HELD at #{rev}: #{short} is #{verdict} — #{detail}"
+        if verdict == 'failure'
+          UI.messagebox("MCFT plugin update HELD BACK.\n\n" \
+                        "Still running #{rev}, which is fine.\n\n" \
+                        "The newer commit #{short} FAILED its checks:\n#{detail}\n\n" \
+                        "This is the guard working. Do not pull it by hand — " \
+                        "wait for a green commit.")
+        end
+      else
+        puts "[MCFT] update FAILED @ #{rev}: #{reason}"
+        offline = reason =~ /resolve host|unable to access|timed out|network is unreachable|no route to host/i
+        unless offline
+          UI.messagebox("MCFT plugin update FAILED — still running #{rev}.\n\n" \
+                        "#{reason}\n\n" \
+                        "Fix in Terminal:\n  cd #{repo} && git pull\nthen restart SketchUp.")
+        end
       end
     end
   end
