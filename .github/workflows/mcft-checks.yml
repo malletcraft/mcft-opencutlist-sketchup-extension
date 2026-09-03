@@ -56,6 +56,32 @@ jobs:
       - name: Every dialog.<method>() call names a method that exists
         run: ruby tools/check-dialog-api.rb
 
+  smoke:
+    name: The dialog actually runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # THE ONLY CHECK HERE THAT RUNS THE CODE. Everything else in this
+      # workflow reads it: ruby -c parses, check-dialog-api.rb matches names,
+      # the templates job rebuilds a bundle. None of them can see a method that
+      # exists but is called wrongly, or a template that resolves but throws
+      # while rendering.
+      #
+      # It loads the real tab JS and the real compiled templates into jsdom,
+      # stubs only the SketchUp bridge, and clicks through the MCFT actions.
+      # Proved by reintroducing the TypeError of 2026-09-03: 4 checks fail and
+      # it exits 1. A test that has only ever passed proves nothing.
+      - name: Headless dialog smoke test
+        run: |
+          cd build
+          npm install --no-audit --no-fund --silent
+          cd ..
+          NODE_PATH=build/node_modules node test/smoke/dialog-smoke.js
+
   templates:
     name: Committed twig bundle matches its source
     runs-on: ubuntu-latest
