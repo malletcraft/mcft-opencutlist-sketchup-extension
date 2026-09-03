@@ -1,0 +1,64 @@
+{% extends 'tabs/base-slide.twig' %}
+
+{% set id = 'ladb_cutlist_slide_mcft_diagram_pack' %}
+{% set out = true %}
+
+{#
+    THE PAPER PACK — every board's cutting diagram in ONE print job.
+
+    Amit, 2026-09-03: "printing cutting diagrams and labels one by one is
+    tedious task." On a study unit that is five sheet-good groups, each needing
+    the modal opened, the options confirmed, the pack computed and the sheet
+    printed. Five identical answers to reach one job's worth of paper.
+
+    LABELS ARE NOT IN HERE, and that is his constraint rather than an omission:
+    "i print labels on pre cut self adhesive 6x12 stickers. part list, cutting
+    diagrams on plane paper." Different media cannot share a print job, so the
+    labels keep their own action — which already batches every part in one pass.
+
+    The part list is not separate either: each diagram carries its own group's
+    part list already, so the pack is the part list, board by board, next to
+    the layout it belongs to.
+#}
+
+{% block headerInner %}
+    {{ parent() }}
+    {% include 'tabs/cutlist/_header-extra.twig' %}
+{% endblock %}
+
+{% block headerHeadingInner %}
+    {{ 'tab.cutlist.cuttingdiagram.title'|i18next }}
+    <small>| {{ packs|length }} {% if packs|length == 1 %}board group{% else %}board groups{% endif %}</small>
+{% endblock %}
+
+{% block headerToolsInner %}
+    <button id="ladb_btn_print" class="btn btn-primary"{% if packs|length == 0 %} disabled{% endif %}><i class="ladb-opencutlist-icon-print"></i> {{ 'default.print'|i18next }}</button>
+    &nbsp;
+    <button id="ladb_btn_close" class="btn btn-default"><i class="ladb-opencutlist-icon-close"></i> {{ 'default.close'|i18next }}</button>
+{% endblock %}
+
+{% block containerInner %}
+    {{ parent() }}
+
+    {% if packs|length == 0 %}
+        <table class="ladb-page"><tr><td>
+            <div class="alert alert-warning">No sheet-good group produced a cutting diagram.</div>
+        </td></tr></table>
+    {% endif %}
+
+    {% for pack in packs %}
+        {#
+            One board group per page. `with pack` merges the group's own
+            sheets/options/errors over the shared context, so the body renders
+            exactly what the single-diagram slide would have rendered for it —
+            same file, so the two cannot drift.
+        #}
+        <div class="ladb-mcft-pack-part"{% if not loop.first %} style="page-break-before: always;"{% endif %}>
+            <h3 style="margin:18px 0 6px;">
+                {{ pack.group.material_name|escape('html') }}
+                <small>/ <strong>{{ pack.group.std_dimension }}</strong></small>
+            </h3>
+            {% include 'tabs/cutlist/_cuttingdiagram-2d-body.twig' with pack %}
+        </div>
+    {% endfor %}
+{% endblock %}

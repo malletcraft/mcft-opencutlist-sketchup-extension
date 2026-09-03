@@ -58,6 +58,7 @@
         this.$btnOptions = $('#ladb_btn_options', this.$header);
         this.$itemHighlightAllParts = $('#ladb_item_highlight_all_parts', this.$header);
         this.$itemLabelsAllParts = $('#ladb_item_labels_all_parts', this.$header);
+        this.$itemMcftDiagramPack = $('#ladb_item_mcft_diagram_pack', this.$header);
         this.$itemExport2dAllParts = $('#ladb_item_export_2d_all_parts', this.$header);
         this.$itemExport3dAllParts = $('#ladb_item_export_3d_all_parts', this.$header);
         this.$itemShowAllGroups = $('#ladb_item_show_all_groups', this.$header);
@@ -181,6 +182,7 @@
                 that.$btnEstimate.prop('disabled', solidWoodMaterialCount + sheetGoodMaterialCount + dimensionalMaterialCount + edgeMaterialCount + hardwareMaterialCount === 0);
                 that.$itemHighlightAllParts.parents('li').toggleClass('disabled', groups.length === 0);
                 that.$itemLabelsAllParts.parents('li').toggleClass('disabled', groups.length === 0);
+                that.$itemMcftDiagramPack.parents('li').toggleClass('disabled', groups.length === 0);
                 that.$itemExport2dAllParts.parents('li').toggleClass('disabled', groups.length === 0);
                 that.$itemExport3dAllParts.parents('li').toggleClass('disabled', groups.length === 0);
                 that.$itemShowAllGroups.parents('li').toggleClass('disabled', groups.length === 0);
@@ -6568,6 +6570,146 @@
 
     };
 
+    // THE PAPER PACK — every board's cutting diagram in ONE print job.
+    //
+    // Amit, 2026-09-03: "printing cutting diagrams and labels one by one is
+    // tedious task." A study unit is five sheet-good groups, and each one means
+    // opening the modal, confirming the same options, waiting for the pack and
+    // printing a sheet. Five identical answers to reach one job's worth of
+    // paper, and the collating happens by hand afterwards.
+    //
+    // LABELS ARE DELIBERATELY NOT HERE. "i print labels on pre cut self
+    // adhesive 6x12 stickers. part list, cutting diagrams on plane paper."
+    // Different media cannot share a print job, so labels keep their own
+    // action — which already batches every part in one pass, in the header
+    // menu, and already carries his 6x12 template as the default. Folding them
+    // in would have produced a document that can only be printed wrong.
+    //
+    // SHEET GOODS ONLY, his answer on scope. Veneer follows the board through
+    // the press and is cut as part of the sandwich, so it has no layout of its
+    // own that anybody stands at a saw holding.
+    //
+    // NOTHING IS ASKED. Every group's options are ALREADY saved per group in
+    // the cutlist_cuttingdiagram2d_options preset by the single-diagram modal,
+    // so the pack re-uses each group's own settings. A batch that opened five
+    // modals would not be a batch.
+    LadbTabCutlist.prototype.mcftDiagramPack = function () {
+        const that = this;
+
+        const groups = (this.groups || []).filter(function (g) {
+            // TYPE_SHEET_GOOD, and that alone is the test — the group model
+            // carries material_type, not an is_hardware flag, and a guard on a
+            // field that does not exist reads as a check while checking
+            // nothing. A group with no parts has no layout to draw.
+            return g.material_type === 2 && (g.part_count || 0) > 0;
+        });
+        if (groups.length === 0) {
+            this.dialog.notifyErrors([ 'No sheet-good groups in this cut list.' ]);
+            return;
+        }
+
+        const packs = [];
+        const errors = [];
+
+        // ONE GROUP AT A TIME, because the Ruby side keeps a single running
+        // cutting-diagram job — start/advance is stateful, not re-entrant. The
+        // chain is explicit for that reason rather than a Promise.all that
+        // would trample its own state.
+        const fnGroup = function (i) {
+            if (i >= groups.length) {
+                that.dialog.stopProgress();
+                that.mcftShowDiagramPack(packs, errors);
+                return;
+            }
+            const group = groups[i];
+
+            rubyCallCommand('core_get_model_preset', {
+                dictionary: 'cutlist_cuttingdiagram2d_options', section: group.id
+            }, function (presetResponse) {
+
+                const options = presetResponse.preset || {};
+
+                const fnAdvance = function () {
+                    window.requestAnimationFrame(function () {
+                        rubyCallCommand('cutlist_group_cuttingdiagram2d_advance', null, function (response) {
+                            const done = (response.errors && response.errors.length > 0)
+                                || (response.sheets && response.sheets.length > 0);
+                            if (done) {
+                                if (response.errors && response.errors.length > 0) {
+                                    // NAMED, not swallowed. A board group that
+                                    // could not be packed must not leave a
+                                    // silent gap in a pack somebody takes to a
+                                    // saw believing it complete.
+                                    errors.push(group.material_name + ' / ' +
+                                                group.std_dimension + ': ' +
+                                                response.errors.join(', '));
+                                } else {
+                                    packs.push($.extend({ group: group, options: options }, response));
+                                }
+                                fnGroup(i + 1);
+                            } else {
+                                that.dialog.advanceProgress(1);
+                                fnAdvance();
+                            }
+                        });
+                    });
+                };
+
+                window.requestAnimationFrame(function () {
+                    rubyCallCommand('cutlist_group_cuttingdiagram2d_start',
+                        $.extend({ group_id: group.id, part_ids: null }, options),
+                        function (response) {
+                            window.requestAnimationFrame(function () {
+                                if (i === 0) {
+                                    that.dialog.startProgress(response.estimated_steps);
+                                }
+                                fnAdvance();
+                            });
+                        });
+                });
+            });
+        };
+
+        fnGroup(0);
+    };
+
+    LadbTabCutlist.prototype.mcftShowDiagramPack = function (packs, errors) {
+        const that = this;
+
+        const $slide = this.pushNewSlide('ladb_cutlist_slide_mcft_diagram_pack',
+            'tabs/cutlist/_slide-mcft-diagram-pack.twig', {
+                capabilities: this.dialog.capabilities,
+                generateOptions: this.generateOptions,
+                dimensionColumnOrderStrategy: this.generateOptions.dimension_column_order_strategy.split('>'),
+                filename: this.filename,
+                modelName: this.modelName,
+                modelDescription: this.modelDescription,
+                modelActivePath: this.modelActivePath,
+                pageName: this.pageName,
+                pageDescription: this.pageDescription,
+                isEntitySelection: this.isEntitySelection,
+                lengthUnit: this.lengthUnit,
+                generatedAt: new Date().getTime() / 1000,
+                packs: packs,
+                errors: errors
+            }, function () {
+                that.dialog.setupTooltips($slide);
+            });
+
+        $('#ladb_btn_print', $slide).on('click', function () {
+            $(this).blur();
+            that.print(that.cutlistTitle + ' - ' + i18next.t('tab.cutlist.cuttingdiagram.title'));
+        });
+        $('#ladb_btn_close', $slide).on('click', function () {
+            $(this).blur();
+            that.popSlide();
+        });
+
+        if (errors && errors.length > 0) {
+            this.dialog.notifyErrors(errors);
+        }
+    };
+
     LadbTabCutlist.prototype.cuttingdiagram2dGroup = function (groupId, forceDefaultTab, generateCallback) {
         const that = this;
 
@@ -7565,6 +7707,11 @@
                 that.highlightAllParts();
             }
             this.blur();
+        });
+        this.$itemMcftDiagramPack.on('click', function () {
+            if ($(this).parents('li').hasClass('disabled')) return;
+            that.mcftDiagramPack();
+            $(this).blur();
         });
         this.$itemLabelsAllParts.on('click', function () {
             if (!$(this).parents('li').hasClass('disabled')) {
