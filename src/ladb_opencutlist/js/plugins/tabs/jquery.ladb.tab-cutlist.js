@@ -1659,7 +1659,16 @@
                                that.mcftEsc(u) + '<br><span style="color:#777;">' +
                                that.mcftMoney(money) + '</span></td>';
                     };
-                    return '<td>' + that.mcftEsc(r.code) + '</td>' +
+                    // THE TRADE NAME under the code. Amit, 2026-09-03, with
+                    // two supplier invoices: "The way industry reads below ply
+                    // as Plywood 16 mm ( 8x4 ) ... V0 and V1 and V2 are my
+                    // conventions." The code stays the identity; this is so a
+                    // line can be read against a purchase invoice without
+                    // translating it in your head.
+                    const trade = r.trade_name
+                        ? '<div style="color:#777;font-size:11px;">' +
+                          that.mcftEsc(r.trade_name) + '</div>' : '';
+                    return '<td>' + that.mcftEsc(r.code) + trade + '</td>' +
                            '<td ' + R + '>' + that.mcftEsc(r.qty) + '</td>' +
                            '<td>' + that.mcftEsc(r.uom) + '</td>' +
                            '<td ' + R + '>' + that.mcftMoney(r.rate) + '</td>' +
@@ -1773,15 +1782,27 @@
                     '</tr></thead><tbody>' +
                     rowsOf(purchase, function (p) {
                         const merged = (p.items || []).length > 1
-                            ? '<div style="color:#777;font-size:11px;">' +
+                            ? '<div style="color:#999;font-size:10px;">' +
                               that.mcftEsc((p.items || []).join(', ')) + '</div>'
                             : '';
-                        const covers = p.use_unit
-                            ? num(p.bought_units) + ' ' +
-                              that.mcftEsc(unitName[p.use_unit] || p.use_unit)
-                            : '';
+                        const named = [p.trade_name, p.decor]
+                            .filter(function (x) { return x; }).join(' · ');
+                        const trade = named
+                            ? '<div style="color:#777;font-size:11px;">' +
+                              that.mcftEsc(named) + '</div>' : '';
+                        // SQUARE METRES on board, because that is the unit the
+                        // supplier bills in — Vibrant Ply's own line reads
+                        // "17.861 sqm (6 Nos)". Consumption elsewhere stays in
+                        // square feet; that is an internal costing unit and
+                        // putting both on one screen is how they get confused.
+                        const covers = p.bought_sqm !== undefined
+                            ? num(p.bought_sqm) + ' sqm'
+                            : (p.use_unit
+                                ? num(p.bought_units) + ' ' +
+                                  that.mcftEsc(unitName[p.use_unit] || p.use_unit)
+                                : '');
                         return '<td>' + that.mcftEsc(p.family_label || '') + '</td>' +
-                               '<td>' + that.mcftEsc(p.label) + merged + '</td>' +
+                               '<td>' + that.mcftEsc(p.label) + trade + merged + '</td>' +
                                '<td ' + R + '><strong>' + num(p.qty) + '</strong> ' +
                                that.mcftEsc(p.uom || '') + '</td>' +
                                '<td ' + R + '>' + covers + '</td>' +
