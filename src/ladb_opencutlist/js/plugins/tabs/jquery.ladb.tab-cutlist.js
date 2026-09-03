@@ -1527,23 +1527,14 @@
                         : '') +
                     '</div>';
         }
-        // A GROUPED cut list understates hardware, and must say so where the
-        // number is read. Hardware quantity is OpenCutList's Qty — the row
-        // count, what you buy — so a row standing for 24 MiniFix reports 1.
-        // The saved import refuses such a CSV outright; the preview is a
-        // gauge, so it prices and shouts.
-        const gh = d.grouped_hardware || [];
-        if (gh.length > 0) {
-            html += '<div class="alert alert-danger" style="margin:0 0 10px;">' +
-                    '<strong>Grouped cut list &mdash; hardware is UNDERSTATED.</strong> ' +
-                    gh.length + ' hardware line(s) put several pieces on one row, ' +
-                    'so the quantity below counts rows, not pieces: ' +
-                    that.mcftEsc(gh.map(function (h) {
-                        return h.code + ' (' + h.rows + ' row' + (h.rows == 1 ? '' : 's') +
-                               ', ' + h.pieces + ' pieces)';
-                    }).join(', ')) +
-                    '. Re-export the part list with grouping OFF.</div>';
-        }
+        // THE GROUPED-EXPORT BANNER USED TO SHOUT HERE, in red, and it was
+        // wrong. It read "hardware is UNDERSTATED — the quantity below counts
+        // rows, not pieces", which was true only while quantity WAS the row
+        // count. Amit's own OpenCutList report proved the CSV's Quantity
+        // column IS the report's Qty column (see opencutlist.hardware_list),
+        // so a grouped export now reads exactly like an ungrouped one and
+        // there is nothing to warn about. Removed rather than softened: a
+        // banner that cannot be acted on teaches people to skip banners.
 
         // What the last CREATE did, carried across the re-price that follows
         // it. The run itself no longer creates anything, so this can only
@@ -1587,6 +1578,35 @@
                    that.mcftEsc(b[0]) + '</span></td>';
         };
         const R = 'class="ladb-cutlist-value ladb-cutlist-value-right"';
+
+        // EVERY TABLE WITH AN AMOUNT COLUMN CARRIES ITS TOTAL. Amit,
+        // 2026-09-03: "as a rule, whenever there is a table showing amount,
+        // you must display its total in column for that table." A column of
+        // money nobody has added is a column the reader adds by hand, and
+        // then two people have two numbers.
+        //
+        // `cols` places the label: a run of leading columns spanned by the
+        // word Total, then one cell per entry in `sums` — a number to total,
+        // or null for a column that must stay blank because adding it would
+        // be meaningless.
+        const totalRow = function (span, sums, label) {
+            let cells = '';
+            sums.forEach(function (v) {
+                // A number is money and is formatted as money; a STRING is
+                // already formatted and goes through as it is — hours are not
+                // rupees and must not pick up two decimal places from here.
+                const text = (v === null || v === undefined) ? ''
+                    : (typeof v === 'string' ? that.mcftEsc(v) : that.mcftMoney(v));
+                cells += '<th ' + R + '>' + text + '</th>';
+            });
+            return '<tfoot><tr><th colspan="' + span + '">' +
+                   (label || 'Total') + '</th>' + cells + '</tr></tfoot>';
+        };
+        const sumOf = function (list, key) {
+            return (list || []).reduce(function (a, r) {
+                return a + (Number(r[key]) || 0);
+            }, 0);
+        };
 
         html += '<h4 style="margin-top:0;">Material</h4>' +
                 '<table class="table table-bordered table-condensed"><thead><tr>' +
@@ -1656,7 +1676,17 @@
                     // Colouring only one of them would leave the other
                     // silently excluded and looking priced.
                     return r.quotable ? '' : DANGER_ROW;
-                }) + '</tbody></table>';
+                }) + '</tbody>' +
+                // Item, Qty, UOM, Rate are not addable — a count of boards
+                // plus a count of screws is not a quantity, and an average
+                // rate is not a rate. Only the three money columns total.
+                totalRow(4, [
+                    mats.reduce(function (a, r) {
+                        return a + (r.quotable ? (Number(r.amount) || 0) : 0); }, 0),
+                    sumOf(mats, 'consumed_amount'),
+                    sumOf(mats, 'unused_amount'),
+                    null, null
+                ]) + '</table>';
 
         // CONSUMED vs NOT CONSUMED. Amit, 2026-09-02: "show consumed material
         // and non consumed material in term of cost and square foot and
@@ -1690,7 +1720,12 @@
                                '<td ' + R + '>' + that.mcftMoney(u.consumed_cost) + '</td>' +
                                '<td ' + R + '>' + that.mcftMoney(u.unused_cost) + '</td>';
                     }) +
-                    '</tbody></table>' +
+                    '</tbody>' +
+                    // Square feet and metres are NEVER added together, so the
+                    // four unit columns stay blank; only the money totals.
+                    totalRow(5, [sumOf(util, 'consumed_cost'),
+                                 sumOf(util, 'unused_cost')]) +
+                    '</table>' +
                     '<p style="color:#777;font-size:11px;">Sheet goods are charged as WHOLE ' +
                     'boards and edge banding as whole rolls, so what is not consumed here is ' +
                     'bought and billed, not missing from the total. Hardware and joinery are ' +
@@ -1744,7 +1779,10 @@
                                '<td ' + R + '>' + (p.quotable ? that.mcftMoney(p.amount)
                                                               : '&mdash;') + '</td>';
                     }) +
-                    '</tbody></table>';
+                    '</tbody>' +
+                    totalRow(5, [purchase.reduce(function (a, p) {
+                        return a + (p.quotable ? (Number(p.amount) || 0) : 0); }, 0)]) +
+                    '</table>';
             // THE SANDWICH, stated as a number rather than assumed. A whole
             // laminate sheet is pressed onto a whole board and only then cut,
             // so the press eats two sheets per board however well the laminate
@@ -1755,7 +1793,11 @@
                         sw.ply_sheets + ' ply boards</strong> &mdash; ' +
                         (sw.matches
                           ? 'two per board, one pressed on each face. '
-                          : sw.bare_faces + ' face(s) going out unlaminated. ') +
+                          : (sw.bare_faces
+                              ? sw.bare_faces + ' face(s) going out unlaminated. '
+                              : 'more sheets than boards have faces &mdash; a board ' +
+                                'carries more d&eacute;cors than the nest gave it, so ' +
+                                'the cut list owes that panel another board. ')) +
                         'Laminate follows the BOARD, not its own nest: the sheet is ' +
                         'pressed on before the saw runs, so an offcut carries laminate ' +
                         'that was bought and never used. Every laminate is 1 mm &mdash; ' +
@@ -1829,7 +1871,15 @@
                         });
                     }
                     return body;
-                })() + '</tbody></table>';
+                })() + '</tbody>' +
+                // Operation, Workstation, Qty, Min/unit do not add: a count of
+                // boards plus a count of screws is not a quantity. Hours and
+                // Amount do, and they are the two the reader wants. Parents
+                // only — a child is already inside its parent's figure.
+                totalRow(4, [
+                    sumOf(lab, 'hours').toFixed(1) + ' h',
+                    sumOf(lab, 'amount'), null
+                ]) + '</table>';
 
         html += '<table class="table" style="width:auto;margin-left:auto;">' +
                 '<tr><td>Material</td><td ' + R + '>' + that.mcftMoney(d.material_total) + '</td></tr>' +
@@ -1958,7 +2008,12 @@
                                '<td ' + R + '>' + that.mcftMoney(f.consumed_cost) + '</td>' +
                                '<td ' + R + '>' + that.mcftMoney(f.total_cost) + '</td>';
                     }) +
-                    '<tr><th>Material</th><th></th><th></th><th></th><th></th><th></th>' +
+                    // BOTH money columns total, not just the right-hand one.
+                    // Units do not: square feet, metres and counts share these
+                    // columns, and a column adding all three is not a number.
+                    '<tr><th>Material</th><th></th><th></th><th></th><th></th>' +
+                    '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
+                    that.mcftMoney(sumOf(sm.families || [], 'consumed_cost')) + '</th>' +
                     '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
                     that.mcftMoney(sm.material) + '</th></tr>' +
                     '<tr><th>Labour</th><th></th><th></th><th></th><th></th><th></th>' +
