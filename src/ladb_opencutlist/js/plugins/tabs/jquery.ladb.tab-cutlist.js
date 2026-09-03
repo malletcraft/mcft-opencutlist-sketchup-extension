@@ -1697,6 +1697,73 @@
                     'counted pieces and carry no area, so they are not in this table.</p>';
         }
 
+        // THE SHOPPING LIST, which is not the cost table above it.
+        //
+        // Amit, 2026-09-03, on YS_KB_STUDY_BUKCAB: "SG_LAM_V0_12mm_a_a,
+        // SG_LAM_V0_16mm_a_a, SG_LAM_V1_16mm_a_b, SG_LAM_V1_16mm_a_c these
+        // all are same laminate ... can be clubbed as internal laminate from
+        // purchase point of view ... always show me purchase table
+        // separately."
+        //
+        // The millimetres in a LAMINATE code name the ply it is pressed onto,
+        // not the sheet you buy — every laminate is 1 mm — so four cost lines
+        // are one order. The grouping is done on the server so this table and
+        // the material total can never tell different stories.
+        const purchase = d.purchase || [];
+        if (purchase.length > 0) {
+            const sw = d.sandwich || {};
+            const unitName = { sqft: 'sq ft', m: 'm' };
+            const num = function (v) {
+                const n = Number(v || 0);
+                return n % 1 === 0 ? String(n) : n.toFixed(2);
+            };
+            html += '<h4>Purchase list &mdash; what to order</h4>' +
+                    '<table class="table table-bordered table-condensed"><thead><tr>' +
+                    '<th>Material</th><th>Item / d&eacute;cor</th><th>Buy</th>' +
+                    '<th>Covers</th><th>Rate</th><th>Amount</th>' +
+                    '</tr></thead><tbody>' +
+                    rowsOf(purchase, function (p) {
+                        const merged = (p.items || []).length > 1
+                            ? '<div style="color:#777;font-size:11px;">' +
+                              that.mcftEsc((p.items || []).join(', ')) + '</div>'
+                            : '';
+                        const covers = p.use_unit
+                            ? num(p.bought_units) + ' ' +
+                              that.mcftEsc(unitName[p.use_unit] || p.use_unit)
+                            : '';
+                        return '<td>' + that.mcftEsc(p.family_label || '') + '</td>' +
+                               '<td>' + that.mcftEsc(p.label) + merged + '</td>' +
+                               '<td ' + R + '><strong>' + num(p.qty) + '</strong> ' +
+                               that.mcftEsc(p.uom || '') + '</td>' +
+                               '<td ' + R + '>' + covers + '</td>' +
+                               '<td ' + R + '>' + that.mcftMoney(p.rate) +
+                               (p.mixed_rate ? ' <span style="color:#b94a48;" ' +
+                                'title="the merged Items are priced differently ' +
+                                'in ERP; this is the blended figure">&#9888;</span>' : '') +
+                               '</td>' +
+                               '<td ' + R + '>' + (p.quotable ? that.mcftMoney(p.amount)
+                                                              : '&mdash;') + '</td>';
+                    }) +
+                    '</tbody></table>';
+            // THE SANDWICH, stated as a number rather than assumed. A whole
+            // laminate sheet is pressed onto a whole board and only then cut,
+            // so the press eats two sheets per board however well the laminate
+            // would have nested. This line is the check Amit runs by eye.
+            if (sw.ply_sheets) {
+                html += '<p style="color:#777;font-size:11px;">' +
+                        '<strong>' + sw.laminate_sheets + ' laminate sheets for ' +
+                        sw.ply_sheets + ' ply boards</strong> &mdash; ' +
+                        (sw.matches
+                          ? 'two per board, one pressed on each face. '
+                          : sw.bare_faces + ' face(s) going out unlaminated. ') +
+                        'Laminate follows the BOARD, not its own nest: the sheet is ' +
+                        'pressed on before the saw runs, so an offcut carries laminate ' +
+                        'that was bought and never used. Every laminate is 1 mm &mdash; ' +
+                        'the mm in its code names the ply under it, which is why one ' +
+                        'd&eacute;cor is one order here and several lines above.</p>';
+            }
+        }
+
         html += '<h4>Labour &mdash; the 17 steps, through to installation</h4>' +
                 '<table class="table table-bordered table-condensed"><thead><tr>' +
                 // No ₹/hr. Amit, 2026-08-23: "no need to show rate / hr on
