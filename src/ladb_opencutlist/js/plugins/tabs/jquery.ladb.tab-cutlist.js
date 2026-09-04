@@ -1969,9 +1969,9 @@
                                  sumOf(des, 'amount'), null]) +
                     '</table>' +
                     '<p style="color:#777;font-size:11px;">Every assembly is a design ' +
-                    'item. Site measurement is a VISIT rather than a drawing &mdash; if ' +
-                    'one trip covered all the assemblies, set its Qty to 1 and ' +
-                    'Recalculate.</p>';
+                    'item, except the off-site steps: a VISIT is not a drawing, so site ' +
+                    'measurement counts once however many assemblies are drawn ' +
+                    'afterwards. Raise it if the room took more than one trip.</p>';
         }
 
         html += '<table class="table" style="width:auto;margin-left:auto;">' +
