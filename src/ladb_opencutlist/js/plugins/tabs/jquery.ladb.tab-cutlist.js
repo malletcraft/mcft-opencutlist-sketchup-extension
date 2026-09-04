@@ -1929,6 +1929,51 @@
                     sumOf(lab, 'amount'), null
                 ]) + '</table>';
 
+        // DESIGN — its own table, its own subtotal, inside the estimate total.
+        // Amit, 2026-09-04: "Design labor is missing on the estimate. every
+        // MCFT_AMBL_L , M or S is a design item to be charged" and "design
+        // labor table should be separate but added in total estimate."
+        //
+        // Driven by the assembly count, because an assembly is the thing that
+        // gets designed. Every row is editable: site measurement is a VISIT,
+        // not a drawing, so multiplying it by four assemblies bills a day for
+        // one trip — the number is shown, is wrong in an obvious direction,
+        // and can be typed over.
+        const des = d.design || [];
+        if (des.length > 0) {
+            html += '<h4>Design &mdash; the designer\'s time, per assembly</h4>' +
+                    '<table class="table table-bordered table-condensed"><thead><tr>' +
+                    '<th>Step</th><th>Workstation</th><th>Qty</th><th>Min/unit</th>' +
+                    '<th>Hours</th><th>Amount</th><th>Std time</th>' +
+                    '</tr></thead><tbody>' +
+                    rowsOf(des, function (r) {
+                        const box = function (kind, val) {
+                            return '<td ' + R + '><input type="text" ' +
+                                   'class="mcft-ov mcft-ov-' + kind + ' no-print" ' +
+                                   'data-op="' + that.mcftEsc(r.name) + '" ' +
+                                   'data-seed="' + that.mcftEsc(val) + '" ' +
+                                   'style="width:64px;text-align:right;" value="' +
+                                   that.mcftEsc(val) + '"><span class="only-print">' +
+                                   that.mcftEsc(val) + '</span></td>';
+                        };
+                        return '<td>' + that.mcftEsc(r.name) + '</td>' +
+                               '<td>' + that.mcftEsc(r.workstation) + '</td>' +
+                               box('qty', r.qty) + box('min', r.min_per_unit) +
+                               '<td ' + R + '>' + that.mcftEsc(r.hours) + '</td>' +
+                               '<td ' + R + '>' + that.mcftMoney(r.amount) + '</td>' +
+                               '<td><span class="label label-default">' +
+                               that.mcftEsc(r.min_source) + '</span></td>';
+                    }) +
+                    '</tbody>' +
+                    totalRow(4, [sumOf(des, 'hours').toFixed(1) + ' h',
+                                 sumOf(des, 'amount'), null]) +
+                    '</table>' +
+                    '<p style="color:#777;font-size:11px;">Every assembly is a design ' +
+                    'item. Site measurement is a VISIT rather than a drawing &mdash; if ' +
+                    'one trip covered all the assemblies, set its Qty to 1 and ' +
+                    'Recalculate.</p>';
+        }
+
         html += '<table class="table" style="width:auto;margin-left:auto;">' +
                 '<tr><td>Material</td><td ' + R + '>' + that.mcftMoney(d.material_total) + '</td></tr>' +
                 '<tr><td>Labour</td><td ' + R + '>' + that.mcftMoney(d.labour_total) + '</td></tr>' +
@@ -2043,22 +2088,36 @@
                     '<th>Item</th><th>Unit</th><th>Consumed</th><th>Total</th>' +
                     '<th>Used</th><th>Cost consumed</th><th>Cost total</th>' +
                     '</tr></thead><tbody>' +
-                    rowsOf(sm.families || [], function (f) {
-                        // A counted family is fully consumed by definition —
-                        // every piece bought gets fitted — so the percentage
-                        // is suppressed rather than printed as a proud 100%.
-                        const counted = (f.unit === 'nos');
-                        return '<td style="padding-left:18px;">' + that.mcftEsc(f.label) + '</td>' +
-                               '<td>' + that.mcftEsc(uLabel[f.unit] || f.unit || '') + '</td>' +
-                               '<td ' + R + '>' + that.mcftEsc(f.consumed_units) + '</td>' +
-                               '<td ' + R + '>' + that.mcftEsc(f.total_units) + '</td>' +
-                               '<td ' + R + '>' + (counted ? '&mdash;' : that.mcftEsc(f.used_pct) + '%') + '</td>' +
-                               '<td ' + R + '>' + that.mcftMoney(f.consumed_cost) + '</td>' +
-                               '<td ' + R + '>' + that.mcftMoney(f.total_cost) + '</td>';
-                    }) +
-                    // BOTH money columns total, not just the right-hand one.
-                    // Units do not: square feet, metres and counts share these
-                    // columns, and a column adding all three is not a number.
+                    (function () {
+                        // WHO CHOSE IT. Amit, 2026-09-04: "Total to be done at
+                        // Top level and amount shown at row level." So a group
+                        // is a row WITH money on it, not a heading with a gap
+                        // beside it, and its families sit indented underneath.
+                        const fams = {};
+                        (sm.families || []).forEach(function (f) { fams[f.family] = f; });
+                        let body = '';
+                        (sm.groups || []).forEach(function (g) {
+                            body += '<tr class="mcft-group">' +
+                                '<th>' + that.mcftEsc(g.label) + '</th>' +
+                                '<th></th><th></th><th></th><th></th>' +
+                                '<th ' + R + '>' + that.mcftMoney(g.consumed_cost) + '</th>' +
+                                '<th ' + R + '>' + that.mcftMoney(g.total_cost) + '</th></tr>';
+                            (g.families || []).forEach(function (key) {
+                                const f = fams[key];
+                                if (!f) return;
+                                const counted = (f.unit === 'nos');
+                                body += '<tr>' +
+                                    '<td style="padding-left:26px;">' + that.mcftEsc(f.label) + '</td>' +
+                                    '<td>' + that.mcftEsc(uLabel[f.unit] || f.unit || '') + '</td>' +
+                                    '<td ' + R + '>' + that.mcftEsc(f.consumed_units) + '</td>' +
+                                    '<td ' + R + '>' + that.mcftEsc(f.total_units) + '</td>' +
+                                    '<td ' + R + '>' + (counted ? '&mdash;' : that.mcftEsc(f.used_pct) + '%') + '</td>' +
+                                    '<td ' + R + '>' + that.mcftMoney(f.consumed_cost) + '</td>' +
+                                    '<td ' + R + '>' + that.mcftMoney(f.total_cost) + '</td></tr>';
+                            });
+                        });
+                        return body;
+                    })() +
                     '<tr><th>Material</th><th></th><th></th><th></th><th></th>' +
                     '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
                     that.mcftMoney(sumOf(sm.families || [], 'consumed_cost')) + '</th>' +
@@ -2067,10 +2126,15 @@
                     '<tr><th>Labour</th><th></th><th></th><th></th><th></th><th></th>' +
                     '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
                     that.mcftMoney(sm.labour) + '</th></tr>' +
+                    // Its own line, between labour and logistics, because it is
+                    // its own table above — and inside the estimate total.
+                    '<tr><th>Design</th><th></th><th></th><th></th><th></th><th></th>' +
+                    '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
+                    that.mcftMoney(sm.design) + '</th></tr>' +
                     '<tr><th>Logistics</th><th></th><th></th><th></th><th></th><th></th>' +
                     '<th class="ladb-cutlist-value ladb-cutlist-value-right">' +
                     that.mcftMoney(sm.logistics) + '</th></tr>' +
-                    '<tr><td>Material + Labour</td><td></td><td></td><td></td><td></td><td></td>' +
+                    '<tr><td>Material + Labour + Design</td><td></td><td></td><td></td><td></td><td></td>' +
                     '<td class="ladb-cutlist-value ladb-cutlist-value-right">' +
                     that.mcftMoney(sm.material_plus_labour) + '</td></tr>' +
                     '</tbody><tfoot><tr>' +
