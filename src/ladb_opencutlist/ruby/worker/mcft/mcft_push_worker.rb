@@ -141,6 +141,7 @@ module Ladb::OpenCutList
       cutlist.groups.each do |group|
         type_name = _material_type_name(group.material_type)
         next if type_name.nil?
+        board_th = _board_thickness(group)
         group.parts.each do |part|
           n += 1
           edges = part.edge_material_names || {}
@@ -150,7 +151,7 @@ module Ladb::OpenCutList
             n,
             part.name,
             part.count,
-            part.length, part.width, part.thickness,
+            part.length, part.width, board_th || part.thickness,
             type_name,
             group.material_name,
             _spec(edges[:ymin]), _spec(edges[:ymax]),
@@ -163,6 +164,32 @@ module Ladb::OpenCutList
         end
       end
       rows.join("\n")
+    end
+
+    # THE BOARD YOU BUY, not the shape somebody drew.
+    #
+    # OpenCutList carries two thicknesses and they are not the same number:
+    # group.std_thickness is the MATERIAL's standard board (what the Sheet
+    # goods table prints as "SG_PLY_V0_a_a / 16 mm"), while part.thickness is
+    # _def.size.thickness — the part's own measured geometry.
+    #
+    # This wrote part.thickness, and on 2026-09-09 that put SG_PLY_V0_1mm on
+    # Amit's YS_BATH_CABS estimate: a part painted with 16 mm ply but modelled
+    # 1 mm thick. His question is what found it — "how come a SG_PLY_V0_1mm
+    # exists? ... but then how native cutlist have no mention of 1 mm Plywood
+    # thickness". It does not, and could not: OCL GROUPS by std thickness, so
+    # that part sits invisibly inside the 16 mm row while the server was told
+    # 1 mm and minted a board nobody sells.
+    #
+    # Sheet goods only. Solid wood and dimensional stock are bought at the
+    # size they are cut to, so a part's own thickness IS the right number
+    # there; forcing a std thickness onto them would be the same bug pointed
+    # the other way. Falls back to the part when a group has no standard —
+    # an unset material must keep behaving exactly as it did before.
+    def _board_thickness(group)
+      return nil unless group.material_type == 2
+      th = group.std_thickness.to_s.strip
+      th.empty? ? nil : th
     end
 
     # 1=solid wood 2=sheet good 3=dimensional 4=edge 5=hardware 6=veneer

@@ -56,6 +56,15 @@ jobs:
       - name: Every dialog.<method>() call names a method that exists
         run: ruby tools/check-dialog-api.rb
 
+      # OpenCutList carries two thicknesses — the material's standard board
+      # and the part's own geometry — and the CSV must send the first for
+      # sheet goods. Sending the second put SG_PLY_V0_1mm on an estimate
+      # (2026-09-09) from a part painted 16 mm ply but modelled 1 mm thick,
+      # invisible in OCL's own table because it groups by the std thickness.
+      # A source check, because the ruby job parses rather than executes.
+      - name: The CSV sends the board thickness, not the drawn one
+        run: ruby tools/check-csv-thickness.rb
+
   smoke:
     name: The dialog actually runs
     runs-on: ubuntu-latest
