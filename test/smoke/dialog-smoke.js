@@ -268,6 +268,22 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
         `every amount column carries a total (${(html.match(/<tfoot>/g) || []).length} tfoots)`);
   check(html.indexOf('UNDERSTATED') === -1, 'the withdrawn grouped-hardware banner is gone');
 
+  // SG_PLY_V0_1mm (Amit, 2026-09-09). A part carrying the ply material at
+  // 1 mm reached the priced lines as a red NOT-IN-ERP board, which invited
+  // somebody to create an Item for 1 mm plywood. The bench now holds those
+  // parts back and names them; this is the half that puts them ON SCREEN,
+  // and it must NOT read like a missing rate.
+  check(html.indexOf('not a board anybody makes') !== -1,
+        'the impossible-board banner is shown');
+  check(html.indexOf('SG_PLY_V0_a_a at 1 mm') !== -1,
+        'the banner names the material and the millimetres to find in SketchUp');
+  const banner = html.slice(html.indexOf('not a board anybody makes'),
+                            html.indexOf('not a board anybody makes') + 900);
+  check(banner.indexOf('Nothing to create in ERP') !== -1,
+        'the banner says there is nothing to create, unlike the unpriced one');
+  check(banner.indexOf('ladb_mcft_btn_create') === -1,
+        'the impossible-board banner offers no create button');
+
   console.log('');
   if (failures.length) {
     failures.forEach((f) => console.error(`::error::smoke: ${f}`));

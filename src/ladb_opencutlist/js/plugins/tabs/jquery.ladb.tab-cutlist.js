@@ -1495,6 +1495,31 @@
                 that.mcftEsc(d.assembly_source) + ') &middot; wastage: ' +
                 that.mcftEsc(d.wastage) + '</p>';
 
+        // A BOARD NOBODY MAKES, shown ABOVE the unpriced banner and worded
+        // so the two cannot be confused. Amit, 2026-09-09, on SG_PLY_V0_1mm:
+        // "how come a SG_PLY_V0_1mm exists?" — because a part in that model
+        // carried the ply material at 1 mm, and every layer below took it at
+        // face value until the screen offered to CREATE an Item for 1 mm
+        // plywood. An unpriced line is fixed by keying a rate; this one is
+        // fixed in SketchUp, and the two remedies must not look alike.
+        //
+        // Deliberately NO create button: there is nothing to create.
+        if ((d.suspect_boards || []).length > 0) {
+            html += '<div class="alert alert-warning" style="margin:0 0 10px;"><strong>' +
+                    d.suspect_boards.length + ' part' +
+                    (d.suspect_boards.length == 1 ? '' : 's') +
+                    ' skipped &mdash; not a board anybody makes</strong>' +
+                    '<ul style="margin:6px 0 0 18px;">' +
+                    d.suspect_boards.map(function (line) {
+                        return '<li>' + that.mcftEsc(line) + '</li>';
+                    }).join('') +
+                    '</ul><div style="margin-top:6px;color:#7a5b2b;">' +
+                    'These are left out of the material list and the total. ' +
+                    'Nothing to create in ERP &mdash; fix the thickness in ' +
+                    'SketchUp, or repaint those parts with the right material.' +
+                    '</div></div>';
+        }
+
         // Unpriced lines are shown, counted, and LEFT OUT of the total. A
         // total that quietly omits three boards looks like an answer and is
         // not one.
