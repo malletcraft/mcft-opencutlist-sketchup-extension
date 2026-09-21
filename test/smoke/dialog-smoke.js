@@ -284,6 +284,16 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
   check(banner.indexOf('ladb_mcft_btn_create') === -1,
         'the impossible-board banner offers no create button');
 
+  // The casters (Amit, 2026-09-20). OCL counted 43 hardware pieces, the
+  // estimate priced 39, and nothing on the page said so. This is the line
+  // that would have said it.
+  check(html.indexOf('OpenCutList counted') !== -1,
+        'the hardware tally is shown');
+  check(html.indexOf('4 piece(s) are missing') !== -1,
+        'the tally names how many pieces went missing');
+  check(html.indexOf('Type is Hardware') !== -1,
+        'it says what to actually go and fix');
+
   console.log('');
   if (failures.length) {
     failures.forEach((f) => console.error(`::error::smoke: ${f}`));

@@ -1879,6 +1879,36 @@
             }
         }
 
+        // THE SAME CHECK FOR HARDWARE, and it exists because boards had one
+        // and hardware did not. Amit, 2026-09-20: "skp and native OCL has
+        // reported casters but MOP does not show casters why?" OpenCutList's
+        // Hardware table totalled 43 pieces on that model; the estimate
+        // priced 39. The four were HWD_Caster, and the page said nothing —
+        // a dropped line looks exactly like a model with no casters in it.
+        //
+        // PIECES, never lines: the designation lookup legitimately splits one
+        // coarse material into several real SKUs (HWD_Handle 9 becomes
+        // HandleDrawer_150mm 5 and Handle_150mm 4), so counting lines would
+        // cry wolf on every estimate. Shown even when it balances, like the
+        // sandwich line — a check only ever seen failing is one nobody
+        // trusts.
+        const ht = d.hardware_tally;
+        if (ht && Number(ht.counted) > 0) {
+            html += '<p style="' +
+                    (ht.matches ? 'color:#777;' : 'color:#a94442;font-weight:bold;') +
+                    'font-size:11px;">' +
+                    'Hardware: OpenCutList counted <strong>' + ht.counted +
+                    '</strong> pieces, the estimate priced <strong>' + ht.priced +
+                    '</strong>' +
+                    (ht.matches
+                      ? ' &mdash; they agree.</p>'
+                      : ' &mdash; <strong>' + ht.missing + ' piece(s) are missing ' +
+                        'from the estimate.</strong> A hardware material OpenCutList ' +
+                        'has no Type set for is never pushed. Open OpenCutList ' +
+                        '&rarr; Materials, check each hardware material\u2019s Type ' +
+                        'is Hardware, then estimate again.</p>');
+        }
+
         html += '<h4>Labour &mdash; the 17 steps, through to installation</h4>' +
                 '<table class="table table-bordered table-condensed"><thead><tr>' +
                 // No ₹/hr. Amit, 2026-08-23: "no need to show rate / hr on

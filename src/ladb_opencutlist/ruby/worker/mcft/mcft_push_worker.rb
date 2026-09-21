@@ -63,6 +63,7 @@ module Ladb::OpenCutList
         puts "[MCFT]   material #{m.name} → #{type_names[t] || t}"
       end
       @veneer_faces = 0
+      @skipped_groups = []
 
       targets = _sku_components(model)
       if targets.empty?
@@ -73,6 +74,7 @@ module Ladb::OpenCutList
         return { :errors => cutlist.errors } if cutlist.errors.any?
         _post_csv(_to_csv(cutlist), @sku)
         _warn_if_no_laminate
+        _warn_if_groups_skipped
         return { :success => true, :pushed => [ @sku ] }
       end
 
@@ -104,6 +106,7 @@ module Ladb::OpenCutList
         pushed << name
       end
       _warn_if_no_laminate
+      _warn_if_groups_skipped
       { :success => true, :pushed => pushed }
     end
 
@@ -140,7 +143,33 @@ module Ladb::OpenCutList
       n = 0
       cutlist.groups.each do |group|
         type_name = _material_type_name(group.material_type)
-        next if type_name.nil?
+        # A GROUP THIS CANNOT TYPE IS NOT A GROUP THAT DOES NOT MATTER.
+        #
+        # Veneer (6) is skipped deliberately — the server derives laminate
+        # from the ply faces — and that one is announced by
+        # _warn_if_no_laminate when it leaves nothing behind. Everything ELSE
+        # that lands here is a material whose type the map does not know:
+        # TYPE_UNKNOWN (0), which is what a material with no type set reports,
+        # or a type a future OpenCutList adds. Those were dropped in silence,
+        # and the estimate then simply had fewer lines than the model, with
+        # nothing anywhere saying so.
+        #
+        # Amit, 2026-09-20: "skp and native OCL has reported casters but MOP
+        # does not show casters why?" — HWD_Caster, four pieces, present in
+        # OpenCutList's own Hardware table and absent from the estimate. The
+        # hardware totals differed by exactly those four and nobody could have
+        # known from the screen.
+        if type_name.nil?
+          # ||= because _to_csv is reached two ways: the push path, which
+          # runs the initialiser above, and the class method parts_csv, which
+          # the ESTIMATE preview calls straight into. The existing
+          # `@veneer_faces += … if @veneer_faces` guards the same hazard; a
+          # bare << here would raise NoMethodError on nil and take the
+          # estimate screen down with it.
+          (@skipped_groups ||= []) << group.material_name.to_s unless
+            group.material_type == MaterialAttributes::TYPE_VENEER
+          next
+        end
         board_th = _board_thickness(group)
         group.parts.each do |part|
           n += 1
@@ -214,6 +243,24 @@ module Ladb::OpenCutList
     # materials — an empty count means the server will show ply/edges/hardware
     # and silently no SG_LAM rows, which reads as "materials not created
     # properly". Say it at the source instead.
+    # The other half of "say it at the source". A group the type map does not
+    # know is a group whose parts never reach the estimate, and the person
+    # reading the estimate cannot tell — the line is simply not there. Naming
+    # the material is the whole value: it is what they search for in
+    # OpenCutList -> Materials to set the type.
+    def _warn_if_groups_skipped
+      return if @skipped_groups.nil? || @skipped_groups.empty?
+      names = @skipped_groups.uniq.reject(&:empty?)
+      listed = names.empty? ? '(unnamed material)' : names.join("\n  ")
+      UI.messagebox(
+        "MCFT: #{@skipped_groups.size} material group(s) were NOT pushed " \
+        "because OpenCutList has no type set for them:\n\n  #{listed}\n\n" \
+        "Their parts are missing from the estimate. Open OpenCutList -> " \
+        "Materials, set each one's Type (Hardware, Sheet Good, Edge Banding, " \
+        "Solid Wood or Dimensional), then push again."
+      )
+    end
+
     def _warn_if_no_laminate
       return unless @veneer_faces == 0
       UI.messagebox(

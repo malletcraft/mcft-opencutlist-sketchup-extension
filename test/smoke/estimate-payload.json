@@ -1374,5 +1374,11 @@
   "wastage": "full board \u2014 price whole boards consumed, not used area",
   "suspect_boards": [
     "SG_PLY_V0_a_a at 1 mm is not a board anybody makes \u2014 1 part(s) skipped. Fix the thickness in SketchUp, or repaint those parts with the right material."
-  ]
+  ],
+  "hardware_tally": {
+    "counted": 43,
+    "priced": 39,
+    "missing": 4,
+    "matches": false
+  }
 }
