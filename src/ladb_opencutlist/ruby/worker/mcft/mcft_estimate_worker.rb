@@ -27,38 +27,40 @@ module Ladb::OpenCutList
   # are not consulted at all.
   class McftEstimateWorker
 
-    # The assembly marker. A component named ASMBL<something> is one assembly,
-    # and the count of them drives the Assembly labour line. Amit: "the
-    # component which starts with ASMBL is the assembly which goes into
-    # assemblies line of labor."
-    ASSEMBLY_RE = /\AASMBL/i
-
-    # ASMBL_L_WAR, ASMBL_M_DRW, ASMBL_S_SHELF. Amit, 2026-08-23: "we deal with
-    # three size of assembly, Large - carcass, medium drawers , small like
-    # shelfs ... so that i can do a better job of estimating the time."
+    # THE ONLY ASSEMBLY QUALIFIER: a component at the ROOT of the model whose
+    # name carries a SIZE TOKEN -- ASMBL_L, ASMBL_M or ASMBL_S.
     #
-    # A name with no size token counts as LARGE: every model drawn before this
-    # convention says plain ASMBL_WAR, and those are carcasses.
-    ASSEMBLY_SIZE_RE = /\AASMBL[_\-]?([LMS])(?:[_\-]|\z)/i
+    # Amit, 2026-09-25: "component starting with ASMBL_L or ASMBL_M or ASMBL_S
+    # at the root of skp file is the only assembly qualifier. ignore rest. its
+    # messing with my estimate."
+    #
+    # WHAT THIS REPLACES, and why the old rule kept being wrong. Counting was
+    # done over model.definitions -- every definition in the file, at every
+    # depth -- and MCFT_ was used as a stand-in for "top level", because a
+    # definition does not know where it sits. That proxy leaked in both
+    # directions: parts INSIDE an assembly are named ASMBL_* too and were
+    # counted beside their parent, and a bare ASMBL_* with no size token was
+    # counted as LARGE, so a model holding two medium assemblies priced as ten
+    # large ones. A fallback then made it worse: when no MCFT_ name was found
+    # the bare list was used instead, which is precisely the pile of inner
+    # parts.
+    #
+    # DEPTH IS THE REAL QUALIFIER and it is now tested directly, by walking
+    # the model's own entities rather than its definition list. The MCFT_
+    # prefix therefore stops carrying meaning it was never able to carry; it
+    # is accepted because existing models use it, and ignored otherwise.
+    #
+    # The size token is REQUIRED. "Ignore rest" is the instruction, and a
+    # nameless assembly silently priced as Large is exactly the guess that
+    # made the last three estimates wrong.
+    ROOT_ASSEMBLY_RE = /\A(?:MCFT[_\-]?)?ASMBL[_\-]?([LMS])(?:[_\-]|\z)/i
+
+    # Anything ASMBL-ish that did NOT qualify, so an ignored component is
+    # visible rather than silently absent. A count that quietly drops half a
+    # model is the failure this whole rule exists to end.
+    ASSEMBLY_ISH_RE = /ASMBL/i
+
     SIZE_OF = { 'L' => 'large', 'M' => 'medium', 'S' => 'small' }.freeze
-
-    # THE TOP-LEVEL MARKER. Amit, 2026-08-27, with the Outliner open beside
-    # the labour table: "Large / Medium / Small assemblies are not captured or
-    # identified correctly. Qualifier is TOp level component MCFT_ASMBL_L_
-    # MCFT_ASMBL_M_ MCFT_ASMBL_S_".
-    #
-    # Two faults with one cause. ASSEMBLY_RE anchors on ASMBL at the start of
-    # the name, so MCFT_ASMBL_M_BOOKCAB never matched — the real assembly was
-    # invisible — while the parts inside it (ASMBL_DRW_Box, ASMBL_Door_Loft_*,
-    # ASMBL_CARCASS_SHELF …) all matched, carried no size token, and were each
-    # counted as a LARGE assembly. A model holding two medium assemblies came
-    # out as ten large ones, and the estimate was priced on that.
-    #
-    # The MCFT_ prefix distinguishes the SKU from its own parts, so it is both
-    # the size qualifier and the top-level marker. The rule published on
-    # Estimate Settings has said MCFT_ASMBL_ since it was written; this
-    # matcher is what disagreed with it.
-    MCFT_ASSEMBLY_RE = /\AMCFT[_\-]?ASMBL[_\-]?(?:([LMS])(?:[_\-]|\z))?/i
 
     # into: :tab triggers an event the cutlist tab listens for, so the answer
     # lands in the estimate slide the user is already looking at. :dialog opens
@@ -241,46 +243,47 @@ module Ladb::OpenCutList
       end
     end
 
-    # Distinct ASMBL component DEFINITIONS, each multiplied by how many
-    # instances of it the model carries. Two wardrobes is two assemblies; one
-    # definition used twenty times inside another is still counted by its
-    # instances, because each one gets assembled.
+    # Every qualifying assembly at the root of the model.
     def _assembly_count(model)
       c = _assembly_counts(model)
       c['large'] + c['medium'] + c['small']
     end
 
-    # The same instance count, split by the size token in the name.
+    # Counted by ROOT INSTANCE, split by size token.
+    #
+    # model.entities is the root of the file, so a component placed there is
+    # at the root by construction and one nested inside another is not --
+    # which is the whole of the rule. Two wardrobes standing in the model are
+    # two assemblies; the twenty parts inside each are none.
+    #
+    # Instances and not definitions: the same wardrobe definition placed
+    # twice is two things to assemble, and definitions cannot tell the two
+    # cases apart.
     def _assembly_counts(model)
-      tops, bare = [], []
-      model.definitions.each do |d|
-        next if d.image? || d.group?
-        n = d.count_used_instances
-        next if n <= 0
-        if (m = MCFT_ASSEMBLY_RE.match(d.name))
-          tok = m[1]
-          tops << [tok ? SIZE_OF[tok.upcase] : 'large', !tok.nil?, n]
-        elsif d.name =~ ASSEMBLY_RE
-          m2 = ASSEMBLY_SIZE_RE.match(d.name)
-          bare << [m2 ? SIZE_OF[m2[1].upcase] : 'large', !m2.nil?, n]
+      out = { 'large' => 0, 'medium' => 0, 'small' => 0, 'unsized' => 0 }
+      ignored = []
+      model.entities.each do |e|
+        next unless e.is_a?(Sketchup::ComponentInstance)
+        d = e.definition
+        next if d.nil? || d.image?
+        # An instance may be renamed away from its definition; either name
+        # naming it an assembly is enough, because both are what a person
+        # sees in the Outliner.
+        name = [e.name.to_s, d.name.to_s].find { |n| ROOT_ASSEMBLY_RE.match(n) }
+        if name
+          out[SIZE_OF[ROOT_ASSEMBLY_RE.match(name)[1].upcase]] += 1
+        elsif e.name.to_s =~ ASSEMBLY_ISH_RE || d.name.to_s =~ ASSEMBLY_ISH_RE
+          # At the root, ASMBL-ish, and no size token: named like an assembly
+          # and not counted as one. Said out loud rather than dropped.
+          ignored << (e.name.to_s.empty? ? d.name.to_s : e.name.to_s)
         end
       end
-
-      # TOP-LEVEL WINS OUTRIGHT when any is present. The parts inside an
-      # assembly are named ASMBL_* too, and counting them beside their parent
-      # is what turned two medium assemblies into ten large ones.
-      #
-      # The fallback is not laziness: every model drawn before this convention
-      # says plain ASMBL_WAR at top level with no MCFT_ prefix, and demanding
-      # the prefix outright would price those at zero assemblies without
-      # saying why.
-      chosen = tops.any? ? tops : bare
-      out = { 'large' => 0, 'medium' => 0, 'small' => 0, 'unsized' => 0 }
-      chosen.each do |size, sized, n|
-        out[size] += n
-        out['unsized'] += n unless sized
-      end
-      out['top_level'] = tops.any?
+      out['top_level'] = out['large'] + out['medium'] + out['small'] > 0
+      # `unsized` keeps carrying to the bench and back, as it always has, but
+      # its CONSEQUENCE has changed: these are no longer counted as Large,
+      # they are not counted at all. The warning text says so.
+      out['ignored'] = ignored.uniq
+      out['unsized'] = ignored.size
       out
     end
   end

@@ -2229,10 +2229,16 @@
         const that = this;
         let warn = '';
         if (d && d.assembly_unsized) {
+            // Amit, 2026-09-25: "component starting with ASMBL_L or ASMBL_M
+            // or ASMBL_S at the root of skp file is the only assembly
+            // qualifier. ignore rest." So these are IGNORED now, not counted
+            // as Large — and the old wording said the opposite, which would
+            // send somebody looking for time that was never added.
             warn = '<div style="color:#922;margin-top:6px;">' + d.assembly_unsized +
-                   ' assembly component(s) carry no size token and are counted as ' +
-                   'LARGE. Name them ASMBL_L_… / ASMBL_M_… / ASMBL_S_… to price ' +
-                   'them properly.</div>';
+                   ' component(s) at the model root are named ASMBL… but carry ' +
+                   'no size token, so they are NOT counted as assemblies. ' +
+                   'Rename them ASMBL_L_… / ASMBL_M_… / ASMBL_S_… to include ' +
+                   'them.</div>';
         }
         return '<div class="no-print" style="margin-top:12px;padding-top:10px;' +
                'border-top:1px solid #e6e8eb;">' +

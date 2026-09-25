@@ -65,6 +65,14 @@ jobs:
       - name: The CSV sends the board thickness, not the drawn one
         run: ruby tools/check-csv-thickness.rb
 
+      # The assembly qualifier has now been wrong three times, and each time it
+      # was the REGEX and not the walk: ASMBL matched the parts inside an
+      # assembly, a missing size token was promoted to Large, and MCFT_ was
+      # used as a stand-in for "top level" that it could not be. The walk needs
+      # a model; the regex needs nothing and is where every fault has been.
+      - name: The assembly rule classifies names the way Amit stated it
+        run: ruby tools/check-assembly-rule.rb
+
   smoke:
     name: The dialog actually runs
     runs-on: ubuntu-latest
