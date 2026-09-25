@@ -161,6 +161,11 @@ module Ladb::OpenCutList
           # what the CSV carries. The model is the one place that knows.
           'assembly_count' => _assembly_count(model),
           'assembly_counts' => _assembly_counts(model),
+          # OpenCutList's OWN counts, so the server can reconcile what it
+          # priced against what the model held. Two silent drops have been
+          # found by Amit reading both tables side by side; this is what makes
+          # the comparison happen every time instead.
+          'ocl_totals' => McftPushWorker.ocl_totals(cutlist),
         }
         # Cached BEFORE the per-run fields are added, so a later refresh
         # starts from the model reading alone and not from somebody else's
@@ -259,10 +264,38 @@ module Ladb::OpenCutList
     # Instances and not definitions: the same wardrobe definition placed
     # twice is two things to assemble, and definitions cannot tell the two
     # cases apart.
+    # THE SAME SCOPE THE CUTLIST USES, which is the whole point.
+    #
+    # Amit, 2026-09-25: "when i am scoping in and scoping out ASMBL_L/M/S
+    # material and labor are not changing. why so. verify."
+    #
+    # Verified, and he is half right in a way that explains the whole
+    # symptom. The MATERIAL follows the scope already: parts_csv walks
+    # cutlist.groups, and CutlistGenerateWorker picks model.selection when
+    # something is selected and model.active_entities otherwise. The ASSEMBLY
+    # COUNT did not follow anything -- it walked the model's ROOT entities
+    # whatever was selected and wherever the user had scoped to. So the
+    # labour line, which the count drives, was frozen at whatever the whole
+    # file contains.
+    #
+    # Two readings of one model that disagree is worse than either being
+    # wrong, because the estimate looks internally consistent. This mirrors
+    # CutlistGenerateWorker's own choice exactly, so the two cannot diverge
+    # again: select something and both narrow to it; scope into a component
+    # and both narrow to its contents; select nothing at the top level and
+    # both mean the whole file.
+    #
+    # "Root" therefore means the root of WHAT IS BEING LOOKED AT, which is the
+    # only reading under which scoping in is meaningful at all.
+    def _scope_entities(model)
+      return model.selection unless model.selection.empty?
+      model.active_entities || model.entities
+    end
+
     def _assembly_counts(model)
       out = { 'large' => 0, 'medium' => 0, 'small' => 0, 'unsized' => 0 }
       ignored = []
-      model.entities.each do |e|
+      _scope_entities(model).each do |e|
         next unless e.is_a?(Sketchup::ComponentInstance)
         d = e.definition
         next if d.nil? || d.image?
@@ -284,6 +317,12 @@ module Ladb::OpenCutList
       # they are not counted at all. The warning text says so.
       out['ignored'] = ignored.uniq
       out['unsized'] = ignored.size
+      # WHAT WAS COUNTED, AND OVER WHAT. A number with no statement of its
+      # scope is how the last mismatch stayed invisible: the estimate showed
+      # a labour line that never moved and nothing said which entities it had
+      # been taken from.
+      out['scope'] = model.selection.empty? ? 'model' : 'selection'
+      out['scope_size'] = _scope_entities(model).count
       out
     end
   end

@@ -136,6 +136,11 @@ module Ladb::OpenCutList
       new(site_url: '', api_key: '', api_secret: '').send(:_to_csv, cutlist)
     end
 
+    # OCL's own totals, for the server to reconcile its pricing against.
+    def self.ocl_totals(cutlist)
+      new(site_url: '', api_key: '', api_secret: '').send(:_ocl_totals, cutlist)
+    end
+
     # One row per PART (grouped, with Quantity) — the shape the server's
     # opencutlist.parse_opencutlist_csv + part_qty already handle.
     def _to_csv(cutlist)
@@ -193,6 +198,45 @@ module Ladb::OpenCutList
         end
       end
       rows.join("\n")
+    end
+
+    # WHAT OPENCUTLIST ITSELF COUNTED, before this file touched any of it.
+    #
+    # Amit, 2026-09-25: "OCL native calculation of ply and material ... gives
+    # me surprises like caster in earlier case. fix it for once. OCL native
+    # material is fantastic. you just need to read it carefully without
+    # messing up."
+    #
+    # He is right about where the fault has been. Twice now the estimate has
+    # disagreed with OpenCutList's own tables and the only thing that noticed
+    # was Amit reading both: HWD_Caster, four pieces, dropped because its
+    # material had no type set; and SG_PLY_V0_1mm, minted because the part's
+    # measured thickness was sent instead of the board's. Both were fixed
+    # afterwards, one material at a time.
+    #
+    # This is the general form of that fix. OCL's own group/part counts travel
+    # WITH the CSV, so the server can compare what it priced against what the
+    # model actually contained and say so when they differ -- for every
+    # material type, not just the one somebody happened to look at. A
+    # reconciliation that runs every time is worth more than three fixes for
+    # three materials.
+    #
+    # Veneer is excluded because it is deliberately not pushed: the server
+    # derives laminate from the ply faces, and counting it here would report a
+    # mismatch on every estimate.
+    def _ocl_totals(cutlist)
+      out = {}
+      cutlist.groups.each do |group|
+        name = _material_type_name(group.material_type)
+        next if name.nil?
+        t = (out[name] ||= { 'groups' => 0, 'parts' => 0, 'pieces' => 0 })
+        t['groups'] += 1
+        group.parts.each do |part|
+          t['parts'] += 1
+          t['pieces'] += part.count.to_i
+        end
+      end
+      out
     end
 
     # THE BOARD YOU BUY, not the shape somebody drew.
