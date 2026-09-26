@@ -1380,5 +1380,12 @@
     "priced": 39,
     "missing": 4,
     "matches": false
+  },
+  "ocl_totals": {
+    "Sheet Goods":  { "groups": 3, "parts": 47, "pieces": 62 },
+    "Edge Banding": { "groups": 2, "parts": 31, "pieces": 40 },
+    "Hardware":     { "groups": 8, "parts": 8,  "pieces": 103 },
+    "Solid Wood":   { "groups": 1, "parts": 1,  "pieces": 4 },
+    "Veneer":       { "groups": 4, "parts": 40, "pieces": 40 }
   }
 }

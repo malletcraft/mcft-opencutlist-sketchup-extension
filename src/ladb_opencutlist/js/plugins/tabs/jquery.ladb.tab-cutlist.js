@@ -1401,6 +1401,111 @@
         return [ s.replace('erp:', 'ERP '), false ];
     };
 
+    // WHAT OPENCUTLIST COUNTED AGAINST WHAT THE ESTIMATE PRICED, computed HERE.
+    //
+    // Amit, 2026-09-25: "OCL native calculation of ply and material ... gives
+    // me surprises like caster in earlier case. fix it for once. OCL native
+    // material is fantastic. you just need to read it carefully without
+    // messing up."
+    //
+    // WHY IT LIVES IN THE PLUGIN. Amit, the same day: "unless plugin changes
+    // touches my custom development for pull do not make any changes to bench
+    // as it increases testing time of plugin." The plugin already holds both
+    // sides — OpenCutList's own group/part counts from the scan it just did,
+    // and the priced rows the server hands back — so the comparison needs
+    // nothing new from the bench, and a correction to it ships in one plugin
+    // push instead of waiting on a deploy and a migrate.
+    //
+    // WHAT IS COMPARABLE, AND WHAT IS NOT. This is the whole difficulty, and
+    // getting it wrong produces a warning on every estimate, which is worse
+    // than no warning at all — the first one teaches the reader to ignore it.
+    //
+    //   Hardware       pieces against pieces. A caster is a caster on both
+    //                  sides, so the counts must balance exactly. This is the
+    //                  2026-09-20 case: OpenCutList 43, estimate 39.
+    //   Sheet Goods    OpenCutList counts PANELS; the estimate prices BOARDS.
+    //                  Forty panels nesting into six sheets is the nesting
+    //                  working, not thirty-four missing. Coverage only.
+    //   Edge Banding   OpenCutList counts BANDS as parts; the estimate prices
+    //                  METRES, taken off the sheet parts' edge columns. Two
+    //                  views of one thing, in different units. Coverage only.
+    //   Solid Wood     Neither is priced AT ALL. Verified against the live
+    //   Dimensional    site on 2026-09-26: a CSV carrying four teak legs and
+    //                  six pine battens comes back with zero rows for them —
+    //                  the server's aggregator buckets Sheet Goods and
+    //                  Hardware and silently drops the rest. That is a real
+    //                  hole and it is what this line exists to say out loud.
+    //
+    // A quantity comparison is therefore made ONLY where the two sides count
+    // the same thing. Everywhere else the question is "did anything at all
+    // come back for this material type", which is the question that actually
+    // catches a dropped group.
+    LadbTabCutlist.prototype.mcftMaterialAudit = function (ocl, materials) {
+        // OpenCutList's type name -> the row kinds the estimate should show
+        // for it, and whether the two sides count in the same unit.
+        // Veneer is absent on purpose: it is never pushed, because laminate is
+        // derived from the ply faces, so reconciling it would fail always.
+        const MAP = {
+            'Hardware':     { kinds: [ 'hardware' ], label: 'hardware',      exact: true },
+            'Sheet Goods':  { kinds: [ 'sheet' ],    label: 'board',         exact: false },
+            'Edge Banding': { kinds: [ 'edge' ],     label: 'edge banding',  exact: false },
+            'Solid Wood':   { kinds: [],             label: 'solid wood',    exact: false },
+            'Dimensional':  { kinds: [],             label: 'dimensional lumber', exact: false }
+        };
+        const rows = materials || [];
+        const piecesOf = function (r) {
+            // A packet line knows how many pieces it holds; everything else
+            // counts one per unit of qty.
+            const n = r.pieces_needed;
+            return Number(n === null || n === undefined || n === '' ? (r.qty || 0) : n) || 0;
+        };
+        const out = { lines: [], problems: [] };
+        Object.keys(MAP).forEach(function (type) {
+            const counted = Number(((ocl || {})[type] || {}).pieces || 0);
+            if (!counted) return;
+            const spec = MAP[type];
+            const mine = rows.filter(function (r) { return spec.kinds.indexOf(r.kind) >= 0; });
+            const priced = mine.reduce(function (a, r) { return a + piecesOf(r); }, 0);
+
+            if (!spec.kinds.length) {
+                out.problems.push(
+                    type + ': OpenCutList counted ' + counted + ' piece(s) and the ' +
+                    'estimate prices none. ' + spec.label.charAt(0).toUpperCase() +
+                    spec.label.slice(1) + ' is not costed at all — the estimate ' +
+                    'prices sheet goods and hardware only. Model these parts as ' +
+                    'sheet goods, or price them outside the estimate.');
+                out.lines.push({ type: type, text: counted + ' piece(s), not costed', bad: true });
+                return;
+            }
+            if (!mine.length) {
+                out.problems.push(
+                    type + ': OpenCutList counted ' + counted + ' piece(s) and the ' +
+                    'estimate has no ' + spec.label + ' line at all. A material with ' +
+                    'no Type set in OpenCutList is never pushed — open OpenCutList ' +
+                    '→ Materials, set the Type, then estimate again.');
+                out.lines.push({ type: type, text: counted + ' piece(s), nothing priced', bad: true });
+                return;
+            }
+            if (spec.exact && priced !== counted) {
+                out.problems.push(
+                    type + ': OpenCutList counted ' + counted + ' piece(s), the ' +
+                    'estimate priced ' + priced +
+                    (counted > priced ? ' — ' + (counted - priced) + ' missing.' : '.') +
+                    ' A material with no Type set in OpenCutList is never pushed.');
+                out.lines.push({ type: type, text: counted + ' counted, ' + priced + ' priced', bad: true });
+                return;
+            }
+            out.lines.push({
+                type: type,
+                text: spec.exact
+                    ? counted + ' piece(s), all priced'
+                    : counted + ' piece(s) → ' + mine.length + ' ' + spec.label + ' line(s)',
+                bad: false
+            });
+        });
+        return out;
+    };
+
     LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin, reuseScan) {
         const that = this;
         const $box = $('#ladb_mcft_estimate', $slide);
@@ -1907,6 +2012,35 @@
                         'has no Type set for is never pushed. Open OpenCutList ' +
                         '&rarr; Materials, check each hardware material\u2019s Type ' +
                         'is Hardware, then estimate again.</p>');
+        }
+
+        // THE SAME CHECK FOR EVERY MATERIAL TYPE, and computed on this side.
+        //
+        // The hardware line above exists because four casters went missing and
+        // only Amit reading two tables found them. This is that check widened
+        // to every type OpenCutList reports, so a drop in solid wood or a
+        // material with no Type set announces itself the same way.
+        //
+        // Shown even when everything balances, for the same reason the
+        // sandwich line is: a check only ever seen failing is one nobody
+        // trusts, and the green form is what teaches the reader what the red
+        // one means.
+        const audit = that.mcftMaterialAudit(d.ocl_totals, d.materials);
+        if (audit.lines.length) {
+            html += '<p style="color:#777;font-size:11px;">' +
+                    '<strong>OpenCutList against the estimate</strong> &mdash; ' +
+                    audit.lines.map(function (l) {
+                        return (l.bad ? '<span style="color:#a94442;font-weight:bold;">' : '<span>') +
+                               that.mcftEsc(l.type) + ': ' + that.mcftEsc(l.text) + '</span>';
+                    }).join(' &middot; ') + '.</p>';
+        }
+        if (audit.problems.length) {
+            html += '<div class="alert alert-danger" style="font-size:11px;padding:8px;">' +
+                    '<strong>The estimate does not hold everything the model does.</strong>' +
+                    '<ul style="margin:6px 0 0 0;padding-left:18px;">' +
+                    audit.problems.map(function (t) {
+                        return '<li>' + that.mcftEsc(t) + '</li>';
+                    }).join('') + '</ul></div>';
         }
 
         html += '<h4>Labour &mdash; the 17 steps, through to installation</h4>' +

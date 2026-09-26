@@ -161,10 +161,19 @@ module Ladb::OpenCutList
           # what the CSV carries. The model is the one place that knows.
           'assembly_count' => _assembly_count(model),
           'assembly_counts' => _assembly_counts(model),
-          # OpenCutList's OWN counts, so the server can reconcile what it
-          # priced against what the model held. Two silent drops have been
-          # found by Amit reading both tables side by side; this is what makes
-          # the comparison happen every time instead.
+          # OpenCutList's OWN counts, kept so the PLUGIN can reconcile what
+          # the server priced against what the model held. Two silent drops
+          # have been found by Amit reading both tables side by side; this is
+          # what makes the comparison happen every time instead.
+          #
+          # NOT SENT TO THE BENCH, and that is the point. Amit, 2026-09-25:
+          # "unless plugin changes touches my custom development for pull do
+          # not make any changes to bench as it increases testing time of
+          # plugin." The plugin holds OpenCutList's totals AND receives the
+          # priced rows back in the same response, so it has both sides of
+          # the comparison already; doing it on the server bought nothing and
+          # made every correction to it wait on a deploy and a migrate.
+          # `_post_body` strips this key before the POST.
           'ocl_totals' => McftPushWorker.ocl_totals(cutlist),
         }
         # Cached BEFORE the per-run fields are added, so a later refresh
@@ -205,12 +214,12 @@ module Ladb::OpenCutList
         'Authorization' => "token #{@api_key}:#{@api_secret}",
         'Content-Type' => 'application/json',
       }
-      request.body = payload.to_json
+      request.body = _post_body(payload).to_json
       request.start do |req, response|
         if response && response.status_code == 200
           begin
             data = JSON.parse(response.body)['message'] || {}
-            _deliver(data)
+            _deliver(data, payload['ocl_totals'])
           rescue StandardError => e
             _fail("estimate parse error — #{e.message}")
           end
@@ -223,12 +232,26 @@ module Ladb::OpenCutList
 
     private
 
-    def _deliver(data)
+    # What actually goes over the wire. Everything except the keys that exist
+    # only for this side of the conversation — today just OpenCutList's own
+    # totals, which the reconciliation reads locally. Sending them anyway
+    # would leave two implementations of one comparison, on opposite sides of
+    # a deploy, free to disagree.
+    def _post_body(payload)
+      payload.reject { |k, _| LOCAL_ONLY_KEYS.include?(k) }
+    end
+
+    LOCAL_ONLY_KEYS = %w[ocl_totals].freeze
+
+    def _deliver(data, ocl_totals = nil)
       # The site the numbers came from, as a URL a browser can open.
       # frappe.local.site is a HOSTNAME, and the row-level "open this Item"
       # link needs a scheme — the plugin is the only side that holds the
       # configured URL, so it is the side that adds it.
       data['site_url'] = @site_url if data.is_a?(Hash)
+      # The other half of the reconciliation, handed to the screen beside the
+      # priced rows it has to be read against.
+      data['ocl_totals'] = ocl_totals if data.is_a?(Hash) && ocl_totals
       if @into == :dialog
         McftEstimateDialog.show(data)
       else

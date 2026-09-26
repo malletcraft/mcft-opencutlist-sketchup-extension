@@ -37,8 +37,8 @@ module Ladb::OpenCutList
 
     def setup_menu(submenu)
       submenu.add_separator
-      submenu.add_item('MCFT: Push panel part list to ERPNext') { _push }
-      submenu.add_item('MCFT: Push ISO views to ERPNext') { _push_iso }
+      submenu.add_item('MCFT: Push panel part list to ERPNext (SUSPENDED)') { _push }
+      submenu.add_item('MCFT: Push ISO views to ERPNext (SUSPENDED)') { _push_iso }
       submenu.add_item('MCFT: Pull décor map from ERPNext') { _pull }
       submenu.add_item('MCFT: Link model to project…') { _link_project }
       submenu.add_item('MCFT: Settings…') { _edit_settings }
@@ -218,22 +218,50 @@ module Ladb::OpenCutList
       { :assembly_min => Sketchup.read_default(SETTINGS_SECTION, 'assembly_min', '').to_s }
     end
 
+    # PUSH IS SUSPENDED, DELIBERATELY AND VISIBLY.
+    #
+    # Amit, 2026-09-25: "For some time i do not want to push any data from
+    # sketchup to erp as its not ready yet. but pull is fine like labor cost
+    # phases, material cost etc. so that plugin will be ready faster."
+    #
+    # The MRP side is not built, so a part list landing on a SKU creates work
+    # in ERP that nothing downstream consumes, and every such push has to be
+    # found and undone later. The PULL half — estimate_preview handing back
+    # labour phases and priced material — is untouched and is the half the
+    # plugin is being readied on.
+    #
+    # DISABLED, NOT DELETED, and the button stays where it was. A command that
+    # silently vanishes teaches nobody anything: the next person to open this
+    # plugin — or me, in three weeks — would look for a feature that used to
+    # exist and find no trace of why it went. Saying it on the screen puts the
+    # decision where the person who needs it is standing, instead of leaving it
+    # in a chat log. Deleting the code would also cost the two class methods
+    # the ESTIMATE depends on, McftPushWorker.parts_csv and .ocl_totals, which
+    # are exactly the pull path.
+    #
+    # WHAT LIFTS IT: MRP ready in ERPNext. Remove these two guards, nothing
+    # else — the workers below them have not been touched.
+    SUSPENDED_UNTIL_MRP =
+      "MCFT: pushing to ERPNext is SUSPENDED.\n\n" \
+      "Nothing was sent. MRP is not ready on the bench yet, so a part list " \
+      "or an ISO view landing on a SKU makes work in ERP that nothing reads " \
+      "and somebody has to undo later.\n\n" \
+      "The ESTIMATE still works and is unaffected: it asks ERPNext for " \
+      "labour phases and material rates and prices the model on screen, " \
+      "without writing anything.\n\n" \
+      "This lifts when MRP is ready.".freeze
+
     def _push
-      s = _guarded or return
-      McftPushWorker.new(site_url: s[:site_url], api_key: s[:api_key],
-                         api_secret: s[:api_secret], sku: s[:sku],
-                         project: s[:project], initials: s[:initials]).run
+      UI.messagebox(SUSPENDED_UNTIL_MRP)
+      { :errors => [ 'mcft.error.push_suspended' ] }
     end
 
     # Separate command while the render path proves itself in the field —
-    # folds into _push once trusted (execution/DESIGN.md §6.2).
+    # folds into _push once trusted (execution/DESIGN.md §6.2). Suspended with
+    # it: an ISO view is model data going into ERP just as a part list is.
     def _push_iso
-      s = _guarded or return
-      sent = McftIsoWorker.new(site_url: s[:site_url], api_key: s[:api_key],
-                               api_secret: s[:api_secret], project: s[:project]).run
-      UI.messagebox(sent > 0 ?
-        "MCFT: #{sent} ISO view(s) rendered and sent — results in the Ruby console." :
-        'MCFT: no SKU components found to render (name them MCFT_<ROOM>_<ARTICLE>).')
+      UI.messagebox(SUSPENDED_UNTIL_MRP)
+      { :errors => [ 'mcft.error.push_suspended' ] }
     end
 
     def _pull

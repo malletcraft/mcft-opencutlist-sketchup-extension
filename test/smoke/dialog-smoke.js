@@ -294,6 +294,39 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
   check(html.indexOf('Type is Hardware') !== -1,
         'it says what to actually go and fix');
 
+  // THE RECONCILIATION, now computed in the plugin rather than on the bench.
+  //
+  // The fixture's ocl_totals exercise all four branches at once, and the two
+  // that must stay SILENT are the more important half: a warning that fires on
+  // every estimate is worse than none, because it teaches the reader to skip
+  // the line where the real one will appear.
+  check(html.indexOf('OpenCutList against the estimate') !== -1,
+        'the per-type reconciliation line is shown');
+  // 62 panels nesting into 9 boards is the nesting working. The server-side
+  // version of this check compared those two numbers directly and would have
+  // reported 53 pieces missing on this very payload.
+  check(html.indexOf('Sheet Goods: 62 piece(s)') !== -1
+        && html.indexOf('3 board line(s)') !== -1,
+        'sheet goods are reported as panels against board lines, not board counts');
+  check(!/Sheet Goods: OpenCutList counted/.test(html),
+        'nesting 62 panels into 9 boards raises no alarm');
+  check(!/Edge Banding: OpenCutList counted/.test(html),
+        'edge banding counted as bands and priced in metres raises no alarm');
+  // Solid wood reaches the CSV and is then dropped by the server's aggregator,
+  // which buckets sheet goods and hardware and nothing else. Verified against
+  // the live site on 2026-09-26 with a CSV carrying teak legs and pine
+  // battens: zero rows came back for either.
+  check(html.indexOf('Solid wood is not costed at all') !== -1,
+        'solid wood is named as never costed, not as a rate problem');
+  // The casters again, this time from the plugin's own arithmetic: 103
+  // counted against the 99 pieces the priced rows add up to.
+  check(html.indexOf('Hardware: OpenCutList counted 103 piece(s)') !== -1,
+        'the plugin-side hardware count is reported');
+  check(html.indexOf('The estimate does not hold everything the model does') !== -1,
+        'the problems are collected where they cannot be missed');
+  check(html.indexOf('Veneer') === -1 || !/Veneer: OpenCutList/.test(html),
+        'veneer is never reconciled — it is deliberately not pushed');
+
   console.log('');
   if (failures.length) {
     failures.forEach((f) => console.error(`::error::smoke: ${f}`));

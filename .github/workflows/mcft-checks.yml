@@ -73,6 +73,15 @@ jobs:
       - name: The assembly rule classifies names the way Amit stated it
         run: ruby tools/check-assembly-rule.rb
 
+      # Push to ERPNext is off until MRP is ready (Amit, 2026-09-25: "i do not
+      # want to push any data from sketchup to erp as its not ready yet").
+      # The commands were disabled rather than deleted — so the plugin says WHY
+      # on screen, and so the estimate keeps the two class methods it borrows
+      # from the push worker — which leaves the workers one line from being
+      # called again. This is that line.
+      - name: Pushing to ERPNext is still suspended
+        run: ruby tools/check-push-suspended.rb
+
   smoke:
     name: The dialog actually runs
     runs-on: ubuntu-latest
