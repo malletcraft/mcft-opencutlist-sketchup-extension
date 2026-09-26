@@ -1446,11 +1446,15 @@
         // Veneer is absent on purpose: it is never pushed, because laminate is
         // derived from the ply faces, so reconciling it would fail always.
         const MAP = {
-            'Hardware':     { kinds: [ 'hardware' ], label: 'hardware',      exact: true },
-            'Sheet Goods':  { kinds: [ 'sheet' ],    label: 'board',         exact: false },
-            'Edge Banding': { kinds: [ 'edge' ],     label: 'edge banding',  exact: false },
-            'Solid Wood':   { kinds: [],             label: 'solid wood',    exact: false },
-            'Dimensional':  { kinds: [],             label: 'dimensional lumber', exact: false }
+            'Hardware':     { kinds: [ 'hardware' ],    label: 'hardware',     exact: true },
+            'Sheet Goods':  { kinds: [ 'sheet' ],       label: 'board',        exact: false },
+            'Edge Banding': { kinds: [ 'edge' ],        label: 'edge banding', exact: false },
+            // Priced from 2026-09-26, by VOLUME. They were dropped entirely
+            // before that and this line is what said so. Pieces against cubic
+            // feet is not a comparison, so coverage only: the question is
+            // whether the type produced a line at all.
+            'Solid Wood':   { kinds: [ 'solidwood' ],   label: 'solid wood',   exact: false },
+            'Dimensional':  { kinds: [ 'dimensional' ], label: 'dimensional lumber', exact: false }
         };
         const rows = materials || [];
         const piecesOf = function (r) {
@@ -1467,22 +1471,14 @@
             const mine = rows.filter(function (r) { return spec.kinds.indexOf(r.kind) >= 0; });
             const priced = mine.reduce(function (a, r) { return a + piecesOf(r); }, 0);
 
-            if (!spec.kinds.length) {
-                out.problems.push(
-                    type + ': OpenCutList counted ' + counted + ' piece(s) and the ' +
-                    'estimate prices none. ' + spec.label.charAt(0).toUpperCase() +
-                    spec.label.slice(1) + ' is not costed at all — the estimate ' +
-                    'prices sheet goods and hardware only. Model these parts as ' +
-                    'sheet goods, or price them outside the estimate.');
-                out.lines.push({ type: type, text: counted + ' piece(s), not costed', bad: true });
-                return;
-            }
             if (!mine.length) {
                 out.problems.push(
                     type + ': OpenCutList counted ' + counted + ' piece(s) and the ' +
                     'estimate has no ' + spec.label + ' line at all. A material with ' +
                     'no Type set in OpenCutList is never pushed — open OpenCutList ' +
-                    '→ Materials, set the Type, then estimate again.');
+                    '→ Materials, set the Type, then estimate again. If the Type ' +
+                    'IS set, the bench is on a build older than 26 Sep, which ' +
+                    'priced sheet goods and hardware and nothing else.');
                 out.lines.push({ type: type, text: counted + ' piece(s), nothing priced', bad: true });
                 return;
             }
@@ -1495,11 +1491,19 @@
                 out.lines.push({ type: type, text: counted + ' counted, ' + priced + ' priced', bad: true });
                 return;
             }
+            const uom = (mine[0] || {}).uom;
             out.lines.push({
                 type: type,
                 text: spec.exact
                     ? counted + ' piece(s), all priced'
-                    : counted + ' piece(s) → ' + mine.length + ' ' + spec.label + ' line(s)',
+                    // A volume-priced line states the VOLUME, because "6
+                    // pieces to 1 line" tells nobody whether the right timber
+                    // was measured. Cubic feet can be checked against a quote.
+                    : (uom === 'Cubic Foot'
+                        ? counted + ' piece(s) → ' +
+                          mine.reduce(function (a, r) { return a + (Number(r.qty) || 0); }, 0)
+                              .toFixed(2) + ' cft'
+                        : counted + ' piece(s) → ' + mine.length + ' ' + spec.label + ' line(s)'),
                 bad: false
             });
         });

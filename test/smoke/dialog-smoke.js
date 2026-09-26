@@ -312,12 +312,21 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
         'nesting 62 panels into 9 boards raises no alarm');
   check(!/Edge Banding: OpenCutList counted/.test(html),
         'edge banding counted as bands and priced in metres raises no alarm');
-  // Solid wood reaches the CSV and is then dropped by the server's aggregator,
-  // which buckets sheet goods and hardware and nothing else. Verified against
-  // the live site on 2026-09-26 with a CSV carrying teak legs and pine
-  // battens: zero rows came back for either.
-  check(html.indexOf('Solid wood is not costed at all') !== -1,
-        'solid wood is named as never costed, not as a rate problem');
+  // Solid wood, now PRICED by volume (26 Sep). The green line states the
+  // cubic feet and not a line count, because "6 pieces to 1 line" says
+  // nothing about whether the right timber was measured.
+  check(html.indexOf('Solid Wood: 6 piece(s)') !== -1
+        && html.indexOf('0.50 cft') !== -1,
+        'priced solid wood reports its volume, not a line count');
+  check(!/Solid Wood: OpenCutList counted/.test(html),
+        'priced solid wood raises no alarm');
+  // Dimensional is in the model and has no line, which is what a bench older
+  // than 26 Sep looks like — and what a material with no Type set looks like
+  // on any bench. Both need saying.
+  check(html.indexOf('Dimensional: OpenCutList counted 6 piece(s)') !== -1,
+        'a type with no priced line at all is reported');
+  check(html.indexOf('older than 26 Sep') !== -1,
+        'the report names the other reason a line can be absent');
   // The casters again, this time from the plugin's own arithmetic: 103
   // counted against the 99 pieces the priced rows add up to.
   check(html.indexOf('Hardware: OpenCutList counted 103 piece(s)') !== -1,

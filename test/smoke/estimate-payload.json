@@ -494,6 +494,31 @@
   "logistics_unset": [],
   "material_total": 0,
   "materials": [
+  {
+   "amount": 0,
+   "bought_units": 0.497,
+   "code": "SW_Teak",
+   "consumed_amount": 0,
+   "consumed_units": 0.444,
+   "desc": "SW_Teak \u2014 6 piece(s) [4 @ 50 x 50 mm, 2 @ 25 x 75 mm] \u2192 0.50 cft incl 12% waste",
+   "family": "solid",
+   "family_label": "Solid wood",
+   "kind": "solidwood",
+   "pieces_needed": null,
+   "pieces_per_packet": 1,
+   "qty": 0.5,
+   "quotable": true,
+   "rate": 0,
+   "slot_code": null,
+   "source": "assumed",
+   "thickness": 0,
+   "trade_name": "Teak",
+   "unused_amount": 0,
+   "unused_units": 0.053,
+   "uom": "Cubic Foot",
+   "use_unit": "cft",
+   "used_pct": 89.3
+  },
     {
       "amount": 0,
       "bought_units": 128.17,
@@ -1385,7 +1410,8 @@
     "Sheet Goods":  { "groups": 3, "parts": 47, "pieces": 62 },
     "Edge Banding": { "groups": 2, "parts": 31, "pieces": 40 },
     "Hardware":     { "groups": 8, "parts": 8,  "pieces": 103 },
-    "Solid Wood":   { "groups": 1, "parts": 1,  "pieces": 4 },
+    "Solid Wood":   { "groups": 1, "parts": 2,  "pieces": 6 },
+    "Dimensional":  { "groups": 1, "parts": 1,  "pieces": 6 },
     "Veneer":       { "groups": 4, "parts": 40, "pieces": 40 }
   }
 }
