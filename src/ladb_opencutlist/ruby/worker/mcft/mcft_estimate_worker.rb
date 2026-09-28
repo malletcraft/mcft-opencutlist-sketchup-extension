@@ -167,16 +167,35 @@ module Ladb::OpenCutList
         payload = @@last_scan.dup
       else
         cutlist = CutlistGenerateWorker.new(part_folding: false).run
-        return { :errors => cutlist.errors } if cutlist.errors.any?
+        if cutlist.errors.any?
+          # SAID ON THE CONSOLE TOO, not only on the screen.
+          #
+          # This return sits three lines after the revision stamp, so a failed
+          # cutlist produced a console showing exactly one [MCFT] line and
+          # nothing else — which reads as output that was cut short rather
+          # than a run that stopped. Amit hit precisely that on 2026-09-28
+          # and the console could not say why.
+          puts "[MCFT] estimate ABANDONED — OpenCutList could not build a " \
+               "cut list: #{cutlist.errors.join(', ')}"
+          puts '[MCFT]   nothing was sent to ERP, and the assembly walk below ' \
+               'never ran. Fix the cut list first (usually: nothing selected, ' \
+               'or the selected parts carry no material).'
+          return { :errors => cutlist.errors }
+        end
 
         csv = McftPushWorker.parts_csv(cutlist)
+        _counts = _assembly_counts(model)
         payload = {
           'csv_content' => csv,
           # Counted HERE, from the model, because OpenCutList reports a PART's
           # name and not the assembly that contains it — the server can only see
           # what the CSV carries. The model is the one place that knows.
-          'assembly_count' => _assembly_count(model),
-          'assembly_counts' => _assembly_counts(model),
+          # WALKED ONCE. _assembly_count used to call _assembly_counts a
+          # second time, which was harmless arithmetic and awful diagnostics:
+          # the console printed the whole walk twice and invited the reader to
+          # think two scans had disagreed.
+          'assembly_count' => _asmbl_total(_counts),
+          'assembly_counts' => _counts,
           # OpenCutList's OWN counts, kept so the PLUGIN can reconcile what
           # the server priced against what the model held. Two silent drops
           # have been found by Amit reading both tables side by side; this is
@@ -296,9 +315,10 @@ module Ladb::OpenCutList
       end
     end
 
-    # Every qualifying assembly at the root of the model.
-    def _assembly_count(model)
-      c = _assembly_counts(model)
+    # Every qualifying assembly at the root of the model, from counts already
+    # taken. Takes the HASH rather than the model on purpose: the old version
+    # took the model and walked it again, which printed the diagnostic twice.
+    def _asmbl_total(c)
       c['large'] + c['medium'] + c['small']
     end
 
