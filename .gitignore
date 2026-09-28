@@ -31,3 +31,21 @@
 /build/package-lock.json
 /Gemfile.lock
 /cmake-*
+
+# SketchUp's own load-time artefacts, written INTO the extension folder.
+#
+# The Mac runs a dev install: Plugins/ladb_opencutlist is a symlink into this
+# clone, so anything SketchUp writes beside the extension lands in the working
+# tree and shows up as untracked for ever. Both of these are regenerated —
+# they ship inside dist/ladb_opencutlist.rbz — so neither is source.
+#
+# Ignored UNANCHORED on purpose: the exact depth depends on how the symlink is
+# placed and on the SketchUp version (2026 here), and a path-anchored rule
+# would quietly stop matching the day either changes. That is the failure mode
+# this repo keeps meeting — a check that silently stops checking.
+#
+# Amit, 2026-09-28, after the clone-sync check came back clean except for
+# these two: "If they're regenerated each build, adding them to .gitignore
+# would make this check come back completely clean."
+extension_info.txt
+*.susig
