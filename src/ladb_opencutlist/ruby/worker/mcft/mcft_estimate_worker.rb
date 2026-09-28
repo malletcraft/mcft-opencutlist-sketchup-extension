@@ -144,6 +144,22 @@ module Ladb::OpenCutList
       model = Sketchup.active_model
       return { :errors => ['no model open'] } unless model
 
+      # WHICH BUILD IS ACTUALLY LOADED, said on every run.
+      #
+      # The only line that ever reported this was "[MCFT] push — plugin <sha>",
+      # and push was suspended on 2026-09-25 — so from that day nothing printed
+      # the running revision at all. It went unnoticed until Amit asked whether
+      # MOP was even installed on his Mac (2026-09-28) and the honest answer
+      # was that no output could say.
+      #
+      # It matters most for the diagnostics below: console output pasted back
+      # is worth little without knowing which build produced it, and "did the
+      # pull take effect" should not be a guess. The dev install loads straight
+      # from the clone, so this sha IS what SketchUp is running — a stronger
+      # statement than `git rev-parse` in a terminal, which only says what is
+      # on disk.
+      puts "[MCFT] estimate — plugin #{McftPushWorker.plugin_rev}"
+
       if @reuse_scan && @@last_scan
         # A refresh answers "what does ERP say NOW about the same model",
         # so the scan is copied rather than shared: the overrides written
