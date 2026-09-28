@@ -327,7 +327,22 @@ module Ladb::OpenCutList
     def _assembly_counts(model)
       out = { 'large' => 0, 'medium' => 0, 'small' => 0, 'unsized' => 0 }
       ignored = []
-      _scope_entities(model).each do |e|
+      # THE WALK, SAID OUT LOUD. Amit, 2026-09-28: "when i select on one
+      # asselmbly with ASMBL_L or M or S, its showing two M asselbies."
+      #
+      # Two sides can produce that number and they need opposite fixes: this
+      # walk counting something twice, or the BENCH ignoring what this sends
+      # and guessing from the part list instead. Reproducing the second one
+      # against the server proved only that it CAN happen, not that it is what
+      # happened here — and a fix built on the wrong half is worse than none.
+      #
+      # So the console now names every entity this walk examined and what it
+      # decided, and then what was sent. Whichever side is wrong, one estimate
+      # run says so.
+      scope = model.selection.empty? ? 'active_entities' : 'selection'
+      ents = _scope_entities(model)
+      puts "[MCFT] assembly walk — scope=#{scope}, #{ents.count} entit(ies) at this level"
+      ents.each do |e|
         next unless e.is_a?(Sketchup::ComponentInstance)
         d = e.definition
         next if d.nil? || d.image?
@@ -336,7 +351,9 @@ module Ladb::OpenCutList
         # sees in the Outliner.
         name = [e.name.to_s, d.name.to_s].find { |n| ROOT_ASSEMBLY_RE.match(n) }
         if name
-          out[SIZE_OF[ROOT_ASSEMBLY_RE.match(name)[1].upcase]] += 1
+          size = SIZE_OF[ROOT_ASSEMBLY_RE.match(name)[1].upcase]
+          out[size] += 1
+          puts "[MCFT]   instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} -> #{size}"
         elsif e.name.to_s =~ ASSEMBLY_ISH_RE || d.name.to_s =~ ASSEMBLY_ISH_RE
           # At the root, ASMBL-ish, and no size token: named like an assembly
           # and not counted as one. Said out loud rather than dropped.
@@ -354,7 +371,11 @@ module Ladb::OpenCutList
       # a labour line that never moved and nothing said which entities it had
       # been taken from.
       out['scope'] = model.selection.empty? ? 'model' : 'selection'
-      out['scope_size'] = _scope_entities(model).count
+      out['scope_size'] = ents.count
+      puts "[MCFT] assembly walk — SENDING large=#{out['large']} medium=#{out['medium']} " \
+           "small=#{out['small']} ignored=#{out['ignored'].inspect}"
+      puts '[MCFT]   if the estimate screen disagrees with these numbers, the bench ' \
+           'ignored them — read the source in brackets beside the assembly count.'
       out
     end
   end
