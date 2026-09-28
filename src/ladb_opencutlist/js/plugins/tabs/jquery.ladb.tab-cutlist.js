@@ -1549,7 +1549,24 @@
                           // the model again. Creating Items is not reachable
                           // from this call at all any more — it has its own
                           // command, so pricing has exactly one job.
-                          reuse_scan: reuseScan ? 1 : 0 },
+                          reuse_scan: reuseScan ? 1 : 0,
+                          // WHAT THE USER HID, so the estimate respects the
+                          // Parts List in front of them.
+                          //
+                          // Amit, 2026-09-28: "even though i hide few
+                          // assemblies, the mop estimate does not ignore it
+                          // and show me in its estimate resulting incorrect
+                          // estimate."
+                          //
+                          // Hiding is a JS-SIDE state — CutlistGenerateWorker
+                          // accepts hidden_group_ids and then never reads it,
+                          // so Ruby genuinely cannot know. The native export
+                          // solves this by collecting non-hidden part ids HERE
+                          // before calling down (see fnGrabFromGroup); the
+                          // estimate had no equivalent and therefore priced
+                          // groups that were not on screen.
+                          hidden_group_ids: (that.generateOptions
+                                             && that.generateOptions.hidden_group_ids) || [] },
                         function (response) {
             // Only refusals arrive here — a bad assembly time, or settings not
             // filled in. The estimate itself comes later, via the event.

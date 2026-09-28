@@ -169,6 +169,10 @@ module Ladb::OpenCutList
       # Creating Items is NOT reachable from here any more, by design. It has
       # its own command below, so pricing has exactly one job.
       reuse_scan = !!(settings['reuse_scan'] || settings[:reuse_scan])
+      # The groups the user hid on the Parts List. Ruby cannot discover these:
+      # hiding lives in the dialog's generateOptions and CutlistGenerateWorker
+      # ignores the parameter entirely.
+      hidden_group_ids = settings['hidden_group_ids'] || settings[:hidden_group_ids]
       trip_qty = settings['trip_qty'] || settings[:trip_qty]
       trip_rate = settings['trip_rate'] || settings[:trip_rate]
       # What Miscellaneous covers, in the estimator's own words. The server
@@ -185,6 +189,7 @@ module Ladb::OpenCutList
 
       McftEstimateWorker.new(site_url: s[:site_url], api_key: s[:api_key],
                              api_secret: s[:api_secret],
+                             hidden_group_ids: hidden_group_ids,
                              assembly_min: mins.empty? ? nil : mins.to_f,
                              overrides: overrides, size_min: size_min,
                              reuse_scan: reuse_scan,

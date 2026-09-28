@@ -38,13 +38,15 @@ module Ladb::OpenCutList
     # so existing models keep pushing; resolve-only, never create.
     LEGACY_COMPONENT_RE = /\A[A-Z]{2,3}(_[A-Z0-9]{2,})+\z/
 
-    def initialize(site_url:, api_key:, api_secret:, sku: nil, project: nil, initials: nil)
+    def initialize(site_url:, api_key:, api_secret:, sku: nil, project: nil,
+                   initials: nil, hidden_group_ids: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
       @api_secret = api_secret
       @sku = sku
       @project = project.to_s
       @initials = initials.to_s
+      @hidden_group_ids = hidden_group_ids
     end
 
     def run
@@ -126,24 +128,55 @@ module Ladb::OpenCutList
       }
     end
 
+    # THE GROUPS THE USER CAN ACTUALLY SEE.
+    #
+    # Amit, 2026-09-28: "even though i hide few assemblies, the mop estimate
+    # does not ignore it and show me in its estimate resulting incorrect
+    # estimate. respect native cutlist part generation and estimate and then
+    # process my theory on it."
+    #
+    # He is right about the order of operations, and the cause is structural
+    # rather than an oversight in one loop. HIDING IS A DIALOG-SIDE STATE:
+    # CutlistGenerateWorker takes `hidden_group_ids` and never reads it, so a
+    # cutlist generated from Ruby contains every group whatever is on screen.
+    # OpenCutList's own export works around that by collecting the non-hidden
+    # part ids in JavaScript before it calls down; the MCFT estimate called
+    # CutlistGenerateWorker directly and so had nothing to filter by.
+    #
+    # The ids now travel from the dialog, and every walk over cutlist.groups
+    # goes through here. One filter, so the CSV, OpenCutList's own totals and
+    # the timber volume cannot disagree about which groups exist — three
+    # readings of one model that differ is the failure this file already
+    # carries two scars from.
+    def _visible_groups(cutlist)
+      hidden = (@hidden_group_ids || []).map(&:to_s)
+      return cutlist.groups if hidden.empty?
+      cutlist.groups.reject { |g| hidden.include?(g.id.to_s) }
+    end
+
+    public
+
     # The part-list CSV, for a caller that is not pushing.
     #
     # The estimate worker sends the SAME bytes to a different endpoint, and
     # that matters: the server parses one shape with one parser, so a priced
     # preview and an imported part list can never disagree about what the
     # model contains. Building it twice would guarantee they eventually do.
-    def self.parts_csv(cutlist)
-      new(site_url: '', api_key: '', api_secret: '').send(:_to_csv, cutlist)
+    def self.parts_csv(cutlist, hidden_group_ids = nil)
+      new(site_url: '', api_key: '', api_secret: '',
+          hidden_group_ids: hidden_group_ids).send(:_to_csv, cutlist)
     end
 
     # OCL's own totals, for the server to reconcile its pricing against.
-    def self.ocl_totals(cutlist)
-      new(site_url: '', api_key: '', api_secret: '').send(:_ocl_totals, cutlist)
+    def self.ocl_totals(cutlist, hidden_group_ids = nil)
+      new(site_url: '', api_key: '', api_secret: '',
+          hidden_group_ids: hidden_group_ids).send(:_ocl_totals, cutlist)
     end
 
     # OCL's own CUTTING VOLUME for solid wood and dimensional lumber.
-    def self.lumber_stock(cutlist)
-      new(site_url: '', api_key: '', api_secret: '').send(:_lumber_stock, cutlist)
+    def self.lumber_stock(cutlist, hidden_group_ids = nil)
+      new(site_url: '', api_key: '', api_secret: '',
+          hidden_group_ids: hidden_group_ids).send(:_lumber_stock, cutlist)
     end
 
     # One row per PART (grouped, with Quantity) — the shape the server's
@@ -151,7 +184,7 @@ module Ladb::OpenCutList
     def _to_csv(cutlist)
       rows = [ CSV_HEADERS.map { |h| h.tr("\\", '') }.join(';') ]
       n = 0
-      cutlist.groups.each do |group|
+      _visible_groups(cutlist).each do |group|
         type_name = _material_type_name(group.material_type)
         # A GROUP THIS CANNOT TYPE IS NOT A GROUP THAT DOES NOT MATTER.
         #
@@ -231,7 +264,7 @@ module Ladb::OpenCutList
     # mismatch on every estimate.
     def _ocl_totals(cutlist)
       out = {}
-      cutlist.groups.each do |group|
+      _visible_groups(cutlist).each do |group|
         name = _material_type_name(group.material_type)
         next if name.nil?
         t = (out[name] ||= { 'groups' => 0, 'parts' => 0, 'pieces' => 0 })
@@ -277,7 +310,7 @@ module Ladb::OpenCutList
     # that timber back rather than inventing an offcut for it.
     def _lumber_stock(cutlist)
       out = {}
-      cutlist.groups.each do |group|
+      _visible_groups(cutlist).each do |group|
         t = group.material_type
         next unless t == MaterialAttributes::TYPE_SOLID_WOOD ||
                     t == MaterialAttributes::TYPE_DIMENSIONAL

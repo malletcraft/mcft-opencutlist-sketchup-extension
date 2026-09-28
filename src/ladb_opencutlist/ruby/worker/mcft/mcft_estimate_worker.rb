@@ -94,7 +94,7 @@ module Ladb::OpenCutList
 
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
                    into: :tab, overrides: nil, size_min: nil,
-                   reuse_scan: false, sku: nil,
+                   reuse_scan: false, sku: nil, hidden_group_ids: nil,
                    trip_qty: nil, trip_rate: nil, misc_remarks: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
@@ -138,6 +138,9 @@ module Ladb::OpenCutList
       # assembly minutes still come from the screen being looked at — it is
       # the model reading that is reused, never the answer.
       @reuse_scan = reuse_scan
+      # Groups hidden on the Parts List. Only the dialog knows these — see
+      # McftPushWorker#_visible_groups for why Ruby cannot work it out.
+      @hidden_group_ids = (hidden_group_ids || []).map(&:to_s)
     end
 
     def run
@@ -183,7 +186,19 @@ module Ladb::OpenCutList
           return { :errors => cutlist.errors }
         end
 
-        csv = McftPushWorker.parts_csv(cutlist)
+        # HIDDEN GROUPS ARE NOT PRICED. Amit, 2026-09-28: the estimate was
+        # showing assemblies he had hidden on the Parts List, so respecting
+        # the native cut list is the first step and his theory applies to
+        # what survives it. The assembly WALK below is deliberately not
+        # filtered: hiding a MATERIAL group says nothing about how many
+        # things get assembled, and silently dropping an assembly because a
+        # board was hidden would be a second bug wearing the first one's
+        # clothes.
+        unless @hidden_group_ids.empty?
+          puts "[MCFT] estimate — ignoring #{@hidden_group_ids.size} hidden " \
+               "group(s) on the Parts List"
+        end
+        csv = McftPushWorker.parts_csv(cutlist, @hidden_group_ids)
         _counts = _assembly_counts(model)
         payload = {
           'csv_content' => csv,
@@ -209,7 +224,7 @@ module Ladb::OpenCutList
           # the comparison already; doing it on the server bought nothing and
           # made every correction to it wait on a deploy and a migrate.
           # `_post_body` strips this key before the POST.
-          'ocl_totals' => McftPushWorker.ocl_totals(cutlist),
+          'ocl_totals' => McftPushWorker.ocl_totals(cutlist, @hidden_group_ids),
           # WHAT THE TIMBER COSTS TO BUY, decided here and not on the bench.
           #
           # Amit, 2026-09-28: "all wastage and cossumed will always be driven
@@ -218,7 +233,7 @@ module Ladb::OpenCutList
           # machining allowance configured on that material. The bench holds
           # back any timber missing from this map rather than pricing it at a
           # made-up offcut -- so this one IS sent, unlike ocl_totals above.
-          'lumber_stock' => McftPushWorker.lumber_stock(cutlist),
+          'lumber_stock' => McftPushWorker.lumber_stock(cutlist, @hidden_group_ids),
         }
         # Cached BEFORE the per-run fields are added, so a later refresh
         # starts from the model reading alone and not from somebody else's
