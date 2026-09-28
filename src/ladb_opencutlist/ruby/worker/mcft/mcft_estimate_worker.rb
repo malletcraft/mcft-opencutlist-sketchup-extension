@@ -4,6 +4,7 @@ module Ladb::OpenCutList
   require_relative 'mcft_push_worker'
   require_relative 'mcft_estimate_dialog'
   require_relative '../cutlist/cutlist_generate_worker'
+  require_relative '../../helper/layer_visibility_helper'
 
   # MCFT — the on-the-fly estimate, priced entirely by ERPNext.
   #
@@ -26,6 +27,14 @@ module Ladb::OpenCutList
   # plugin." So the dialog badges every number, and the plugin's own std_prices
   # are not consulted at all.
   class McftEstimateWorker
+
+    # THE SAME VISIBILITY TEST THE CUT LIST USES, not a second one written
+    # here. CutlistGenerateWorker includes this helper and gates every entity
+    # on `entity.visible? && _layer_visible?(entity.layer, ...)`; anything the
+    # assembly walk does differently is a way for the two to disagree about
+    # the same model, which is the fault being fixed rather than a detail of
+    # it.
+    include LayerVisibilityHelper
 
     # THE ONLY ASSEMBLY QUALIFIER: a component at the ROOT of the model whose
     # name carries a SIZE TOKEN -- ASMBL_L, ASMBL_M or ASMBL_S.
@@ -378,6 +387,7 @@ module Ladb::OpenCutList
     def _assembly_counts(model)
       out = { 'large' => 0, 'medium' => 0, 'small' => 0, 'unsized' => 0 }
       ignored = []
+      hidden_skipped = 0
       # THE WALK, SAID OUT LOUD. Amit, 2026-09-28: "when i select on one
       # asselmbly with ASMBL_L or M or S, its showing two M asselbies."
       #
@@ -397,6 +407,28 @@ module Ladb::OpenCutList
         next unless e.is_a?(Sketchup::ComponentInstance)
         d = e.definition
         next if d.nil? || d.image?
+        # HIDDEN ASSEMBLIES ARE NOT ASSEMBLED.
+        #
+        # Amit, 2026-09-28: "even though i hide few assemblies, the mop
+        # estimate does not ignore it and show me in its estimate resulting
+        # incorrect estimate."
+        #
+        # This walk counted every matching instance, hidden or not, while
+        # OpenCutList's own cut list skips hidden geometry — so hiding an
+        # assembly made its MATERIAL disappear and left its LABOUR behind.
+        # Seven steps follow the assembly count (Assembly, Disassembly,
+        # Packing, Loading, Transport, Unloading, Installation), so the
+        # estimate kept charging to build, pack and install something that
+        # was no longer in the cut list at all.
+        #
+        # Worse than a wrong total: the two halves of one estimate were
+        # reading the same model by different rules.
+        unless e.visible? && _layer_visible?(e.layer, true)
+          hidden_skipped += 1
+          puts "[MCFT]   instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} " \
+               '-> SKIPPED (hidden in SketchUp)'
+          next
+        end
         # An instance may be renamed away from its definition; either name
         # naming it an assembly is enough, because both are what a person
         # sees in the Outliner.
@@ -423,8 +455,10 @@ module Ladb::OpenCutList
       # been taken from.
       out['scope'] = model.selection.empty? ? 'model' : 'selection'
       out['scope_size'] = ents.count
+      out['hidden_skipped'] = hidden_skipped
       puts "[MCFT] assembly walk — SENDING large=#{out['large']} medium=#{out['medium']} " \
-           "small=#{out['small']} ignored=#{out['ignored'].inspect}"
+           "small=#{out['small']} ignored=#{out['ignored'].inspect} " \
+           "hidden_skipped=#{hidden_skipped}"
       puts '[MCFT]   if the estimate screen disagrees with these numbers, the bench ' \
            'ignored them — read the source in brackets beside the assembly count.'
       out
