@@ -3,6 +3,7 @@ module Ladb::OpenCutList
   require 'json'
   require_relative '../cutlist/cutlist_generate_worker'
   require_relative '../../model/attributes/material_attributes'
+  require_relative '../../helper/layer_visibility_helper'
 
   # MCFT — push the model's PANEL PART LIST to the ERPNext estimator with one
   # click. "Panel part list" is the house term (Amit, 2026-08-11): every part
@@ -17,6 +18,10 @@ module Ladb::OpenCutList
   # the export-CSV / save / attach / Save dance collapses into one call and
   # there is exactly ONE import pipeline to keep correct, not two.
   class McftPushWorker
+
+    # The cut list's own visibility test, not a second one — see
+    # McftEstimateWorker for why a private copy is the bug rather than the fix.
+    include LayerVisibilityHelper
 
     CSV_HEADERS = %w[No. Designation Quantity Length Width Thickness
                      Material\ type Material\ name
@@ -122,6 +127,13 @@ module Ladb::OpenCutList
       seen = {}
       model.entities.grep(Sketchup::ComponentInstance).select { |i|
         name = i.definition.name
+        # Hidden geometry is not part of this deliverable, and the rule is
+        # the estimate's (2026-09-28): OpenCutList's cut list skips hidden
+        # entities, so anything here that does not is a second reading of the
+        # same model. Reached only through the SUSPENDED push path, so this
+        # has never run in anger — it is here because the day the suspension
+        # lifts is the day nobody remembers the omission.
+        next false unless i.visible? && _layer_visible?(i.layer, true)
         next false unless name =~ MCFT_COMPONENT_RE || name =~ LEGACY_COMPONENT_RE
         next false if seen[name]
         seen[name] = true

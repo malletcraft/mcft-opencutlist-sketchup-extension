@@ -4,6 +4,7 @@ module Ladb::OpenCutList
   require 'base64'
   require 'tmpdir'
   require_relative 'mcft_push_worker'
+  require_relative '../../helper/layer_visibility_helper'
 
   # MCFT — render each SKU component's ISO view and attach it as the SKU's
   # article image in ERPNext. The client estimate PRINTS article_image, so
@@ -14,7 +15,11 @@ module Ladb::OpenCutList
   # the target, write the image, abort — the model is untouched by
   # construction, not by bookkeeping. The camera is saved and restored by
   # hand because the camera is not part of the undo stack.
+
   class McftIsoWorker
+
+    # Same visibility test as the cut list and the estimate.
+    include LayerVisibilityHelper
 
     WIDTH = 1200
     HEIGHT = 900
@@ -56,6 +61,13 @@ module Ladb::OpenCutList
       seen = {}
       model.entities.grep(Sketchup::ComponentInstance).select { |i|
         n = i.definition.name
+        # Hidden geometry is not part of this deliverable, and the rule is
+        # the estimate's (2026-09-28): OpenCutList's cut list skips hidden
+        # entities, so anything here that does not is a second reading of the
+        # same model. Reached only through the SUSPENDED push path, so this
+        # has never run in anger — it is here because the day the suspension
+        # lifts is the day nobody remembers the omission.
+        next false unless i.visible? && _layer_visible?(i.layer, true)
         next false unless n =~ McftPushWorker::MCFT_COMPONENT_RE || n =~ McftPushWorker::LEGACY_COMPONENT_RE
         next false if seen[n]
         seen[n] = true
