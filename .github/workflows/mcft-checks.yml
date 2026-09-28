@@ -82,6 +82,15 @@ jobs:
       - name: Pushing to ERPNext is still suspended
         run: ruby tools/check-push-suspended.rb
 
+      # McftLog is the only MCFT file that runs outside SketchUp, so it is the
+      # only one that can be tested rather than pattern-matched. It exists
+      # because the Ruby Console loses everything on Clear and three diagnoses
+      # this week needed a line that had already gone. The property under test
+      # is that it never raises: a logger that throws takes down the estimate
+      # it exists to explain.
+      - name: The estimate log writes, truncates and never raises
+        run: ruby tools/check-mcft-log.rb
+
   smoke:
     name: The dialog actually runs
     runs-on: ubuntu-latest

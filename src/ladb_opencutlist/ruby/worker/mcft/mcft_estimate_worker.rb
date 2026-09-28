@@ -2,6 +2,7 @@ module Ladb::OpenCutList
 
   require 'json'
   require_relative 'mcft_push_worker'
+  require_relative 'mcft_log'
   require_relative 'mcft_estimate_dialog'
   require_relative '../cutlist/cutlist_generate_worker'
   require_relative '../../helper/layer_visibility_helper'
@@ -170,7 +171,12 @@ module Ladb::OpenCutList
       # from the clone, so this sha IS what SketchUp is running — a stronger
       # statement than `git rev-parse` in a terminal, which only says what is
       # on disk.
-      puts "[MCFT] estimate — plugin #{McftPushWorker.plugin_rev}"
+      McftLog.say("[MCFT] estimate — plugin #{McftPushWorker.plugin_rev}")
+      # SAID EVERY RUN, and one line rather than a first-time-only one:
+      # whoever reads this output has usually scrolled to the middle of it,
+      # and a path printed once at the top of a session is a path nobody
+      # finds.
+      McftLog.say("[MCFT]   this output is also appended to #{McftLog.path}")
 
       cutlist = CutlistGenerateWorker.new(part_folding: false).run
       if cutlist.errors.any?
@@ -181,11 +187,11 @@ module Ladb::OpenCutList
         # nothing else — which reads as output that was cut short rather
         # than a run that stopped. Amit hit precisely that on 2026-09-28
         # and the console could not say why.
-        puts "[MCFT] estimate ABANDONED — OpenCutList could not build a " \
-             "cut list: #{cutlist.errors.join(', ')}"
-        puts '[MCFT]   nothing was sent to ERP, and the assembly walk below ' \
+        McftLog.say("[MCFT] estimate ABANDONED — OpenCutList could not build a " \
+             "cut list: #{cutlist.errors.join(', ')}")
+        McftLog.say('[MCFT]   nothing was sent to ERP, and the assembly walk below ' \
              'never ran. Fix the cut list first (usually: nothing selected, ' \
-             'or the selected parts carry no material).'
+             'or the selected parts carry no material).')
         return { :errors => cutlist.errors }
       end
 
@@ -198,8 +204,8 @@ module Ladb::OpenCutList
       # board was hidden would be a second bug wearing the first one's
       # clothes.
       unless @hidden_group_ids.empty?
-        puts "[MCFT] estimate — ignoring #{@hidden_group_ids.size} hidden " \
-             "group(s) on the Parts List"
+        McftLog.say("[MCFT] estimate — ignoring #{@hidden_group_ids.size} hidden " \
+             "group(s) on the Parts List")
       end
       csv = McftPushWorker.parts_csv(cutlist, @hidden_group_ids)
       _counts = _assembly_counts(model)
@@ -391,7 +397,7 @@ module Ladb::OpenCutList
       # run says so.
       scope = model.selection.empty? ? 'active_entities' : 'selection'
       ents = _scope_entities(model)
-      puts "[MCFT] assembly walk — scope=#{scope}, #{ents.count} entit(ies) at this level"
+      McftLog.say("[MCFT] assembly walk — scope=#{scope}, #{ents.count} entit(ies) at this level")
       ents.each do |e|
         next unless e.is_a?(Sketchup::ComponentInstance)
         d = e.definition
@@ -414,8 +420,8 @@ module Ladb::OpenCutList
         # reading the same model by different rules.
         unless e.visible? && _layer_visible?(e.layer, true)
           hidden_skipped += 1
-          puts "[MCFT]   instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} " \
-               '-> SKIPPED (hidden in SketchUp)'
+          McftLog.say("[MCFT]   instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} " \
+               '-> SKIPPED (hidden in SketchUp)')
           next
         end
         # An instance may be renamed away from its definition; either name
@@ -425,7 +431,7 @@ module Ladb::OpenCutList
         if name
           size = SIZE_OF[ROOT_ASSEMBLY_RE.match(name)[1].upcase]
           out[size] += 1
-          puts "[MCFT]   instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} -> #{size}"
+          McftLog.say("[MCFT]   instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} -> #{size}")
         elsif e.name.to_s =~ ASSEMBLY_ISH_RE || d.name.to_s =~ ASSEMBLY_ISH_RE
           # At the root, ASMBL-ish, and no size token: named like an assembly
           # and not counted as one. Said out loud rather than dropped.
@@ -445,11 +451,11 @@ module Ladb::OpenCutList
       out['scope'] = model.selection.empty? ? 'model' : 'selection'
       out['scope_size'] = ents.count
       out['hidden_skipped'] = hidden_skipped
-      puts "[MCFT] assembly walk — SENDING large=#{out['large']} medium=#{out['medium']} " \
+      McftLog.say("[MCFT] assembly walk — SENDING large=#{out['large']} medium=#{out['medium']} " \
            "small=#{out['small']} ignored=#{out['ignored'].inspect} " \
-           "hidden_skipped=#{hidden_skipped}"
-      puts '[MCFT]   if the estimate screen disagrees with these numbers, the bench ' \
-           'ignored them — read the source in brackets beside the assembly count.'
+           "hidden_skipped=#{hidden_skipped}")
+      McftLog.say('[MCFT]   if the estimate screen disagrees with these numbers, the bench ' \
+           'ignored them — read the source in brackets beside the assembly count.')
       out
     end
   end

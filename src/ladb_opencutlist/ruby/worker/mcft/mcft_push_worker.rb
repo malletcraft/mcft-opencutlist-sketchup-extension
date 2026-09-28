@@ -478,6 +478,10 @@ module Ladb::OpenCutList
       return 'no response — is the site reachable?' unless response
       code = response.status_code
       body = response.body.to_s
+      # CONSOLE ONLY, deliberately not McftLog. The body is a whole
+      # estimate_preview response, which carries RATES — and the log file
+      # is a thing people attach to emails. Cost data stays in the window
+      # it was already in.
       puts "[MCFT] HTTP #{code}: #{body[0, 600]}"     # full detail -> Ruby console
       begin
         data = JSON.parse(body)
