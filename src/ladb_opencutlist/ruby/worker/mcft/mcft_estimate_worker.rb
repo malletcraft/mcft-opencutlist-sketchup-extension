@@ -175,6 +175,15 @@ module Ladb::OpenCutList
           # made every correction to it wait on a deploy and a migrate.
           # `_post_body` strips this key before the POST.
           'ocl_totals' => McftPushWorker.ocl_totals(cutlist),
+          # WHAT THE TIMBER COSTS TO BUY, decided here and not on the bench.
+          #
+          # Amit, 2026-09-28: "all wastage and cossumed will always be driven
+          # by MOP and not by erp." OpenCutList's own cutting volume per solid
+          # wood / dimensional group, which is the finished size plus the
+          # machining allowance configured on that material. The bench holds
+          # back any timber missing from this map rather than pricing it at a
+          # made-up offcut -- so this one IS sent, unlike ocl_totals above.
+          'lumber_stock' => McftPushWorker.lumber_stock(cutlist),
         }
         # Cached BEFORE the per-run fields are added, so a later refresh
         # starts from the model reading alone and not from somebody else's

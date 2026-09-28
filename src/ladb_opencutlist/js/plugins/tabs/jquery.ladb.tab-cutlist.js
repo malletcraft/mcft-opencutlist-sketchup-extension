@@ -1629,6 +1629,38 @@
                     '</div></div>';
         }
 
+        // TIMBER THE BENCH REFUSED TO PRICE, for want of an offcut figure
+        // from this plugin.
+        //
+        // Amit, 2026-09-28: "all wastage and cossumed will always be driven by
+        // MOP and not by erp." He chose the strict reading over a zero-waste
+        // fallback, and zero really is the worse answer: a shop with no offcut
+        // is not a thing, so a line reading 'incl 0% waste' understates the
+        // timber and invites nobody to ask why.
+        //
+        // Same shape as the impossible-board banner above and for the same
+        // reason: in the model, deliberately unpriced, named so it can be
+        // fixed. No create button — there is nothing to create, and the
+        // remedy is in OpenCutList's own Materials list.
+        if ((d.lumber_unstocked || []).length > 0) {
+            html += '<div class="alert alert-warning" style="margin:0 0 10px;"><strong>' +
+                    d.lumber_unstocked.length + ' timber material' +
+                    (d.lumber_unstocked.length == 1 ? '' : 's') +
+                    ' NOT priced &mdash; no cutting volume from OpenCutList</strong>' +
+                    '<ul style="margin:6px 0 0 18px;">' +
+                    d.lumber_unstocked.map(function (line) {
+                        return '<li>' + that.mcftEsc(line) + '</li>';
+                    }).join('') +
+                    '</ul><div style="margin-top:6px;color:#7a5b2b;">' +
+                    'Solid wood and dimensional lumber are priced by VOLUME, and ' +
+                    'the volume bought is the volume cut &mdash; OpenCutList\u2019s ' +
+                    'own cutting size, which is the finished part plus the ' +
+                    'machining allowance set on that material. ERP will not ' +
+                    'invent that allowance, so these are left out of the total ' +
+                    'until OpenCutList reports one.' +
+                    '</div></div>';
+        }
+
         // Unpriced lines are shown, counted, and LEFT OUT of the total. A
         // total that quietly omits three boards looks like an answer and is
         // not one.

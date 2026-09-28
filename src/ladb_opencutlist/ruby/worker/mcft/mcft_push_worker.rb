@@ -141,6 +141,11 @@ module Ladb::OpenCutList
       new(site_url: '', api_key: '', api_secret: '').send(:_ocl_totals, cutlist)
     end
 
+    # OCL's own CUTTING VOLUME for solid wood and dimensional lumber.
+    def self.lumber_stock(cutlist)
+      new(site_url: '', api_key: '', api_secret: '').send(:_lumber_stock, cutlist)
+    end
+
     # One row per PART (grouped, with Quantity) — the shape the server's
     # opencutlist.parse_opencutlist_csv + part_qty already handle.
     def _to_csv(cutlist)
@@ -235,6 +240,58 @@ module Ladb::OpenCutList
           t['parts'] += 1
           t['pieces'] += part.count.to_i
         end
+      end
+      out
+    end
+
+    # 1 cubic inch in mm3. SketchUp works in INCHES internally, so every
+    # length OpenCutList holds is an inch value however the UI displays it,
+    # and a volume is therefore cubic inches.
+    MM3_PER_CUBIC_INCH = 16387.064
+
+    # WHAT THE TIMBER ACTUALLY COSTS TO BUY, decided by OpenCutList.
+    #
+    # Amit, 2026-09-28: "all wastage and cossumed will always be driven by MOP
+    # and not by erp."
+    #
+    # The bench priced solid wood and dimensional lumber off a percentage in
+    # Estimate Settings for exactly one day. That was the wrong direction and
+    # also the wrong number: OpenCutList already holds a CUTTING SIZE per part
+    # -- the finished size plus the length/width/thickness increase configured
+    # on that material -- and totals it per group as total_cutting_volume.
+    # Somebody set those increases against the timber they really buy. A
+    # percentage in a settings form was set by whoever opened it last.
+    #
+    # WHY NOT THE 1D BAR NEST, which was the obvious candidate and is the
+    # better answer in principle: OpenCutList offers a 1D cutting diagram for
+    # DIMENSIONAL and EDGE only -- never for SOLID WOOD -- and in this build
+    # the button sits behind `capabilities.is_dev and not capabilities.is_rbz`.
+    # Building on it would have priced battens and left every teak leg
+    # permanently unpriceable, which is a worse outcome than a machining
+    # allowance somebody configured on purpose. Worth revisiting the day OCL
+    # nests solid wood.
+    #
+    # Keyed by MATERIAL NAME and summed across that material's groups, because
+    # the bench prices one rate per species and a species may appear at several
+    # sections. Sending nothing for a material is meaningful: the bench holds
+    # that timber back rather than inventing an offcut for it.
+    def _lumber_stock(cutlist)
+      out = {}
+      cutlist.groups.each do |group|
+        t = group.material_type
+        next unless t == MaterialAttributes::TYPE_SOLID_WOOD ||
+                    t == MaterialAttributes::TYPE_DIMENSIONAL
+        name = group.material_name.to_s
+        next if name.empty?
+        # The RAW value off the group def. Group#total_cutting_volume is
+        # formatted for display ("0.42 ft3"), which is a string in whatever
+        # unit and locale the user has set -- parsing it back would be a bug
+        # waiting for somebody in another country.
+        cv = group.def.total_cutting_volume.to_f
+        next unless cv > 0
+        e = (out[name] ||= { 'bought_mm3' => 0.0,
+                             'source' => 'OpenCutList cutting size' })
+        e['bought_mm3'] += cv * MM3_PER_CUBIC_INCH
       end
       out
     end

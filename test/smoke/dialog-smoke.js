@@ -305,6 +305,26 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
   // 62 panels nesting into 9 boards is the nesting working. The server-side
   // version of this check compared those two numbers directly and would have
   // reported 53 pieces missing on this very payload.
+  // Timber the bench refused to price for want of a MOP offcut figure.
+  // Amit, 2026-09-28, chose refusal over a zero-waste fallback; the banner is
+  // what makes that choice visible instead of a line quietly missing.
+  check(html.indexOf('no cutting volume from OpenCutList') !== -1,
+        'held-back timber gets its own banner');
+  check(html.indexOf('DIM_Pine') !== -1 && html.indexOf('NOT PRICED') !== -1,
+        'the banner names the material and says it was not priced');
+  check(html.indexOf('ladb_mcft_btn_create') === -1
+        || html.indexOf('no cutting volume from OpenCutList') <
+           html.indexOf('ladb_mcft_btn_create'),
+        'the timber banner offers no create button of its own');
+  // And the priced one. The source label ("OpenCutList cutting size") rides on
+  // the line's `desc`, which this table does not render — it reaches the saved
+  // Estimate SKU in ERPNext, not this screen. That is fine, and the reason is
+  // the invariant worth asserting instead: a timber line priced in CUBIC FEET
+  // can only exist because MOP sent a cutting volume, since the bench holds
+  // back every material it did not get one for. Presence IS the provenance.
+  check(html.indexOf('SW_Teak') !== -1 && html.indexOf('Cubic Foot') !== -1,
+        'priced timber appears in cubic feet, which only a MOP figure can produce');
+
   check(html.indexOf('Sheet Goods: 62 piece(s)') !== -1
         && html.indexOf('3 board line(s)') !== -1,
         'sheet goods are reported as panels against board lines, not board counts');

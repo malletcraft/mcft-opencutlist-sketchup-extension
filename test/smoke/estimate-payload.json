@@ -500,7 +500,7 @@
    "code": "SW_Teak",
    "consumed_amount": 0,
    "consumed_units": 0.444,
-   "desc": "SW_Teak \u2014 6 piece(s) [4 @ 50 x 50 mm, 2 @ 25 x 75 mm] \u2192 0.50 cft incl 12% waste",
+   "desc": "SW_Teak \u2014 6 piece(s) [4 @ 50 x 50 mm, 2 @ 25 x 75 mm] \u2192 0.50 cft (OpenCutList cutting size)",
    "family": "solid",
    "family_label": "Solid wood",
    "kind": "solidwood",
@@ -1406,6 +1406,9 @@
     "missing": 4,
     "matches": false
   },
+  "lumber_unstocked": [
+    "DIM_Pine \u2014 6 piece(s) [6 @ 20 x 40 mm], about 0.41 cft of finished timber, NOT PRICED. OpenCutList reported no cutting volume for it, so the machining allowance is unknown and this estimate will not invent one. Open OpenCutList \u2192 Materials, check DIM_Pine has its type set and its length/width/thickness increase configured, then estimate again."
+  ],
   "ocl_totals": {
     "Sheet Goods":  { "groups": 3, "parts": 47, "pieces": 62 },
     "Edge Banding": { "groups": 2, "parts": 31, "pieces": 40 },
