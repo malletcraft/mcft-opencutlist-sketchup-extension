@@ -76,34 +76,38 @@ module Ladb::OpenCutList
     # the standalone printable window. The tab is the default because the
     # estimate screen is where Amit asked for this to live; the dialog remains
     # only because a print-only view is occasionally wanted.
-    # THE LAST MODEL SCAN, kept so a price refresh does not need another one.
+    # THERE IS NO CACHED SCAN ANY MORE, and that is the fix for the worst
+    # bug this estimate has had.
     #
-    # Amit, 2026-08-29: "one more button on the estimation page which will
-    # refresh cost data from erp so that i will get latest data withouth
-    # rerunning the estimate." The expensive half of a run is
-    # CutlistGenerateWorker walking the model; the half he wants repeated is
-    # the POST. After keying a rate in ERP the model has not changed, so
-    # re-reading it is work done to produce the identical CSV.
+    # A refresh used to re-price the LAST model reading instead of taking a
+    # new one, on the stated ground that "after keying a rate in ERP the
+    # model has not changed" (Amit, 2026-08-29, asking for a rate refresh
+    # that did not re-run the estimate). The comment beside the two buttons
+    # even named the danger: "Merging them would silently make one of the
+    # two wrong whenever the model HAD changed." Nothing anywhere checked
+    # whether it had.
     #
-    # Deliberately NOT persisted to the .skp. Amit, 2026-08-24, on storing
-    # labour in the model: "it defeats purpose of live estimation." The same
-    # objection applies here — a cached scan that outlived the session would
-    # re-price a selection nobody is looking at any more. This lives for as
-    # long as SketchUp is open and no longer, and a refresh with nothing
-    # cached falls back to a full run rather than refusing.
-    @@last_scan = nil
-
-    def self.last_scan
-      @@last_scan
-    end
-
-    def self.forget_scan
-      @@last_scan = nil
-    end
+    # Amit, 2026-09-28: "Even though i hide a medium assembly, mop estimate
+    # still use it for estimate purpose and thus wrong estimate." His console
+    # showed it exactly — FOUR estimate runs, ONE assembly walk. The walk
+    # happened before he hid ASMBL_M_SitOut; the three runs after it re-priced
+    # that same reading and charged for an assembly no longer on screen.
+    #
+    # It could not be guarded cheaply. Knowing the model has changed means
+    # reading the model, which is the work the cache existed to skip, and
+    # every observer-based shortcut (onTransactionCommit, layer and page
+    # events) is a list of mutations somebody has to keep complete — miss
+    # one and the estimate is silently wrong again, which is the failure
+    # mode, not a milder version of it.
+    #
+    # So every estimate reads the model. Refresh still exists and still does
+    # what he asked for — new rates from ERP, typed minutes kept, no numbers
+    # to re-enter — it simply reads the model on the way, as Recalculate has
+    # always done without anyone minding the cost.
 
     def initialize(site_url:, api_key:, api_secret:, assembly_min: nil,
                    into: :tab, overrides: nil, size_min: nil,
-                   reuse_scan: false, sku: nil, hidden_group_ids: nil,
+                   sku: nil, hidden_group_ids: nil,
                    trip_qty: nil, trip_rate: nil, misc_remarks: nil)
       @site_url = site_url.to_s.sub(/\/+\z/, '')
       @api_key = api_key
@@ -143,10 +147,6 @@ module Ladb::OpenCutList
       # that is otherwise a number with no words next to it.
       @misc_remarks = misc_remarks
 
-      # Re-price the LAST scan instead of taking a new one. The overrides and
-      # assembly minutes still come from the screen being looked at — it is
-      # the model reading that is reused, never the answer.
-      @reuse_scan = reuse_scan
       # Groups hidden on the Parts List. Only the dialog knows these — see
       # McftPushWorker#_visible_groups for why Ruby cannot work it out.
       @hidden_group_ids = (hidden_group_ids || []).map(&:to_s)
@@ -172,83 +172,72 @@ module Ladb::OpenCutList
       # on disk.
       puts "[MCFT] estimate — plugin #{McftPushWorker.plugin_rev}"
 
-      if @reuse_scan && @@last_scan
-        # A refresh answers "what does ERP say NOW about the same model",
-        # so the scan is copied rather than shared: the overrides written
-        # onto it below belong to this run only.
-        payload = @@last_scan.dup
-      else
-        cutlist = CutlistGenerateWorker.new(part_folding: false).run
-        if cutlist.errors.any?
-          # SAID ON THE CONSOLE TOO, not only on the screen.
-          #
-          # This return sits three lines after the revision stamp, so a failed
-          # cutlist produced a console showing exactly one [MCFT] line and
-          # nothing else — which reads as output that was cut short rather
-          # than a run that stopped. Amit hit precisely that on 2026-09-28
-          # and the console could not say why.
-          puts "[MCFT] estimate ABANDONED — OpenCutList could not build a " \
-               "cut list: #{cutlist.errors.join(', ')}"
-          puts '[MCFT]   nothing was sent to ERP, and the assembly walk below ' \
-               'never ran. Fix the cut list first (usually: nothing selected, ' \
-               'or the selected parts carry no material).'
-          return { :errors => cutlist.errors }
-        end
-
-        # HIDDEN GROUPS ARE NOT PRICED. Amit, 2026-09-28: the estimate was
-        # showing assemblies he had hidden on the Parts List, so respecting
-        # the native cut list is the first step and his theory applies to
-        # what survives it. The assembly WALK below is deliberately not
-        # filtered: hiding a MATERIAL group says nothing about how many
-        # things get assembled, and silently dropping an assembly because a
-        # board was hidden would be a second bug wearing the first one's
-        # clothes.
-        unless @hidden_group_ids.empty?
-          puts "[MCFT] estimate — ignoring #{@hidden_group_ids.size} hidden " \
-               "group(s) on the Parts List"
-        end
-        csv = McftPushWorker.parts_csv(cutlist, @hidden_group_ids)
-        _counts = _assembly_counts(model)
-        payload = {
-          'csv_content' => csv,
-          # Counted HERE, from the model, because OpenCutList reports a PART's
-          # name and not the assembly that contains it — the server can only see
-          # what the CSV carries. The model is the one place that knows.
-          # WALKED ONCE. _assembly_count used to call _assembly_counts a
-          # second time, which was harmless arithmetic and awful diagnostics:
-          # the console printed the whole walk twice and invited the reader to
-          # think two scans had disagreed.
-          'assembly_count' => _asmbl_total(_counts),
-          'assembly_counts' => _counts,
-          # OpenCutList's OWN counts, kept so the PLUGIN can reconcile what
-          # the server priced against what the model held. Two silent drops
-          # have been found by Amit reading both tables side by side; this is
-          # what makes the comparison happen every time instead.
-          #
-          # NOT SENT TO THE BENCH, and that is the point. Amit, 2026-09-25:
-          # "unless plugin changes touches my custom development for pull do
-          # not make any changes to bench as it increases testing time of
-          # plugin." The plugin holds OpenCutList's totals AND receives the
-          # priced rows back in the same response, so it has both sides of
-          # the comparison already; doing it on the server bought nothing and
-          # made every correction to it wait on a deploy and a migrate.
-          # `_post_body` strips this key before the POST.
-          'ocl_totals' => McftPushWorker.ocl_totals(cutlist, @hidden_group_ids),
-          # WHAT THE TIMBER COSTS TO BUY, decided here and not on the bench.
-          #
-          # Amit, 2026-09-28: "all wastage and cossumed will always be driven
-          # by MOP and not by erp." OpenCutList's own cutting volume per solid
-          # wood / dimensional group, which is the finished size plus the
-          # machining allowance configured on that material. The bench holds
-          # back any timber missing from this map rather than pricing it at a
-          # made-up offcut -- so this one IS sent, unlike ocl_totals above.
-          'lumber_stock' => McftPushWorker.lumber_stock(cutlist, @hidden_group_ids),
-        }
-        # Cached BEFORE the per-run fields are added, so a later refresh
-        # starts from the model reading alone and not from somebody else's
-        # typed minutes.
-        @@last_scan = payload.dup
+      cutlist = CutlistGenerateWorker.new(part_folding: false).run
+      if cutlist.errors.any?
+        # SAID ON THE CONSOLE TOO, not only on the screen.
+        #
+        # This return sits three lines after the revision stamp, so a failed
+        # cutlist produced a console showing exactly one [MCFT] line and
+        # nothing else — which reads as output that was cut short rather
+        # than a run that stopped. Amit hit precisely that on 2026-09-28
+        # and the console could not say why.
+        puts "[MCFT] estimate ABANDONED — OpenCutList could not build a " \
+             "cut list: #{cutlist.errors.join(', ')}"
+        puts '[MCFT]   nothing was sent to ERP, and the assembly walk below ' \
+             'never ran. Fix the cut list first (usually: nothing selected, ' \
+             'or the selected parts carry no material).'
+        return { :errors => cutlist.errors }
       end
+
+      # HIDDEN GROUPS ARE NOT PRICED. Amit, 2026-09-28: the estimate was
+      # showing assemblies he had hidden on the Parts List, so respecting
+      # the native cut list is the first step and his theory applies to
+      # what survives it. The assembly WALK below is deliberately not
+      # filtered: hiding a MATERIAL group says nothing about how many
+      # things get assembled, and silently dropping an assembly because a
+      # board was hidden would be a second bug wearing the first one's
+      # clothes.
+      unless @hidden_group_ids.empty?
+        puts "[MCFT] estimate — ignoring #{@hidden_group_ids.size} hidden " \
+             "group(s) on the Parts List"
+      end
+      csv = McftPushWorker.parts_csv(cutlist, @hidden_group_ids)
+      _counts = _assembly_counts(model)
+      payload = {
+        'csv_content' => csv,
+        # Counted HERE, from the model, because OpenCutList reports a PART's
+        # name and not the assembly that contains it — the server can only see
+        # what the CSV carries. The model is the one place that knows.
+        # WALKED ONCE. _assembly_count used to call _assembly_counts a
+        # second time, which was harmless arithmetic and awful diagnostics:
+        # the console printed the whole walk twice and invited the reader to
+        # think two scans had disagreed.
+        'assembly_count' => _asmbl_total(_counts),
+        'assembly_counts' => _counts,
+        # OpenCutList's OWN counts, kept so the PLUGIN can reconcile what
+        # the server priced against what the model held. Two silent drops
+        # have been found by Amit reading both tables side by side; this is
+        # what makes the comparison happen every time instead.
+        #
+        # NOT SENT TO THE BENCH, and that is the point. Amit, 2026-09-25:
+        # "unless plugin changes touches my custom development for pull do
+        # not make any changes to bench as it increases testing time of
+        # plugin." The plugin holds OpenCutList's totals AND receives the
+        # priced rows back in the same response, so it has both sides of
+        # the comparison already; doing it on the server bought nothing and
+        # made every correction to it wait on a deploy and a migrate.
+        # `_post_body` strips this key before the POST.
+        'ocl_totals' => McftPushWorker.ocl_totals(cutlist, @hidden_group_ids),
+        # WHAT THE TIMBER COSTS TO BUY, decided here and not on the bench.
+        #
+        # Amit, 2026-09-28: "all wastage and cossumed will always be driven
+        # by MOP and not by erp." OpenCutList's own cutting volume per solid
+        # wood / dimensional group, which is the finished size plus the
+        # machining allowance configured on that material. The bench holds
+        # back any timber missing from this map rather than pricing it at a
+        # made-up offcut -- so this one IS sent, unlike ocl_totals above.
+        'lumber_stock' => McftPushWorker.lumber_stock(cutlist, @hidden_group_ids),
+      }
       # NOTHING IS REMEMBERED HERE, and that is now the design.
       #
       # This used to read typed minutes back out of the .skp and merge them

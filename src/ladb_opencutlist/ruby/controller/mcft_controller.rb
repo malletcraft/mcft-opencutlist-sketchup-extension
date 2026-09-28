@@ -160,15 +160,14 @@ module Ladb::OpenCutList
       mins = (settings['assembly_min'] || settings[:assembly_min]).to_s.strip
       overrides = settings['overrides'] || settings[:overrides]
       size_min = settings['size_min'] || settings[:size_min]
-      # Re-price the LAST model scan rather than taking a new one. Amit,
-      # 2026-08-29: "one more button on the estimation page which will refresh
-      # cost data from erp ... withouth rerunning the estimate." After keying
-      # a rate at the desk the model has not moved, so walking it again only
-      # rebuilds the identical CSV.
+      # `reuse_scan` USED TO BE READ HERE and is now ignored deliberately.
+      # The dialog no longer sends it; an old cached page that still does is
+      # answered with a full model read, which is the safe direction. See
+      # McftEstimateWorker for why the cached scan went: it re-priced a
+      # reading taken before Amit hid an assembly, and charged for it.
       #
       # Creating Items is NOT reachable from here any more, by design. It has
       # its own command below, so pricing has exactly one job.
-      reuse_scan = !!(settings['reuse_scan'] || settings[:reuse_scan])
       # The groups the user hid on the Parts List. Ruby cannot discover these:
       # hiding lives in the dialog's generateOptions and CutlistGenerateWorker
       # ignores the parameter entirely.
@@ -192,7 +191,6 @@ module Ladb::OpenCutList
                              hidden_group_ids: hidden_group_ids,
                              assembly_min: mins.empty? ? nil : mins.to_f,
                              overrides: overrides, size_min: size_min,
-                             reuse_scan: reuse_scan,
                              # The BOUND SKU, so the server can resolve the
                              # décor slots. Without it the preview prices the
                              # placeholders — on a real wardrobe that read 47%

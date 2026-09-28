@@ -1510,7 +1510,7 @@
         return out;
     };
 
-    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin, reuseScan) {
+    LadbTabCutlist.prototype.mcftStartEstimate = function ($slide, assemblyMin, overrides, sizeMin) {
         const that = this;
         const $box = $('#ladb_mcft_estimate', $slide);
         if ($box.length === 0) {
@@ -1545,11 +1545,6 @@
                           // worse than not offering the edit.
                           trip_qty: trips.qty, trip_rate: trips.rate,
                           misc_remarks: misc,
-                          // Re-price the LAST model scan instead of walking
-                          // the model again. Creating Items is not reachable
-                          // from this call at all any more — it has its own
-                          // command, so pricing has exactly one job.
-                          reuse_scan: reuseScan ? 1 : 0,
                           // WHAT THE USER HID, so the estimate respects the
                           // Parts List in front of them.
                           //
@@ -2434,22 +2429,25 @@
                // which will refresh cost data from erp so that i will get
                // latest data withouth rerunning the estimate." The case is
                // keying a rate at the desk with the client still sitting
-               // there — the model has not moved, so re-reading it is work
-               // done to rebuild an identical CSV.
+               // there.
                //
-               // It is a SEPARATE button rather than a faster Recalculate
-               // because the two answer different questions. Recalculate says
-               // "what does this model cost now that I have changed it";
-               // refresh says "what does ERP say now about the model I
-               // already have". Merging them would silently make one of the
-               // two wrong whenever the model HAD changed.
+               // IT READS THE MODEL, and used not to. The comment that stood
+               // here argued the two buttons answer different questions and
+               // ended "Merging them would silently make one of the two wrong
+               // whenever the model HAD changed" — which is precisely what
+               // happened on 2026-09-28, when Amit hid a medium assembly and
+               // every later refresh kept charging for it. What he asked for
+               // was new rates without re-entering anything, and he still has
+               // that: typed minutes, trips and remarks all survive. The
+               // model read he never asked to skip is back.
                '<button id="ladb_mcft_btn_refresh" class="btn btn-default">' +
                'Refresh rates from ERP</button> ' +
                '<span style="color:#777;">Quantities come from the model. Times ' +
                'from step 7 down are yours to set, Assembly one line per size; ' +
                'Grooving\'s count is too. Only LARGE assemblies are ' +
-               'disassembled. Refresh re-prices the same model without ' +
-               'reading it again &mdash; use it after keying a rate in ERP.</span>' + warn +
+               'disassembled. Refresh re-prices at the latest ERP ' +
+               'rates and keeps what you typed &mdash; use it after keying a ' +
+               'rate in ERP.</span>' + warn +
                '</div>';
     };
 
@@ -2474,13 +2472,14 @@
                                    that.mcftReadOverrides());
         });
 
-        // A price refresh with no model read. Same overrides the table is
-        // showing, because a refresh must not silently discard minutes
-        // somebody typed thirty seconds ago.
+        // A price refresh. Same overrides the table is showing, because a
+        // refresh must not silently discard minutes somebody typed thirty
+        // seconds ago — that, and not the skipped model read, is what made
+        // it a separate button from Recalculate.
         $('#ladb_mcft_btn_refresh').off('click').on('click', function () {
             $(this).blur();
             that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '',
-                                   that.mcftReadOverrides(), null, true);
+                                   that.mcftReadOverrides());
         });
 
         // CREATE ALL, and CREATE ONE, are the same act on a different list —
@@ -2626,7 +2625,7 @@
                     '<strong>Could not create.</strong> ' +
                     that.mcftEsc(response.errors.join(', ')) + '</div>';
                 that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '',
-                                       that.mcftReadOverrides(), null, true);
+                                       that.mcftReadOverrides());
             }
         });
     };
@@ -2635,7 +2634,9 @@
     // re-price. Re-pricing is not optional: the person pressed the button
     // because a number was wrong, and leaving them to press Refresh
     // afterwards to find out whether it worked is a second step for no
-    // reason. It reuses the cached scan, so it costs one HTTP call.
+    // reason. It reads the model like every other run — there is no cached
+    // scan to reuse, and a re-price that skipped the read was how an estimate
+    // came to include an assembly Amit had hidden.
     LadbTabCutlist.prototype.mcftMaterialsCreated = function (d) {
         const that = this;
         d = d || {};
@@ -2676,7 +2677,7 @@
         }
         that.mcftCreateNote = note;
         that.mcftStartEstimate(that.$mcftBox.closest('.ladb-slide'), '',
-                               that.mcftReadOverrides(), null, true);
+                               that.mcftReadOverrides());
     };
 
     LadbTabCutlist.prototype.generateEstimate = function (partIds, context, estimateOptions, callback) {

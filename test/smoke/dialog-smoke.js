@@ -120,9 +120,13 @@ const GROUPS = [
 ];
 
 const calls = [];
+// The PARAMS too, not only the names. Scenario 3 asserts what the estimate
+// buttons send, and the bug it guards against lives entirely in a parameter.
+const sent = [];
 let advanceLeft = 0;
 win.rubyCallCommand = function (name, params, cb) {
   calls.push(name);
+  sent.push({ name: name, params: params });
   const reply = (r) => { if (typeof cb === 'function') cb(r); };
   switch (name) {
     case 'core_get_model_preset':
@@ -230,7 +234,14 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
   console.log('\nmcftRender(estimate payload)');
   const payload = JSON.parse(
     fs.readFileSync(path.join(__dirname, 'estimate-payload.json'), 'utf8'));
-  const $box = $('<div id="mcftbox"></div>').appendTo($('#tab', win.document));
+  // THE REAL DOM SHAPE, not a bare div. mcftStartEstimate walks up to the
+  // enclosing .ladb-slide and then looks for #ladb_mcft_estimate inside it,
+  // returning silently when either is missing — so a hand-shaped box made
+  // scenario 3's button clicks do nothing at all while every assertion about
+  // what they sent passed on an empty list. A vacuous pass is worse than a
+  // failure; this is the two elements the code actually reaches for.
+  const $box = $('<div class="ladb-slide"><div id="ladb_mcft_estimate"></div></div>')
+    .appendTo($('#tab', win.document)).find('#ladb_mcft_estimate');
   tab.$mcftBox = $box;
   tab.mcftEdits = null;
 
@@ -355,6 +366,46 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
         'the problems are collected where they cannot be missed');
   check(html.indexOf('Veneer') === -1 || !/Veneer: OpenCutList/.test(html),
         'veneer is never reconciled — it is deliberately not pushed');
+
+  // -------------------------------------------------------------------------
+  // SCENARIO 3 — THE ESTIMATE BUTTONS READ THE MODEL. Both of them.
+  //
+  // Amit, 2026-09-28: "Even though i hide a medium assembly, mop estimate
+  // still use it for estimate purpose and thus wrong estimate." Refresh used
+  // to send reuse_scan, which told Ruby to re-price the LAST model reading
+  // rather than take a new one — so hiding an assembly and refreshing kept
+  // charging for it. His console showed it exactly: four estimate runs, one
+  // assembly walk.
+  //
+  // The parameter is gone, and this is what keeps it gone. A check on the
+  // wire rather than on the source, because the source has read as correct
+  // throughout: the danger was even written in the comment beside the two
+  // buttons, and shipped anyway.
+  console.log('\nthe estimate buttons');
+  const estimatesBefore = sent.filter((c) => c.name === 'mcft_estimate').length;
+  // RE-RENDERED BEFORE EACH CLICK, because the first thing mcftStartEstimate
+  // does is replace the whole box with "Asking ERPNext…" — which destroys
+  // the other button. That is real behaviour and not a harness quirk; the
+  // answer comes back through an event and re-renders.
+  for (const sel of ['#ladb_mcft_btn_recalc', '#ladb_mcft_btn_refresh']) {
+    tab.mcftRender(payload);
+    await drain();
+    check($(sel, win.document).length === 1, `${sel} is on screen and bound`);
+    $(sel, win.document).trigger('click');
+    await drain();
+  }
+  const estimates = sent.filter((c) => c.name === 'mcft_estimate');
+  check(estimates.length === estimatesBefore + 2,
+        `both buttons asked ERP to price (${estimates.length - estimatesBefore} call(s))`);
+  // Guarded on length, so neither of these can pass on an empty list — which
+  // is exactly how the first version of this scenario reported success while
+  // the clicks were reaching nothing.
+  check(estimates.length > 0 &&
+        estimates.every((c) => !('reuse_scan' in (c.params || {}))),
+        'no estimate asks Ruby to skip the model read');
+  check(estimates.length > 0 &&
+        estimates.every((c) => Array.isArray((c.params || {}).hidden_group_ids)),
+        'every estimate carries what the Parts List hid');
 
   console.log('');
   if (failures.length) {
