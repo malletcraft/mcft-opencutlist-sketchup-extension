@@ -1,0 +1,50 @@
+# THE MCFT PATHS — every path in this tree that is NOT OpenCutList's.
+#
+# Read by tools/mcft-take-upstream.sh (which takes every OTHER path from the
+# upstream build named in docs/mcft/UPSTREAM) and by tools/check-upstream-tree.rb
+# (which proves on every push that every other path IS that build's, byte for
+# byte). Design: docs/mcft/MOP-ON-OCL8.md §1.2, §2.2, §7.3 check 6.
+#
+# own:      paths MCFT ADDS. Each exists at HEAD and not at the build. A line
+#           ending in / is a directory: every file under it is MCFT's.
+# changed:  upstream files MCFT EDITS. Each exists at HEAD and at the build.
+#           They are three-way merged on every upstream move, never taken.
+#
+# EVERY COMMIT THAT ADDS OR REMOVES AN MCFT PATH EDITS THIS FILE IN THE SAME
+# COMMIT. Check 6 fails otherwise.
+
+own:
+.githooks/
+.github/workflows/mcft-checks.yml
+docs/mcft/
+node_modules/
+package-lock.json
+package.json
+src/ladb_opencutlist/js/templates/tabs-twig-templates.js
+src/ladb_opencutlist/ruby/controller/mcft_controller.rb
+src/ladb_opencutlist/ruby/worker/mcft/
+src/ladb_opencutlist/twig/tabs/cutlist/_cuttingdiagram-2d-body.twig
+src/ladb_opencutlist/twig/tabs/cutlist/_slide-mcft-diagram-pack.twig
+test/smoke/
+tools/check-assembly-rule.rb
+tools/check-csv-thickness.rb
+tools/check-dialog-api.rb
+tools/check-mcft-log.rb
+tools/check-push-suspended.rb
+tools/check-requires.rb
+tools/check-ruby-floor.rb
+tools/check-upstream-tree.rb
+tools/dev-install-mac.sh
+tools/mcft_paths.rb
+tools/mcft-take-upstream.sh
+
+changed:
+.gitignore
+build/package.json
+src/ladb_opencutlist.rb
+src/ladb_opencutlist/js/plugins/tabs/jquery.ladb.tab-cutlist.js
+src/ladb_opencutlist/ruby/constants.rb
+src/ladb_opencutlist/ruby/plugin.rb
+src/ladb_opencutlist/twig/tabs/cutlist/_slide-cuttingdiagram-2d.twig
+src/ladb_opencutlist/twig/tabs/cutlist/_slide-estimate.twig
+src/ladb_opencutlist/twig/tabs/cutlist/tab.twig

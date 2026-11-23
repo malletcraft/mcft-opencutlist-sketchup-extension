@@ -6,7 +6,9 @@ name: MCFT checks
 
 on:
   push:
-    branches: [mcft]
+    # mcft8 is where the move onto OpenCutList 8 is built: red there is free,
+    # because the Mac fetches only mcft (docs/mcft/MOP-ON-OCL8.md §1.3).
+    branches: [mcft, mcft8]
   pull_request:
     branches: [mcft]
 
@@ -90,6 +92,15 @@ jobs:
       # it exists to explain.
       - name: The estimate log writes, truncates and never raises
         run: ruby tools/check-mcft-log.rb
+
+      # EVERY PATH THAT IS NOT MCFT'S IS THE UPSTREAM BUILD'S, BYTE FOR BYTE.
+      # An upstream move on this line is `git merge -s ours` plus
+      # tools/mcft-take-upstream.sh, never git's own three-way merge: git's
+      # base here is a virtual one, and after a go-back commit it would be the
+      # bad build, so a plain merge silently keeps that build's changes out.
+      # This proves no such merge got in (docs/mcft/MOP-ON-OCL8.md §7.3, 6).
+      - name: The tree is the upstream build in docs/mcft/UPSTREAM, plus MCFT
+        run: ruby tools/check-upstream-tree.rb
 
   smoke:
     name: The dialog actually runs
