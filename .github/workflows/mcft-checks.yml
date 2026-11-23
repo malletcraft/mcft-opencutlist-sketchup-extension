@@ -73,8 +73,18 @@ jobs:
       # assembly, a missing size token was promoted to Large, and MCFT_ was
       # used as a stand-in for "top level" that it could not be. The walk needs
       # a model; the regex needs nothing and is where every fault has been.
+      #
+      # On OpenCutList 8 it also covers GROUPS (a Smart Build module is one),
+      # the unnamed-module list, the payload that sends no size map when
+      # nothing was counted, and the walk's shape read from its source.
       - name: The assembly rule classifies names the way Amit stated it
         run: ruby tools/check-assembly-rule.rb
+
+      # N2's default-part-name rule (Part, Part#3 — run, not read), and the
+      # estimate stamp that says which build is loaded and settles IS_RBZ on
+      # the Mac. A stamp is the first thing to vanish when a path moves.
+      - name: The estimate's notes and its stamp
+        run: ruby tools/check-estimate-notes.rb
 
       # Push to ERPNext is off until MRP is ready (Amit, 2026-09-25: "i do not
       # want to push any data from sketchup to erp as its not ready yet").

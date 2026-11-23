@@ -358,6 +358,48 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
         'veneer is never reconciled — it is deliberately not pushed');
 
   // -------------------------------------------------------------------------
+  // SCENARIO 2b — WHAT THE PLUGIN'S OWN READING SAYS (OpenCutList 8).
+  //
+  // The assembly walk and the notes travel beside the priced rows as
+  // mcft_assembly_walk and mcft_notes, never posted. Asserted both ways: every
+  // line appears when it has something to say, and NONE appears when it has
+  // not — a note that fires on every estimate teaches the reader to skip it.
+  console.log('\nthe plugin\'s notes (assembly walk, N1-N4)');
+  const said = (extra) => {
+    tab.mcftRender(Object.assign(JSON.parse(JSON.stringify(payload)), extra));
+    return $box.html() || '';
+  };
+  let notesHtml = said({
+    assembly_unsized: 0,
+    mcft_assembly_walk: { large: 0, medium: 0, small: 0, top_level: false, scope: 'model',
+                          ignored: ['ASMBL_WAR'], unnamed_modules: ['Wardrobe 600'] },
+    mcft_notes: { cut_larger: ['Door (length +10mm)'], default_named: 3, default_name: 'Part',
+                  bare_fronts: ['Part#2'] },
+  });
+  await drain();
+  check(notesHtml.indexOf('None was found, so ERP priced the seven assembly steps by its own rule') !== -1,
+        'N4: a walk that counted nothing says ERP priced the steps, with the naming rule');
+  check(notesHtml.indexOf('look like OpenCutList 8 modules') !== -1 &&
+        notesHtml.indexOf('Wardrobe 600') !== -1,
+        'unnamed Smart Build modules are named on the slide');
+  check(/1 component\(s\) or group\(s\)[^<]*ASMBL_WAR/.test(notesHtml),
+        'the "not counted" warning comes from the walk, not the bench echo (assembly_unsized 0)');
+  check(notesHtml.indexOf('cuts these sheet parts larger than ERP nests them: Door (length +10mm)') !== -1,
+        'N1: sheet parts with their own allowance are named');
+  check(notesHtml.indexOf('3 part(s) still carry OpenCutList') !== -1, 'N2: default-named parts are counted');
+  check(notesHtml.indexOf('Part#2: a front panel with no face laminate') !== -1, 'N3: bare fronts are named');
+  notesHtml = said({
+    mcft_assembly_walk: { large: 1, medium: 0, small: 0, top_level: true, scope: 'model',
+                          ignored: [], unnamed_modules: [] },
+    mcft_notes: { cut_larger: [], default_named: 0, default_name: 'Part', bare_fronts: [] },
+  });
+  await drain();
+  check(['None was found', 'look like OpenCutList 8 modules', 'NOT counted as assemblies',
+         'larger than ERP nests', 'default name', 'no face laminate']
+          .every((t) => notesHtml.indexOf(t) === -1),
+        'with nothing to say, none of those lines is shown');
+
+  // -------------------------------------------------------------------------
   // SCENARIO 3 — THE ESTIMATE BUTTONS READ THE MODEL. Both of them.
   //
   // Amit, 2026-09-28: "Even though i hide a medium assembly, mop estimate

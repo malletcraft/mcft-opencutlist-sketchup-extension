@@ -4,8 +4,10 @@ module Ladb::OpenCutList
   require_relative 'mcft_push_worker'
   require_relative 'mcft_log'
   require_relative 'mcft_estimate_dialog'
+  require_relative 'mcft_estimate_rules'
   require_relative '../cutlist/cutlist_generate_worker'
   require_relative '../../helper/layer_visibility_helper'
+  require_relative '../../model/attributes/definition_attributes'
 
   # MCFT — the on-the-fly estimate, priced entirely by ERPNext.
   #
@@ -37,40 +39,12 @@ module Ladb::OpenCutList
     # it.
     include LayerVisibilityHelper
 
-    # THE ONLY ASSEMBLY QUALIFIER: a component at the ROOT of the model whose
-    # name carries a SIZE TOKEN -- ASMBL_L, ASMBL_M or ASMBL_S.
-    #
-    # Amit, 2026-09-25: "component starting with ASMBL_L or ASMBL_M or ASMBL_S
-    # at the root of skp file is the only assembly qualifier. ignore rest. its
-    # messing with my estimate."
-    #
-    # WHAT THIS REPLACES, and why the old rule kept being wrong. Counting was
-    # done over model.definitions -- every definition in the file, at every
-    # depth -- and MCFT_ was used as a stand-in for "top level", because a
-    # definition does not know where it sits. That proxy leaked in both
-    # directions: parts INSIDE an assembly are named ASMBL_* too and were
-    # counted beside their parent, and a bare ASMBL_* with no size token was
-    # counted as LARGE, so a model holding two medium assemblies priced as ten
-    # large ones. A fallback then made it worse: when no MCFT_ name was found
-    # the bare list was used instead, which is precisely the pile of inner
-    # parts.
-    #
-    # DEPTH IS THE REAL QUALIFIER and it is now tested directly, by walking
-    # the model's own entities rather than its definition list. The MCFT_
-    # prefix therefore stops carrying meaning it was never able to carry; it
-    # is accepted because existing models use it, and ignored otherwise.
-    #
-    # The size token is REQUIRED. "Ignore rest" is the instruction, and a
-    # nameless assembly silently priced as Large is exactly the guess that
-    # made the last three estimates wrong.
-    ROOT_ASSEMBLY_RE = /\A(?:MCFT[_\-]?)?ASMBL[_\-]?([LMS])(?:[_\-]|\z)/i
-
-    # Anything ASMBL-ish that did NOT qualify, so an ignored component is
-    # visible rather than silently absent. A count that quietly drops half a
-    # model is the failure this whole rule exists to end.
-    ASSEMBLY_ISH_RE = /ASMBL/i
-
-    SIZE_OF = { 'L' => 'large', 'M' => 'medium', 'S' => 'small' }.freeze
+    # THE ASSEMBLY RULE LIVES IN McftEstimateRules (mcft_estimate_rules.rb),
+    # where it has no SketchUp in it and tools/check-assembly-rule.rb RUNS it
+    # on every push. Its history is told there: the regex has been wrong three
+    # times, the walk below never. On OpenCutList 8 it also admits GROUPS, by
+    # their instance name — a Smart Build module is a group
+    # (docs/mcft/MOP-ON-OCL8.md §4). No copy of it is kept here.
 
     # into: :tab triggers an event the cutlist tab listens for, so the answer
     # lands in the estimate slide the user is already looking at. :dialog opens
@@ -171,7 +145,16 @@ module Ladb::OpenCutList
       # from the clone, so this sha IS what SketchUp is running — a stronger
       # statement than `git rev-parse` in a terminal, which only says what is
       # on disk.
-      McftLog.say("[MCFT] estimate — plugin #{McftPushWorker.plugin_rev}")
+      #
+      # IS_RBZ AND IS_LAB RIDE ALONG. OpenCutList 8 gates real behaviour on
+      # IS_RBZ (Smart Join in the menu, a 300 s packing limit, how native
+      # libraries load), and whether a symlinked dev install reads as an rbz
+      # one is NOT CONFIRMED by anything but this line on the Mac
+      # (docs/mcft/MOP-ON-OCL8.md §2.3). IS_LAB must be false, or 8 clears the
+      # console at start. tools/check-estimate-notes.rb holds the stamp.
+      McftLog.say("[MCFT] estimate — plugin #{McftPushWorker.plugin_rev} " \
+                  "is_rbz=#{defined?(Plugin::IS_RBZ) ? Plugin::IS_RBZ.inspect : 'unknown'} " \
+                  "is_lab=#{defined?(Plugin::IS_LAB) ? Plugin::IS_LAB.inspect : 'unknown'}")
       # SAID EVERY RUN, and one line rather than a first-time-only one:
       # whoever reads this output has usually scrolled to the middle of it,
       # and a path printed once at the top of a session is a path nobody
@@ -211,15 +194,6 @@ module Ladb::OpenCutList
       _counts = _assembly_counts(model)
       payload = {
         'csv_content' => csv,
-        # Counted HERE, from the model, because OpenCutList reports a PART's
-        # name and not the assembly that contains it — the server can only see
-        # what the CSV carries. The model is the one place that knows.
-        # WALKED ONCE. _assembly_count used to call _assembly_counts a
-        # second time, which was harmless arithmetic and awful diagnostics:
-        # the console printed the whole walk twice and invited the reader to
-        # think two scans had disagreed.
-        'assembly_count' => _asmbl_total(_counts),
-        'assembly_counts' => _counts,
         # OpenCutList's OWN counts, kept so the PLUGIN can reconcile what
         # the server priced against what the model held. Two silent drops
         # have been found by Amit reading both tables side by side; this is
@@ -244,6 +218,20 @@ module Ladb::OpenCutList
         # made-up offcut -- so this one IS sent, unlike ocl_totals above.
         'lumber_stock' => McftPushWorker.lumber_stock(cutlist, @hidden_group_ids),
       }
+      # THE ASSEMBLY COUNT. Counted HERE, from the model, because OpenCutList
+      # reports a PART's name and not the assembly that contains it — the
+      # server can only see what the CSV carries. WALKED ONCE: a second walk
+      # printed the whole diagnostic twice and read as two scans disagreeing.
+      #
+      # Built ONLY through McftEstimateRules.assembly_payload: a walk that
+      # counted nothing sends NO size map, so the bench says in its own words
+      # that ERP's rule priced the seven assembly steps, instead of labelling
+      # that guess "plugin:ASMBL size counts" (docs/mcft/MOP-ON-OCL8.md §4.1).
+      payload.merge!(McftEstimateRules.assembly_payload(_counts))
+      # The walk's own lists and the notes, for THIS screen only — never
+      # posted (LOCAL_ONLY_KEYS), like ocl_totals.
+      payload['mcft_assembly_walk'] = _counts
+      payload['mcft_notes'] = _estimate_notes(cutlist)
       # NOTHING IS REMEMBERED HERE, and that is now the design.
       #
       # This used to read typed minutes back out of the .skp and merge them
@@ -282,7 +270,7 @@ module Ladb::OpenCutList
         if response && response.status_code == 200
           begin
             data = JSON.parse(response.body)['message'] || {}
-            _deliver(data, payload['ocl_totals'])
+            _deliver(data, payload)
           rescue StandardError => e
             _fail("estimate parse error — #{e.message}")
           end
@@ -304,9 +292,9 @@ module Ladb::OpenCutList
       payload.reject { |k, _| LOCAL_ONLY_KEYS.include?(k) }
     end
 
-    LOCAL_ONLY_KEYS = %w[ocl_totals].freeze
+    LOCAL_ONLY_KEYS = %w[ocl_totals mcft_assembly_walk mcft_notes].freeze
 
-    def _deliver(data, ocl_totals = nil)
+    def _deliver(data, payload = {})
       # The site the numbers came from, as a URL a browser can open.
       # frappe.local.site is a HOSTNAME, and the row-level "open this Item"
       # link needs a scheme — the plugin is the only side that holds the
@@ -314,7 +302,14 @@ module Ladb::OpenCutList
       data['site_url'] = @site_url if data.is_a?(Hash)
       # The other half of the reconciliation, handed to the screen beside the
       # priced rows it has to be read against.
-      data['ocl_totals'] = ocl_totals if data.is_a?(Hash) && ocl_totals
+      # And the plugin's own readings beside them: the assembly walk (its
+      # ignored and unnamed-module lists, and whether it counted anything —
+      # the "not counted" warning and N4 render from THIS, not from the
+      # bench's echo, which reads 0 once no size map is sent) and the notes
+      # N1-N3. The same road ocl_totals already travels; none of it is posted.
+      if data.is_a?(Hash)
+        LOCAL_ONLY_KEYS.each { |k| data[k] = payload[k] if payload.key?(k) }
+      end
       if @into == :dialog
         McftEstimateDialog.show(data)
       else
@@ -334,11 +329,55 @@ module Ladb::OpenCutList
       end
     end
 
-    # Every qualifying assembly at the root of the model, from counts already
-    # taken. Takes the HASH rather than the model on purpose: the old version
-    # took the model and walked it again, which printed the diagnostic twice.
-    def _asmbl_total(c)
-      c['large'] + c['medium'] + c['small']
+    # NOTES ONLY THE PLUGIN CAN MAKE, about a model drawn in OpenCutList 8
+    # (docs/mcft/MOP-ON-OCL8.md §3.1, §5). Each is shown on the estimate slide
+    # only when it has something to say. Nothing here changes what is sent:
+    # the CSV describes the model as it is, and inventing an edge band or a
+    # laminate to "fix" it would be a fallback.
+    #
+    #   cut_larger    N1: sheet-good parts whose OWN definition carries a
+    #                 length or width increase. OpenCutList 8 cuts them larger;
+    #                 the bench nests the finished sizes MOP sends (the same
+    #                 Length/Width columns drive edge metres, so the cutting
+    #                 size cannot simply be sent instead).
+    #   default_named N2: pieces still named OpenCutList's default part name
+    #                 ("Part", "Part#3" — what Smart Build and Paneling make).
+    #   bare_fronts   N3: parts whose definition role is front_panel with no
+    #                 face veneer — a door picked off a V0 carcass, priced with
+    #                 no laminate.
+    def _estimate_notes(cutlist)
+      default = begin
+        PLUGIN.get_i18n_string('default.part_single').to_s.capitalize
+      rescue StandardError
+        ''
+      end
+      cut_larger = []
+      default_named = 0
+      bare_fronts = []
+      McftPushWorker.new(site_url: '', api_key: '', api_secret: '',
+                         hidden_group_ids: @hidden_group_ids)
+                    .send(:_visible_groups, cutlist).each do |group|
+        sheet = group.material_type == MaterialAttributes::TYPE_SHEET_GOOD
+        group.parts.each do |part|
+          if sheet && (part.length_increased || part.width_increased)
+            inc = []
+            inc << "length +#{part.length_increase}" if part.length_increased
+            inc << "width +#{part.width_increase}" if part.width_increased
+            cut_larger << "#{part.name} (#{inc.join(' / ')})"
+          end
+          default_named += part.count.to_i if McftEstimateRules.default_part_name?(part.name, default)
+          definition = part.def.respond_to?(:definition) ? part.def.definition : nil
+          next unless definition
+          next unless DefinitionAttributes.role_of(definition) == DefinitionAttributes::ROLE_FRONT_PANEL
+          bare_fronts << part.name.to_s if (part.face_material_names || {}).empty?
+        end
+      end
+      { 'cut_larger' => cut_larger.uniq, 'default_named' => default_named,
+        'default_name' => default, 'bare_fronts' => bare_fronts.uniq }
+    rescue StandardError => e
+      # A note must never take the estimate down with it.
+      McftLog.say("[MCFT] estimate notes skipped — #{e.message}")
+      { 'cut_larger' => [], 'default_named' => 0, 'bare_fronts' => [], 'skipped' => e.message }
     end
 
     # Counted by ROOT INSTANCE, split by size token.
@@ -398,10 +437,20 @@ module Ladb::OpenCutList
       scope = model.selection.empty? ? 'active_entities' : 'selection'
       ents = _scope_entities(model)
       McftLog.say("[MCFT] assembly walk — scope=#{scope}, #{ents.count} entit(ies) at this level")
+      unnamed = []
       ents.each do |e|
-        next unless e.is_a?(Sketchup::ComponentInstance)
+        # COMPONENTS AND GROUPS. A Smart Build module (OpenCutList 8) is a
+        # GROUP at the top of the model, so a components-only walk dropped a
+        # module named ASMBL_M_... silently — before the visibility test and
+        # before the ignored list, so not even listed. Depth is unchanged:
+        # this is still ONE level over the scope, and nothing inside an entity
+        # is ever examined (docs/mcft/MOP-ON-OCL8.md §4.2).
+        kind = if e.is_a?(Sketchup::ComponentInstance) then :component
+               elsif e.is_a?(Sketchup::Group) then :group
+               end
+        next unless kind
         d = e.definition
-        next if d.nil? || d.image?
+        next if d.nil? || (kind == :component && d.image?)
         # HIDDEN ASSEMBLIES ARE NOT ASSEMBLED.
         #
         # Amit, 2026-09-28: "even though i hide few assemblies, the mop
@@ -417,25 +466,36 @@ module Ladb::OpenCutList
         # was no longer in the cut list at all.
         #
         # Worse than a wrong total: the two halves of one estimate were
-        # reading the same model by different rules.
+        # reading the same model by different rules. The SAME test for both
+        # kinds, and it comes before any name is read.
         unless e.visible? && _layer_visible?(e.layer, true)
           hidden_skipped += 1
-          McftLog.say("[MCFT]   instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} " \
+          McftLog.say("[MCFT]   kind=#{kind} instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} " \
                '-> SKIPPED (hidden in SketchUp)')
           next
         end
-        # An instance may be renamed away from its definition; either name
-        # naming it an assembly is enough, because both are what a person
-        # sees in the Outliner.
-        name = [e.name.to_s, d.name.to_s].find { |n| ROOT_ASSEMBLY_RE.match(n) }
-        if name
-          size = SIZE_OF[ROOT_ASSEMBLY_RE.match(name)[1].upcase]
+        # A component is named by its instance name or its definition name,
+        # both of which a person sees in the Outliner; a group by its instance
+        # name only (its definition is SketchUp's "Group#n").
+        def_name = kind == :component ? d.name.to_s : ''
+        size = McftEstimateRules.assembly_size(kind, e.name.to_s, def_name)
+        if size
           out[size] += 1
-          McftLog.say("[MCFT]   instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} -> #{size}")
-        elsif e.name.to_s =~ ASSEMBLY_ISH_RE || d.name.to_s =~ ASSEMBLY_ISH_RE
-          # At the root, ASMBL-ish, and no size token: named like an assembly
+          McftLog.say("[MCFT]   kind=#{kind} instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} -> #{size}")
+        elsif McftEstimateRules.assembly_ish?(kind, e.name.to_s, def_name)
+          # At the top, ASMBL-ish, and no size token: named like an assembly
           # and not counted as one. Said out loud rather than dropped.
-          ignored << (e.name.to_s.empty? ? d.name.to_s : e.name.to_s)
+          ignored << (e.name.to_s.empty? ? def_name : e.name.to_s)
+          McftLog.say("[MCFT]   kind=#{kind} instance=#{e.name.to_s.inspect} def=#{d.name.to_s.inspect} " \
+               '-> IGNORED (ASMBL with no size token)')
+        elsif McftEstimateRules.unnamed_module?(kind, e.name.to_s,
+                                                !PLUGIN.get_attribute(d, 'stretch_cutters').nil?)
+          # Looks like an OpenCutList 8 module and carries no ASMBL name: not
+          # counted, and SAID — its own list, not `ignored`, whose words
+          # ("named ASMBL... but no size token") would be false for it.
+          unnamed << (e.name.to_s.empty? ? '(unnamed group)' : e.name.to_s)
+          McftLog.say("[MCFT]   kind=group instance=#{e.name.to_s.inspect} " \
+               '-> NOT COUNTED (looks like an OpenCutList 8 module, no ASMBL name)')
         end
       end
       out['top_level'] = out['large'] + out['medium'] + out['small'] > 0
@@ -451,9 +511,14 @@ module Ladb::OpenCutList
       out['scope'] = model.selection.empty? ? 'model' : 'selection'
       out['scope_size'] = ents.count
       out['hidden_skipped'] = hidden_skipped
+      out['unnamed_modules'] = unnamed.uniq
       McftLog.say("[MCFT] assembly walk — SENDING large=#{out['large']} medium=#{out['medium']} " \
            "small=#{out['small']} ignored=#{out['ignored'].inspect} " \
-           "hidden_skipped=#{hidden_skipped}")
+           "unnamed_modules=#{out['unnamed_modules'].inspect} hidden_skipped=#{hidden_skipped}")
+      unless out['top_level']
+        McftLog.say('[MCFT]   no sized assembly counted, so NO size map is sent: ERP prices the ' \
+             'seven assembly steps by its own rule and says so beside the count.')
+      end
       McftLog.say('[MCFT]   if the estimate screen disagrees with these numbers, the bench ' \
            'ignored them — read the source in brackets beside the assembly count.')
       out

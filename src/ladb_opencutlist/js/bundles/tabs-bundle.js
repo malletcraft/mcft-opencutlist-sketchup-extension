@@ -10073,6 +10073,7 @@ LadbAbstractTab.prototype.toInt = function (value) {
                     (d.assembly_sizes.small || 0) + ' small)' : '') + ' (' +
                 that.mcftEsc(d.assembly_source) + ') &middot; wastage: ' +
                 that.mcftEsc(d.wastage) + '</p>';
+        html += that.mcftWalkNotes(d);
 
         // A BOARD NOBODY MAKES, shown ABOVE the unpriced banner and worded
         // so the two cannot be confused. Amit, 2026-09-09, on SG_PLY_V0_1mm:
@@ -10865,18 +10866,72 @@ LadbAbstractTab.prototype.toInt = function (value) {
     // row 8 of the table now, editable like every other step from 7 down, so
     // one Recalculate reads the whole table and there is only one place to
     // type a time.
+    // WHAT THE PLUGIN'S OWN READING OF THE MODEL SAYS, under the assembly line.
+    //
+    // From d.mcft_assembly_walk and d.mcft_notes — the plugin's lists, handed
+    // to this screen beside the priced rows and never posted — because only
+    // the plugin knows them (docs/mcft/MOP-ON-OCL8.md §3.1, §4.3, §5). Every
+    // line shows only when it has something to say: a note that fires on
+    // every estimate teaches the reader to skip the line the real one is on.
+    LadbTabCutlist.prototype.mcftWalkNotes = function (d) {
+        const that = this;
+        const walk = (d && d.mcft_assembly_walk) || null;
+        const notes = (d && d.mcft_notes) || {};
+        const where = walk && walk.scope === 'selection' ? 'selection' : 'model';
+        const line = (text) => '<p style="color:#8a5a00;margin:0 0 8px;">' + text + '</p>';
+        const names = (a) => (a || []).map((n) => that.mcftEsc(n)).join(', ');
+        let html = '';
+        // N4. Nothing was counted, so no size map was sent and the bench's own
+        // words on the line above say ERP priced the steps. This adds what
+        // only the plugin knows: the naming rule and the scope it looked at.
+        if (walk && walk.top_level === false) {
+            html += line('An assembly is a component or group at the top of this ' + where +
+                         ' named ASMBL_L_, ASMBL_M_ or ASMBL_S_. None was found, so ERP ' +
+                         'priced the seven assembly steps by its own rule.');
+        }
+        if (walk && (walk.unnamed_modules || []).length > 0) {
+            html += line(walk.unnamed_modules.length + ' group(s) at the top of this ' + where +
+                         ' look like OpenCutList 8 modules but have no ASMBL_L_ / ASMBL_M_ / ' +
+                         'ASMBL_S_ name, so they are NOT counted as assemblies: ' +
+                         names(walk.unnamed_modules) + '.');
+        }
+        // N1
+        if ((notes.cut_larger || []).length > 0) {
+            html += line('OpenCutList cuts these sheet parts larger than ERP nests them: ' +
+                         names(notes.cut_larger) + '.');
+        }
+        // N2
+        if (notes.default_named > 0) {
+            html += line(that.mcftEsc(notes.default_named) + ' part(s) still carry OpenCutList\'s ' +
+                         'default name (' + that.mcftEsc(notes.default_name || 'Part') + '). ' +
+                         'Name them so the parts list and the estimate say what they are.');
+        }
+        // N3
+        if ((notes.bare_fronts || []).length > 0) {
+            html += line(names(notes.bare_fronts) + ': a front panel with no face laminate.');
+        }
+        return html;
+    };
+
     LadbTabCutlist.prototype.mcftControls = function (d) {
         const that = this;
         let warn = '';
-        if (d && d.assembly_unsized) {
+        // THE PLUGIN'S OWN LIST, not the bench's echo of it. The bench's
+        // assembly_unsized reads 0 once a walk that counted nothing sends no
+        // size map (docs/mcft/MOP-ON-OCL8.md §4.3), so the warning has ONE
+        // source — the walk — whatever the bench was sent.
+        const ignored = ((d && d.mcft_assembly_walk) || {}).ignored || [];
+        if (ignored.length > 0) {
             // Amit, 2026-09-25: "component starting with ASMBL_L or ASMBL_M
             // or ASMBL_S at the root of skp file is the only assembly
             // qualifier. ignore rest." So these are IGNORED now, not counted
             // as Large — and the old wording said the opposite, which would
             // send somebody looking for time that was never added.
-            warn = '<div style="color:#922;margin-top:6px;">' + d.assembly_unsized +
-                   ' component(s) at the model root are named ASMBL… but carry ' +
-                   'no size token, so they are NOT counted as assemblies. ' +
+            const where = d.mcft_assembly_walk.scope === 'selection' ? 'selection' : 'model';
+            warn = '<div style="color:#922;margin-top:6px;">' + ignored.length +
+                   ' component(s) or group(s) at the top of this ' + where + ' are named ASMBL… ' +
+                   'but carry no size token, so they are NOT counted as assemblies: ' +
+                   ignored.map((n) => that.mcftEsc(n)).join(', ') + '. ' +
                    'Rename them ASMBL_L_… / ASMBL_M_… / ASMBL_S_… to include ' +
                    'them.</div>';
         }

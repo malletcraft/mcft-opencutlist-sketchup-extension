@@ -15,16 +15,14 @@
 # Depth is asserted by the worker walking model.entities, which is structural
 # and cannot be got wrong by a pattern.
 
-# encoding: 'UTF-8' explicitly — the worker carries ellipses and en-dashes in
-# its comments, and Ruby reading it as US-ASCII dies on the first match with
-# "invalid byte sequence". check-csv-thickness.rb hit exactly this.
-src = File.read(File.join(__dir__, '..', 'src', 'ladb_opencutlist', 'ruby',
-                          'worker', 'mcft', 'mcft_estimate_worker.rb'),
-                encoding: 'UTF-8')
-
-m = src.match(/^\s*ROOT_ASSEMBLY_RE\s*=\s*(\/.*\/[a-z]*)\s*$/)
-abort 'check-assembly-rule: ROOT_ASSEMBLY_RE not found' unless m
-re = eval(m[1])  # rubocop:disable Security/Eval -- our own source, read above
+# THE RULE IS LOADED AND RUN, not pattern-matched out of the source: it
+# lives in worker/mcft/mcft_estimate_rules.rb, which has no SketchUp in it so
+# that this file can require it (docs/mcft/MOP-ON-OCL8.md §4.4). The walk
+# that feeds it needs a model; it is held by the SOURCE assertions at the end.
+WORKER_DIR = File.join(__dir__, '..', 'src', 'ladb_opencutlist', 'ruby', 'worker', 'mcft')
+require File.join(WORKER_DIR, 'mcft_estimate_rules')
+R = Ladb::OpenCutList::McftEstimateRules
+re = R::ROOT_ASSEMBLY_RE
 
 # name => expected size, or nil for "not an assembly"
 CASES = {
@@ -65,8 +63,71 @@ CASES.each do |name, want|
               name.inspect, want.inspect, got.inspect)
 end
 
+# KIND CASES — OpenCutList 8 draws Smart Build modules as GROUPS. A group is
+# named by its INSTANCE name only; a component by its instance or definition
+# name. [kind, instance, definition, stretch_cutters, size, ignored?, unnamed?]
+KIND_CASES = [
+  [:component, '',                  'ASMBL_M_WAR', false, 'medium', false, false],
+  [:component, 'ASMBL_L_X',         'Part',        false, 'large',  false, false],
+  [:group,     'ASMBL_M_WAR_600',   'Group#12',    true,  'medium', false, false],
+  # A group's definition name is never read: it is SketchUp's Group#n.
+  [:group,     '',                  'ASMBL_M_WAR', false, nil,      false, false],
+  [:group,     'Part',              'Group#3',     false, nil,      false, false],
+  [:group,     'ASMBL_WAR',         '',            true,  nil,      true,  false],
+  [:group,     'mcft_asmbl_s_loft', 'Group#1',     false, 'small',  false, false],
+  [:group,     'Wardrobe 600',      'Group#4',     true,  nil,      false, true],
+  # Unnamed-module is a GROUP statement: a component never is one.
+  [:component, 'Wardrobe 600',      'Wardrobe',    true,  nil,      false, false],
+].freeze
+
+KIND_CASES.each do |kind, inst, defn, cutters, size, ish, unnamed|
+  def_seen = kind == :component ? defn : ''
+  got = [R.assembly_size(kind, inst, defn), R.assembly_ish?(kind, inst, def_seen),
+         R.unnamed_module?(kind, inst, cutters)]
+  next if got == [size, ish, unnamed]
+  fail_count += 1
+  warn format('check-assembly-rule: %-10s %-20s def=%-14s cutters=%-5s expected size=%s ignored=%s unnamed=%s, got %s',
+              kind, inst.inspect, defn.inspect, cutters, size.inspect, ish, unnamed, got.inspect)
+end
+
+# THE PAYLOAD. A walk that counted nothing sends NO size map, so the bench
+# says in its own words that ERP's rule priced the steps.
+zero = R.assembly_payload('large' => 0, 'medium' => 0, 'small' => 0, 'top_level' => false)
+unless zero == { 'assembly_count' => 0 }
+  fail_count += 1
+  warn "check-assembly-rule: a zero count must send no assembly_counts, got #{zero.inspect}"
+end
+one = R.assembly_payload('large' => 0, 'medium' => 1, 'small' => 0, 'top_level' => true)
+unless one['assembly_count'] == 1 && one['assembly_counts'].is_a?(Hash) && one['assembly_counts']['medium'] == 1
+  fail_count += 1
+  warn "check-assembly-rule: one medium must send the count and the map, got #{one.inspect}"
+end
+
+# THE WALK, read from its source. One level, both kinds, visibility before
+# naming, and the payload built only through assembly_payload.
+src = File.read(File.join(WORKER_DIR, 'mcft_estimate_worker.rb'), encoding: 'UTF-8')
+walk = src[/^    def _assembly_counts\(model\)\n.*?^    end\n/m].to_s
+source_rules = {
+  'the walk exists' => !walk.empty?,
+  'the walk iterates its scope with ents.each' => walk.include?('ents.each do |e|'),
+  'the walk never descends (.entities)' => walk !~ /\.entities\b/,
+  'the walk admits components' => walk.include?('e.is_a?(Sketchup::ComponentInstance)'),
+  'the walk admits groups' => walk.include?('e.is_a?(Sketchup::Group)'),
+  'visibility is tested before any name, for both kinds' =>
+    (v = walk.index('_layer_visible?(e.layer, true)')) && (n = walk.index('McftEstimateRules.assembly_size')) && v < n &&
+    walk.index('kind = if') < v,
+  'the payload is built only through assembly_payload' =>
+    src.include?('McftEstimateRules.assembly_payload(_counts)') && src !~ /'assembly_counts'\s*=>/,
+}
+source_rules.each do |what, ok|
+  next if ok
+  fail_count += 1
+  warn "check-assembly-rule: source: #{what} — NOT TRUE"
+end
+
 if fail_count.positive?
   warn "check-assembly-rule: #{fail_count} case(s) failed"
   exit 1
 end
-puts "check-assembly-rule: #{CASES.size} names classified correctly"
+puts "check-assembly-rule: #{CASES.size} names, #{KIND_CASES.size} kind cases, the payload shape " \
+     "and #{source_rules.size} source rules hold"

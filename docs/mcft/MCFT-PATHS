@@ -29,6 +29,7 @@ tools/check-assembly-rule.rb
 tools/check-build-matches-rbz.rb
 tools/check-csv-thickness.rb
 tools/check-dialog-api.rb
+tools/check-estimate-notes.rb
 tools/check-mcft-log.rb
 tools/check-mcft-wiring.rb
 tools/check-push-suspended.rb
