@@ -11,12 +11,15 @@
 #   2. refuses unless this clone is on branch mcft with no tracked file
 #      changed — the build outputs are laid down against HEAD, so HEAD must be
 #      the published commit. The way out is a fresh clone (below);
-#   3. clears Plugins of whatever OpenCutList is there: a stock install's real
+#   3. lays every build output down from dist/ladb_opencutlist.rbz
+#      (tools/mcft-refresh-outputs.sh — the same script every start runs).
+#      FIRST, because it touches only the clone: if it refuses, Plugins still
+#      holds whatever OpenCutList was there, and SketchUp still starts with it
+#      (the review, docs/mcft/MOP-ON-OCL8.md §12);
+#   4. clears Plugins of whatever OpenCutList is there: a stock install's real
 #      folder and file, old links, and OpenCutList 8's updater backups
 #      (rm removes a link, never its target). ~/Library/Application
 #      Support/OpenCutList is left alone: MOP on 8 shares it (same plugin id);
-#   4. lays every build output down from dist/ladb_opencutlist.rbz
-#      (tools/mcft-refresh-outputs.sh — the same script every start runs);
 #   5. links this clone into Plugins;
 #   6. writes the startup stub, which loads tools/mcft-autoupdate.rb from this
 #      clone on every start;
@@ -57,12 +60,18 @@ PLUG=$(ls -d "$HOME/Library/Application Support/SketchUp "*/SketchUp/Plugins 2>/
 [ -n "$PLUG" ] || { echo "No SketchUp Plugins folder found under ~/Library/Application Support"; exit 1; }
 echo "Plugins folder: $PLUG"
 
-# 3.
-rm -rf "$PLUG/ladb_opencutlist" "$PLUG/ladb_opencutlist.rb" \
-       "$PLUG/ladb_opencutlist.upgrade_backup" "$PLUG/ladb_opencutlist.rb.upgrade_backup"
+# 3. The clone first. A refusal here has changed nothing in Plugins, and says so.
+if ! bash "$REPO/tools/mcft-refresh-outputs.sh"; then
+  echo
+  echo "NOT INSTALLED: the build outputs could not be laid down (above)."
+  echo "Plugins was not touched, so the OpenCutList there still loads as before."
+  echo "Run this script again once the cause above is fixed."
+  exit 1
+fi
 
 # 4.
-bash "$REPO/tools/mcft-refresh-outputs.sh"
+rm -rf "$PLUG/ladb_opencutlist" "$PLUG/ladb_opencutlist.rb" \
+       "$PLUG/ladb_opencutlist.upgrade_backup" "$PLUG/ladb_opencutlist.rb.upgrade_backup"
 
 # 5.
 ln -s "$REPO/src/ladb_opencutlist.rb" "$PLUG/ladb_opencutlist.rb"

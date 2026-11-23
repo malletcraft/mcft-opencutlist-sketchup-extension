@@ -79,13 +79,25 @@ module McftAutoupdate
 
   # Plugins entries that are not this clone's, by name. `link` answers
   # [symlink?, realpath-or-nil] for a path; injected so the rule is testable.
+  # BOTH sides are compared resolved: `real` has every symlink resolved, and
+  # the clone's path is the installer's unresolved `pwd`, so a clone reached
+  # through a symlinked folder (~/dev -> elsewhere) would otherwise read as
+  # "not MOP" on every start (the review, docs/mcft/MOP-ON-OCL8.md §12).
   def self.foreign_plugins(repo_src, link)
     { 'ladb_opencutlist' => File.join(repo_src, 'ladb_opencutlist'),
       'ladb_opencutlist.rb' => File.join(repo_src, 'ladb_opencutlist.rb') }.reject do |name, want|
       is_link, real = link.call(name)
-      is_link && real == want
+      want_real = (File.realpath(want) rescue want)
+      is_link && real == want_real
     end.keys
   end
+
+  # The stall guard for every git call that can download: the fetch, AND the
+  # fast-forward — on the --filter=blob:none clone the merge's checkout is what
+  # fetches the new blobs (the 22.5 MB rbz among them), through a promisor
+  # fetch that inherits these -c settings. A stalled link fails in 10 s instead
+  # of hanging the SketchUp start.
+  NET = '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10'
 
   def self.install_command(repo)
     "bash #{repo}/tools/dev-install-mac.sh"
@@ -129,7 +141,7 @@ module McftAutoupdate
     # 2. Fetch, gate, fast-forward.
     ok = true
     note = 'Already up to date.'
-    fout, fcode = _git('-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch origin mcft')
+    fout, fcode = _git("#{NET} fetch origin mcft")
     if fcode != 0
       ok = false
       note = fout.lines.last.to_s.strip
@@ -145,7 +157,7 @@ module McftAutoupdate
       if target != here
         verdict, detail = _ci_verdict(target)
         if verdict == :success
-          mout, mcode = _git('merge --ff-only origin/mcft')
+          mout, mcode = _git("#{NET} merge --ff-only origin/mcft")
           if mcode != 0
             ok = false
             note = mout.lines.last.to_s.strip

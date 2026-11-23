@@ -17,7 +17,14 @@
 # be built here at all), and tracks exactly one itself: js/bundles/tabs-bundle.js.
 #
 # A refresh, in order:
-#   1. (--if-stale) stop at once if the stamp's first line is HEAD's rbz blob;
+#   1. (--if-stale) stop at once if the stamp's first line is HEAD's KEY: the
+#      rbz blob AND a hash of the paths git tracks under src/ladb_opencutlist.
+#      The tracked set decides which rbz files are laid down (step 4), so a
+#      commit that starts or stops tracking one — an MCFT copy of an upstream
+#      bundle, say — changes the outputs with the same rbz. Keyed on the blob
+#      alone, a file untracked by the fast-forward stayed missing under "up to
+#      date", and a newly tracked one tripped --verify's 12 on every later
+#      start (the review, docs/mcft/MOP-ON-OCL8.md §12);
 #   2. unzip the rbz into a temp folder;
 #   3. refuse unless the rbz's, HEAD's src and HEAD's dist/manifest.json name
 #      ONE EXTENSION_BUILD (else the dialog's "zzz" lock) — nothing under src/
@@ -32,15 +39,17 @@
 #      (BSD cp) and on Linux (GNU cp, where CI proves it): cp -R <dir>/. <dir>/.
 #      Not ditto, which exists only on macOS; not `cp -R a b` into an existing
 #      b, which nests a second ladb_opencutlist inside it;
-#   7. write the stamp LAST: the rbz blob, the build, then one POSIX cksum line
+#   7. write the stamp LAST: the key, the build, then one POSIX cksum line
 #      (CRC, size, path) per output laid down — content, not mtimes, and the
 #      same command on both platforms.
 #
 # Exit codes, so the caller can tell the cases apart:
 #   refresh   0 done · 20 failed BEFORE touching src/ · 21 failed AFTER
 #   --verify  0 the clone holds MOP · 10 a tracked file has changed ·
-#             11 the stamp is missing or names another rbz (an interrupted
-#             refresh: git clean removes it first, it is written last) ·
+#             11 the stamp is missing or names another key — another rbz, or
+#             another set of tracked paths (an interrupted refresh: git clean
+#             removes it first, it is written last; or a commit that changed
+#             what is tracked) ·
 #             12 an output no longer matches its cksum line
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -52,6 +61,11 @@ mode="${1:-}"
 case "$mode" in ''|--if-stale|--verify) ;; *) echo "usage: $0 [--if-stale|--verify]" >&2; exit 2 ;; esac
 
 blob=$(git rev-parse --verify -q "HEAD:$RBZ") || { echo "refresh: HEAD has no $RBZ" >&2; exit 20; }
+# HEAD's tracked paths under src/ladb_opencutlist, hashed (trees only: no blob
+# is needed, so it costs nothing on the partial clone).
+paths=$(git ls-tree -r --name-only HEAD -- src/ladb_opencutlist/ | git hash-object --stdin) \
+  || { echo "refresh: cannot list HEAD's tracked paths" >&2; exit 20; }
+key="$blob $paths"
 
 if [ "$mode" = "--verify" ]; then
   if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
@@ -59,8 +73,8 @@ if [ "$mode" = "--verify" ]; then
     git status --porcelain --untracked-files=no | head -10 >&2
     exit 10
   fi
-  if [ ! -f "$STAMP" ] || [ "$(head -1 "$STAMP")" != "$blob" ]; then
-    echo "verify: no stamp for HEAD's rbz ${blob:0:9} (an interrupted or missing refresh)" >&2
+  if [ ! -f "$STAMP" ] || [ "$(head -1 "$STAMP")" != "$key" ]; then
+    echo "verify: no stamp for HEAD's rbz ${blob:0:9} and tracked paths ${paths:0:9} (an interrupted or missing refresh, or a commit that changed what is tracked)" >&2
     exit 11
   fi
   expected=$(tail -n +3 "$STAMP")
@@ -74,8 +88,8 @@ if [ "$mode" = "--verify" ]; then
   exit 0
 fi
 
-if [ "$mode" = "--if-stale" ] && [ -f "$STAMP" ] && [ "$(head -1 "$STAMP")" = "$blob" ]; then
-  echo "refresh: outputs already from rbz ${blob:0:9}"
+if [ "$mode" = "--if-stale" ] && [ -f "$STAMP" ] && [ "$(head -1 "$STAMP")" = "$key" ]; then
+  echo "refresh: outputs already from rbz ${blob:0:9} and tracked paths ${paths:0:9}"
   exit 0
 fi
 
@@ -95,8 +109,9 @@ if [ -z "$b_rbz" ] || [ "$b_rbz" != "$b_src" ] || [ "$b_rbz" != "$b_man" ]; then
   fail_before "EXTENSION_BUILD differs: rbz=$b_rbz src=$b_src manifest=$b_man"
 fi
 
-# Tracked files win: drop them from what will be copied.
-git ls-files -z -- src/ladb_opencutlist/ | while IFS= read -r -d '' p; do
+# Tracked files win: drop them from what will be copied. HEAD's list, the
+# same one the key hashes, so the stamp and what was dropped always agree.
+git ls-tree -r -z --name-only HEAD -- src/ladb_opencutlist/ | while IFS= read -r -d '' p; do
   rm -f "$tmp/${p#src/}"
 done
 find "$tmp/ladb_opencutlist" -depth -type d -empty -delete 2>/dev/null
@@ -107,7 +122,7 @@ git clean -fdXq -- src/ || fail_after "git clean -fdXq -- src/ failed"
 cp -R "$tmp/ladb_opencutlist/." "src/ladb_opencutlist/" || fail_after "copying the outputs into src/ failed"
 
 {
-  echo "$blob"
+  echo "$key"
   echo "$b_rbz"
   (cd "$tmp" && find ladb_opencutlist -type f | sort) | sed 's#^#src/#' | tr '\n' '\0' | xargs -0 cksum
 } > "$STAMP.tmp" || fail_after "writing the stamp failed"

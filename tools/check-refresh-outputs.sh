@@ -46,7 +46,7 @@ cmp -s "$O/bin/osx/lib/libPacky.dylib" <(unzip -p "$R/dist/ladb_opencutlist.rbz"
 rbz_only=$(cd "$work" && unzip -Z1 "$R/dist/ladb_opencutlist.rbz" 'ladb_opencutlist/*' | grep -v '/$' \
   | sed 's#^#src/#' | grep -vxF -f <(git -C "$R" ls-files src) | wc -l)
 lines=$(($(wc -l < "$O/.mcft-outputs") - 2))
-[ "$(head -1 "$O/.mcft-outputs")" = "$(git -C "$R" rev-parse HEAD:dist/ladb_opencutlist.rbz)" ] && [ "$lines" -eq "$rbz_only" ] && [ "$rbz_only" -gt 0 ] \
+[ "$(head -1 "$O/.mcft-outputs" | cut -d' ' -f1)" = "$(git -C "$R" rev-parse HEAD:dist/ladb_opencutlist.rbz)" ] && [ "$lines" -eq "$rbz_only" ] && [ "$rbz_only" -gt 0 ] \
   && ok "the stamp names HEAD's rbz and carries one cksum line per output ($lines)" || bad "stamp: $lines lines for $rbz_only rbz-only files"
 [ -z "$(git -C "$R" status --porcelain --untracked-files=all)" ] \
   && ok 'nothing untracked: every rbz output falls under an ignore rule' \
@@ -71,6 +71,45 @@ expect 0 'and it verifies again' -- "$S" --verify
 rm "$O/.mcft-outputs"
 expect 11 'the stamp deleted' -- "$S" --verify
 expect 0 '--if-stale with no stamp refreshes' -- "$S" --if-stale
+
+echo "a commit that changes what is tracked, with the same rbz"
+# The review: the stamp keyed on the rbz blob alone, so a fast-forward that
+# started or stopped tracking an rbz file left the outputs wrong under "up to
+# date". The file is one the rbz carries and this line does not track today.
+cb=src/ladb_opencutlist/js/bundles/common-bundle.js
+commit() { git -C "$R" -c user.name=check -c user.email=check@invalid commit -q "$@"; }
+echo '// an MCFT copy' >> "$R/$cb"
+git -C "$R" add -f "$cb" && commit -m 'start tracking common-bundle.js'
+expect 11 'starting to track an rbz file: --verify asks for a refresh, not 0 or 12' -- "$S" --verify
+expect 0 '--if-stale refreshes' -- "$S" --if-stale
+grep -q 'laid down' "$work/out" && ok 'it did refresh' || bad '--if-stale did not refresh'
+expect 0 'and it verifies' -- "$S" --verify
+tail -1 "$R/$cb" | grep -q 'an MCFT copy' && ok 'the tracked copy won' || bad 'the refresh overwrote the tracked copy'
+git -C "$R" rm -q "$cb" && commit -m 'stop tracking it again'
+[ ! -e "$R/$cb" ] && ok 'the commit deleted it' || bad 'the file is still there'
+expect 11 'stopping tracking an rbz file: --verify asks for a refresh, not 0' -- "$S" --verify
+expect 0 '--if-stale refreshes' -- "$S" --if-stale
+cmp -s "$R/$cb" <(unzip -p "$R/dist/ladb_opencutlist.rbz" "ladb_opencutlist/js/bundles/common-bundle.js") \
+  && ok "the rbz's copy is laid down again" || bad 'common-bundle.js is missing or not the rbz one'
+expect 0 'and it verifies' -- "$S" --verify
+[ -z "$(git -C "$R" status --porcelain --untracked-files=all)" ] && ok 'nothing untracked' || bad 'untracked files left'
+
+echo "the installer, with a fake HOME"
+# The review: it cleared Plugins BEFORE the refresh, so a refused refresh left
+# no OpenCutList at all under words that said "src/ untouched". Run for real,
+# with a stock 8 install in a fake Plugins and an unzip that fails first.
+H="$work/home"; P="$H/Library/Application Support/SketchUp 2026/SketchUp/Plugins"
+mkdir -p "$P/ladb_opencutlist" "$work/bin"; echo stock > "$P/ladb_opencutlist.rb"
+printf '#!/bin/sh\nexit 9\n' > "$work/bin/unzip"; chmod +x "$work/bin/unzip"
+git -C "$R" checkout -q -B mcft
+expect 1 'a refused refresh stops the installer' -- env HOME="$H" PATH="$work/bin:$PATH" bash "$R/tools/dev-install-mac.sh"
+grep -q 'Plugins was not touched' "$work/out" && ok 'and it says Plugins was not touched' || bad 'no plain words for a refused install'
+[ -d "$P/ladb_opencutlist" ] && [ ! -L "$P/ladb_opencutlist" ] && [ "$(cat "$P/ladb_opencutlist.rb")" = stock ] \
+  && ok 'the stock install is still in Plugins' || bad 'Plugins lost its OpenCutList on a refused install'
+expect 0 'with a working unzip it installs' -- env HOME="$H" bash "$R/tools/dev-install-mac.sh"
+[ "$(readlink "$P/ladb_opencutlist")" = "$R/src/ladb_opencutlist" ] && [ "$(readlink "$P/ladb_opencutlist.rb")" = "$R/src/ladb_opencutlist.rb" ] \
+  && [ -f "$P/!mcft_autoupdate.rb" ] && ok 'the two links and the stub are in Plugins' || bad 'the links or the stub are missing'
+expect 0 'and the clone verifies' -- "$S" --verify
 
 echo "a build mismatch"
 listing() { (cd "$O" && find . -type f -print0 | sort -z | xargs -0 cksum); }

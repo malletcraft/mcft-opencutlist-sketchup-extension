@@ -1032,7 +1032,9 @@ untracked file, and check 5 asserts that it stays so.
    1. With `--if-stale`, it stops at once if the first line of the stamp
       `src/ladb_opencutlist/.mcft-outputs` equals
       `git rev-parse HEAD:dist/ladb_opencutlist.rbz`. This keeps the call
-      cheap.
+      cheap. *(Superseded by §12, finding 3: line 1 is the KEY — the rbz blob
+      and a hash of HEAD's tracked paths under `src/ladb_opencutlist` — so a
+      commit that changes what is tracked refreshes too.)*
    2. Run `tmp=$(mktemp -d)`, then `unzip -q dist/ladb_opencutlist.rbz
       'ladb_opencutlist/*' -d "$tmp"`.
    3. Verify that `EXTENSION_BUILD` is the same in three places: the rbz's
@@ -1068,7 +1070,8 @@ untracked file, and check 5 asserts that it stays so.
    hold, with a distinct code for each failure:
    - **10:** a tracked file has changed
      (`git status --porcelain --untracked-files=no` is not empty);
-   - **11:** the stamp is missing, or its line 1 is not HEAD's rbz blob;
+   - **11:** the stamp is missing, or its line 1 is not HEAD's rbz blob
+     (since §12: not HEAD's key, blob and tracked paths);
    - **12:** an output listed in the stamp no longer matches its `cksum`
      line.
 
@@ -1112,7 +1115,8 @@ untracked file, and check 5 asserts that it stays so.
       `bash ~/dev/malletcraft/mcft-opencutlist-sketchup-extension/tools/dev-install-mac.sh`.
    6. **Check what will actually load.** `Plugins/ladb_opencutlist` and
       `Plugins/ladb_opencutlist.rb` must both be symlinks that resolve into
-      this clone (`File.symlink?`, `File.realpath`). If not, say so loudly:
+      this clone (`File.symlink?`, `File.realpath` — on BOTH sides since
+      §12, finding 1). If not, say so loudly:
       "OpenCutList in Plugins is not MOP — an .rbz install or OpenCutList's
       Upgrade replaced it. Quit SketchUp and run: <the install command>".
       Together with step 1, this closes both blind spots: links that no
@@ -1240,12 +1244,18 @@ has been dealt with.
 **Step 1 — BEFORE Claude pushes the 8 line to `mcft`.** Quit SketchUp, then:
 
 ```sh
-rm -f "$HOME/Library/Application Support/SketchUp 2026/SketchUp/Plugins/!mcft_autoupdate.rb"
+rm -f "$HOME/Library/Application Support/SketchUp 2026/SketchUp/Plugins/"'!mcft_autoupdate.rb'
 ```
 
 The old stub is not an extension, so Extension Manager's uninstall left it
 in Plugins. It still fetches into the old clone on every start. After this
 step, SketchUp runs stock 8 LAB alone, which is exactly what Amit has today.
+
+The `!` stays inside SINGLE quotes: in an interactive zsh or bash a `!` inside
+double quotes is history expansion, and the command is refused ("event not
+found") without running (§12, finding 2). Claude then confirms through the
+bridge that the stub is gone (`ls -la` of Plugins); the step is not reported
+done on Amit's word alone, nor on the command having been typed.
 
 *[Claude pushes upstream's history in pieces (§1.3), builds §1.1's commits on
 `mcft8`, pushes `mcft8`, waits until every workflow run on the tip's full
@@ -1925,12 +1935,16 @@ GitHub must be dealt with first), `git --version` (2.19 or later), and
 Terminal:
 
 ```sh
-rm -f "$HOME/Library/Application Support/SketchUp 2026/SketchUp/Plugins/!mcft_autoupdate.rb"
+rm -f "$HOME/Library/Application Support/SketchUp 2026/SketchUp/Plugins/"'!mcft_autoupdate.rb'
 ```
 
 The old startup stub is not an extension, so Extension Manager's uninstall
 left it; it still fetches into the old clone on every start. After this,
-SketchUp runs stock OpenCutList 8 LAB alone, exactly as today.
+SketchUp runs stock OpenCutList 8 LAB alone, exactly as today. (Copy it
+exactly: the `!` is inside single quotes on purpose.) Claude then reads
+Plugins through the bridge (`ls -la "$HOME/Library/Application
+Support/SketchUp 2026/SketchUp/Plugins"`) and moves on only when the stub is
+not listed.
 
 *[Claude then pushes upstream's history in pieces, the tag, and `mcft8`;
 waits until every workflow run on the tip's full 40-character sha is green;
@@ -1955,7 +1969,9 @@ git clone --filter=blob:none --branch mcft https://github.com/malletcraft/mcft-o
 bash ~/dev/malletcraft/mcft-opencutlist-sketchup-extension/tools/dev-install-mac.sh
 ```
 
-It ends with "Installed. Start SketchUp: …".
+It ends with "Installed. Start SketchUp: …". If it ends "NOT INSTALLED: the
+build outputs could not be laid down", Plugins was not touched and stock 8
+LAB still loads; Amit pastes the lines above it and Claude works from them.
 
 **Step 5 (S3 MOP).** Start SketchUp. Before clearing the Ruby Console, read
 its line `[MCFT] OpenCutList (MCFT Edition) up to date @ <rev>`, and check
@@ -1976,3 +1992,63 @@ After this Amit never uninstalls OpenCutList in Extension Manager, never
 clicks OpenCutList's Upgrade (MOP refuses it and says why), never installs an
 `.rbz`, and never runs `bootstrap.sh` over this repo. Restarting SketchUp is
 the update.
+
+---
+
+## 12. The review
+
+Two reviewers read the `mcft8` line at `d462e88c` and reported five findings.
+**All five were confirmed in the code, and none was declined.** Each fix is
+the smallest that closes it, each has a test that fails on `d462e88c` and
+passes after, and every MOP check was re-run as the workflow runs it. As in
+§11, this is all LOCAL and ran in the Linux container; nothing ran in
+SketchUp or on a Mac.
+
+| # | Finding | Severity | Verdict | How it was confirmed |
+|---|---|---|---|---|
+| 1 | The startup updater calls a correct install "NOT MOP" when a folder in the clone's path is a symlink | minor | **CONFIRMED** | Read: `foreign_plugins` compared `File.realpath(<Plugins link>)` with the installer's unresolved `pwd`. RAN: the new check-autoupdate case (real `dev -> real` link, Plugins links made as the installer makes them) gives `["ladb_opencutlist", "ladb_opencutlist.rb"]` against the old updater. Whether a folder on Amit's path is a symlink is not known. |
+| 2 | Step 1 does not run in Terminal: `!` in double quotes is history expansion | major | **CONFIRMED** | RAN in interactive bash: `bash: !mcft_autoupdate.rb: event not found`, file still there; the single-quoted form removed it. zsh is not installed here, so zsh was NOT run; its default history expansion inside double quotes is the same rule (read). |
+| 3 | A commit that changes which files under `src/` are tracked, with the same rbz, leaves the outputs stale: missing under "up to date", or a false "clone modified" on every later start | major | **CONFIRMED** | Read: `--if-stale` and `--verify` keyed on the rbz blob alone, and step 4 drops every tracked path from what is laid down. RAN: the new check-refresh-outputs section against the old script — tracking `common-bundle.js` gives `--verify` 12 and `--if-stale` does nothing; untracking it again leaves the file missing and `--if-stale` still does nothing. |
+| 4 | The installer clears Plugins before it knows the refresh will succeed | minor | **CONFIRMED** | Read: `rm -rf "$PLUG/…"` was step 3, the refresh step 4, under `set -e`. RAN: the new installer section against the old installer, with an `unzip` that fails — exit 20, "src/ untouched", and the stock 8 install gone from Plugins. |
+| 5 | On the partial clone the big download happens in `git merge --ff-only`, which had no stall guard | minor | **CONFIRMED** | RAN on a local `--filter=blob:none` clone: after `git fetch` the new blob was missing (`GIT_NO_LAZY_FETCH=1 git cat-file -e` 128); `git -c protocol.file.allow=never merge --ff-only` failed its promisor fetch with "transport 'file' not allowed" — so the merge downloads, and a `-c` on the merge DOES reach that child fetch. A stalled HTTPS link was not reproduced. |
+
+**The fixes:**
+
+1. `McftAutoupdate.foreign_plugins` resolves the clone's side too
+   (`File.realpath(want) rescue want`), so both sides are compared resolved.
+   A path that does not exist still compares unresolved and still fails.
+   `check-autoupdate.rb` gains a case on REAL links: the clone under a
+   symlinked folder is MOP, and a real folder in place of the link is not.
+2. §6.4 step 1 and §11.5 step 1 keep the `!` in single quotes:
+   `rm -f "$HOME/…/Plugins/"'!mcft_autoupdate.rb'`. That was the only command
+   for Amit naming the stub (the installer writes it from a script, where
+   history expansion is off). Step 1 now ends with Claude reading Plugins
+   through the bridge, so a refused command is not reported as done.
+   `check-autoupdate.rb` fails on any ```` ```sh ```` line of this plan with a
+   `!` inside double quotes; on `d462e88c` it finds the two.
+3. The stamp's first line is now a KEY: the rbz blob, a space, and
+   `git ls-tree -r --name-only HEAD -- src/ladb_opencutlist/ | git
+   hash-object --stdin` (trees only, so free on the partial clone).
+   `--if-stale` refreshes and `--verify` answers 11 whenever either part
+   differs; step 4 drops HEAD's tracked list, the same list the key hashes.
+   So a key that matches means the stamp was written for exactly this tracked
+   set, and every rbz path is either tracked or in the stamp — which is the
+   reviewer's "`--verify` should fail" condition, met by construction. The
+   log's `outputs=` still shows the blob's first 9 characters. A stamp in the
+   old one-word format reads as 11 and is healed by the full refresh step 1
+   of the updater already runs. check-refresh-outputs.sh: start tracking
+   `common-bundle.js` (11, then `--if-stale` refreshes, verifies, the tracked
+   copy wins); stop tracking it (deleted, 11, `--if-stale` lays the rbz's
+   copy down, verifies, nothing untracked).
+4. The installer runs the refresh FIRST (it touches only the clone), and
+   clears Plugins only after it succeeded. A refusal prints "NOT INSTALLED …
+   Plugins was not touched, so the OpenCutList there still loads as before"
+   and exits 1. check-refresh-outputs.sh now RUNS the installer with a fake
+   HOME holding a stock install: with a failing `unzip` the stock install is
+   still there and the words say so; with a working one the two links and
+   the stub are in place and the clone verifies. (Linux; `pgrep`, `readlink`
+   and BSD tools on macOS are inferred, as in §11.2.)
+5. `McftAutoupdate::NET` (`-c http.lowSpeedLimit=1000 -c
+   http.lowSpeedTime=10`) is passed to the fetch AND the `merge --ff-only`.
+   check-autoupdate holds both calls to it. `reset --keep` back to the old
+   HEAD needs no download (its blobs are on disk) and is left as it was.

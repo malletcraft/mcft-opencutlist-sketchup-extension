@@ -7,6 +7,7 @@
 # exit means, what a failed refresh means, what a CI response means, whether
 # Plugins still holds MOP — are pure functions, so they are loaded and run
 # here. The run itself needs SketchUp (UI.messagebox) and is read, not run.
+require 'fileutils'
 require File.join(__dir__, 'mcft-autoupdate')
 A = McftAutoupdate
 fails = []
@@ -45,6 +46,28 @@ expect.call('a link into another clone', A.foreign_plugins(src, ->(n) { elsewher
 gone = { 'ladb_opencutlist' => [false, nil], 'ladb_opencutlist.rb' => [false, nil] }
 expect.call('nothing in Plugins', A.foreign_plugins(src, ->(n) { gone[n] }).sort, %w[ladb_opencutlist ladb_opencutlist.rb])
 
+# The same rule on REAL links, with the clone reached through a symlinked
+# folder (dev -> real), the Plugins links made exactly as dev-install-mac.sh
+# makes them (ln -s "$REPO/src/..." with REPO the unresolved pwd), and the
+# repo path as the stub hands it to run(). A resolved realpath against an
+# unresolved clone path called a correct install "not MOP" (the review).
+require 'tmpdir'
+Dir.mktmpdir do |t|
+  Dir.mkdir(File.join(t, 'real'))
+  File.symlink(File.join(t, 'real'), File.join(t, 'dev'))
+  repo = File.join(t, 'dev', 'repo')
+  FileUtils.mkdir_p(File.join(repo, 'src', 'ladb_opencutlist'))
+  File.write(File.join(repo, 'src', 'ladb_opencutlist.rb'), '')
+  plug = File.join(t, 'Plugins')
+  Dir.mkdir(plug)
+  %w[ladb_opencutlist ladb_opencutlist.rb].each { |n| File.symlink(File.join(repo, 'src', n), File.join(plug, n)) }
+  disk = lambda { |n| p = File.join(plug, n); [File.symlink?(p), (File.realpath(p) rescue nil)] }
+  expect.call('real links, clone under a symlinked folder', A.foreign_plugins(File.join(repo, 'src'), disk), [])
+  File.unlink(File.join(plug, 'ladb_opencutlist'))
+  Dir.mkdir(File.join(plug, 'ladb_opencutlist'))
+  expect.call('real folder in place of the link', A.foreign_plugins(File.join(repo, 'src'), disk), ['ladb_opencutlist'])
+end
+
 # Read, not run: the order the design depends on, and the house rule.
 body = File.read(File.join(__dir__, 'mcft-autoupdate.rb'), encoding: 'UTF-8')
 runsrc = body[/^  def self\.run\(.*?^  end\n/m].to_s
@@ -54,8 +77,24 @@ fails << 'run(): --verify does not come before the fetch' unless v && f && v < f
 fails << 'run(): the refresh after a fast-forward is not --if-stale' unless runsrc.include?("'--if-stale'")
 fails << 'run(): a refused refresh does not reset --keep to the old HEAD' unless runsrc.include?('reset --keep #{here}')
 fails << 'run(): no symlink check of what will load' unless runsrc.include?('File.symlink?') && runsrc.include?('File.realpath')
+fails << 'the fetch does not carry the stall guard (NET)' unless runsrc.include?('#{NET} fetch origin mcft')
+# On the partial clone the merge downloads the new blobs (a promisor fetch
+# that inherits -c), so it needs the same guard as the fetch.
+fails << 'the fast-forward does not carry the stall guard (NET)' unless runsrc.include?('#{NET} merge --ff-only origin/mcft')
+fails << 'NET is not the 1000 B/s for 10 s guard' unless A::NET == '-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10'
 fails << 'run() tells somebody to git pull (it bypasses the CI gate and the refresh)' unless runsrc.lines.grep(/git pull/).empty?
 fails << 'a failure message does not name the install script' unless runsrc.scan('install_command(repo)').size >= 4
+
+# The commands Amit is handed are typed into an interactive zsh, where a `!`
+# inside double quotes is history expansion: the stub's name inside "..."
+# made step 1 fail with "event not found" (the review). Every ```sh block of
+# the plan keeps any `!` out of double quotes.
+plan = File.read(File.join(__dir__, '..', 'docs', 'mcft', 'MOP-ON-OCL8.md'), encoding: 'UTF-8')
+plan.scan(/^```sh\n(.*?)^```/m).flatten.join.each_line do |l|
+  l.scan(/"[^"]*"/).each do |q|
+    fails << "MOP-ON-OCL8.md: a `!` inside double quotes in a command for Amit: #{l.strip}" if q.include?('!')
+  end
+end
 
 unless fails.empty?
   fails.each { |m| warn "check-autoupdate: #{m}" }
