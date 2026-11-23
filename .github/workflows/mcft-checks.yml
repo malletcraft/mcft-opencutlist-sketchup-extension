@@ -14,7 +14,7 @@ on:
 
 jobs:
   ruby:
-    name: Ruby parses, and parses on SketchUp 2017
+    name: Ruby parses, and parses on SketchUp 2021
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +27,8 @@ jobs:
           ruby-version: '3.3'
 
       # Catches ordinary syntax errors. Cannot catch version-specific syntax,
-      # which is the entire reason the next step exists.
+      # which is the entire reason the next step exists. The loader is read
+      # too: it sits outside ruby/ and a parse error there stops everything.
       - name: ruby -c every file we own
         run: |
           set -e
@@ -35,7 +36,7 @@ jobs:
           while IFS= read -r f; do
             ruby -c "$f" > /dev/null
             n=$((n+1))
-          done < <(find src/ladb_opencutlist/ruby -name '*.rb' -not -path '*/ruby/lib/*')
+          done < <(find src/ladb_opencutlist/ruby -name '*.rb' -not -path '*/ruby/lib/*'; echo src/ladb_opencutlist.rb)
           echo "ruby -c: $n files OK"
 
       - name: No syntax newer than the Ruby floor (SketchUp 2021 / Ruby 2.7)
@@ -92,6 +93,26 @@ jobs:
       # it exists to explain.
       - name: The estimate log writes, truncates and never raises
         run: ruby tools/check-mcft-log.rb
+
+      # OpenCutList 8 requires its controllers inside start(), which runs on
+      # first dialog open, while setup() runs at LOAD and builds the menu
+      # MOP's hunk names McftController in. check-requires passed on a tree
+      # where that was a NameError that would stop the whole extension.
+      - name: McftController is required before it is named, and started
+        run: ruby tools/check-mcft-wiring.rb
+
+      # One click on 8's Upgrade would replace MOP with stock OpenCutList
+      # through the symlinks. 7.1 carried the same refusal and nothing checked
+      # it (docs/mcft/MOP-ON-OCL8.md §6.3).
+      - name: OpenCutList's own Upgrade is refused before anything downloads
+        run: ruby tools/check-upgrade-refused.rb
+
+      # The dialog's JS comes from the rbz and carries its own build; when the
+      # Ruby's differs the dialog locks into upstream's "zzz" layout. And a
+      # version ending in letters turns 8's IS_LAB on, which clears the
+      # console line the startup update prints.
+      - name: One upstream build everywhere, and a version that keeps IS_LAB off
+        run: ruby tools/check-build-matches-rbz.rb
 
       # EVERY PATH THAT IS NOT MCFT'S IS THE UPSTREAM BUILD'S, BYTE FOR BYTE.
       # An upstream move on this line is `git merge -s ours` plus

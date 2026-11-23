@@ -26,15 +26,19 @@ src/ladb_opencutlist/ruby/controller/mcft_controller.rb
 src/ladb_opencutlist/ruby/worker/mcft/
 test/smoke/
 tools/check-assembly-rule.rb
+tools/check-build-matches-rbz.rb
 tools/check-csv-thickness.rb
 tools/check-dialog-api.rb
 tools/check-mcft-log.rb
+tools/check-mcft-wiring.rb
 tools/check-push-suspended.rb
 tools/check-requires.rb
 tools/check-ruby-floor.rb
+tools/check-upgrade-refused.rb
 tools/check-upstream-tree.rb
 tools/dev-install-mac.sh
 tools/mcft_paths.rb
+tools/mcft_ruby_source.rb
 tools/mcft-take-upstream.sh
 
 changed:

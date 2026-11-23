@@ -75,7 +75,11 @@ WARN = [
   [/\.intersect\?\(/, 'Array#intersect?', 'Ruby 3.1', 'use (a & b).any?'],
 ]
 
-files = Dir[File.join(ROOT, 'src/ladb_opencutlist/ruby/**/*.rb')]
+# THE LOADER TOO. src/ladb_opencutlist.rb sits outside ruby/, and it is the
+# file SketchUp reads first: a construct the floor Ruby cannot parse there
+# takes the whole extension down before anything else is even required.
+files = (Dir[File.join(ROOT, 'src/ladb_opencutlist/ruby/**/*.rb')] +
+         [File.join(ROOT, 'src/ladb_opencutlist.rb')])
         .reject { |f| f.include?('/ruby/lib/') }
         .sort
 
