@@ -1,37 +1,66 @@
 #!/bin/sh
-# A .twig EDIT THAT IS NOT COMPILED CHANGES NOTHING, and it fails silently.
+# A SOURCE EDIT THAT IS NOT REBUILT CHANGES NOTHING, and it fails silently.
 #
-# The runtime does not read .twig files. They are precompiled by
-# `npx gulp twig_compile` into src/ladb_opencutlist/js/templates/*-twig-templates.js,
-# and those bundles are what SketchUp loads. Edit a template, commit, pull to
-# the Mac, restart SketchUp — and the screen is unchanged, with nothing
-# anywhere reporting a problem. That happened on 2026-09-03: a whole feature,
-# a new menu item and a 465-line refactor shipped, dispatched and confirmed
-# pulled, none of it capable of appearing. Amit went looking for a menu entry
-# that did not exist.
+# On OpenCutList 8 the tabs dialog loads THREE files: js/bundles/common-bundle.js
+# and js/i18n/<lang>.js (from dist/ladb_opencutlist.rbz) and
+# js/bundles/tabs-bundle.js — the one build output this branch tracks. That
+# bundle concatenates every file in build/gulpfile.js TABS_JS_FILES
+# (tab-cutlist.js, which carries the MCFT estimate, among them) and the twig
+# templates compiled from twig/**. SketchUp reads none of those sources. Edit
+# one, commit, restart SketchUp — and the screen is unchanged, with nothing
+# anywhere reporting a problem. That happened on 2026-09-03 with 7.1's
+# template bundle: a whole feature shipped that could not appear.
 #
 # So the commit is refused instead. Silence and success must not look
 # identical, which is the rule this project already pays for elsewhere.
-staged_twig=$(git diff --cached --name-only --diff-filter=ACMR | grep '\.twig$')
-[ -z "$staged_twig" ] && exit 0
+staged=$(git diff --cached --name-only --diff-filter=ACMRD)
+[ -z "$staged" ] && exit 0
 
-staged_bundle=$(git diff --cached --name-only --diff-filter=ACMR \
-    | grep 'js/templates/.*-twig-templates\.js$')
-if [ -n "$staged_bundle" ]; then
-    exit 0
+# The tabs bundle's JS inputs, read from the gulpfile so the list has one home.
+tabs_js=$(sed -n '/^var TABS_JS_FILES = /,/^\]);/p' build/gulpfile.js 2>/dev/null \
+    | sed -n "s/^ *'\([^']*\.js\)'.*/src\/ladb_opencutlist\/js\/\1/p" \
+    | grep -v '/js/templates/')
+
+needs_bundle=$(echo "$staged" | grep '\.twig$')
+for f in $tabs_js; do
+    echo "$staged" | grep -qxF "$f" && needs_bundle="$needs_bundle
+$f"
+done
+needs_bundle=$(echo "$needs_bundle" | sed '/^$/d')
+
+bundle='src/ladb_opencutlist/js/bundles/tabs-bundle.js'
+fail=0
+if [ -n "$needs_bundle" ] && ! echo "$staged" | grep -qxF "$bundle"; then
+    cat >&2 <<'MSG'
+REFUSED: sources of the dialog's tabs bundle are staged but the bundle is not.
+
+SketchUp loads src/ladb_opencutlist/js/bundles/tabs-bundle.js, not these
+files, so this commit would change nothing on screen and say nothing about it.
+
+    cd build && npm ci && npx gulp twig_compile
+    npx gulp js_bundle_tabs
+    git add ../src/ladb_opencutlist/js/bundles/tabs-bundle.js
+
+(Two gulp invocations, never `gulp bundle`: see docs/mcft/MOP-ON-OCL8.md §6.1.)
+Staged sources:
+MSG
+    echo "$needs_bundle" | sed 's/^/    /' >&2
+    fail=1
 fi
 
-cat >&2 <<'MSG'
-REFUSED: .twig files are staged but no compiled template bundle is.
+if echo "$staged" | grep -qxF 'build/package.json' \
+   && ! echo "$staged" | grep -qxF 'build/package-lock.json'; then
+    cat >&2 <<'MSG'
+REFUSED: build/package.json is staged but build/package-lock.json is not.
 
-The runtime loads src/ladb_opencutlist/js/templates/*-twig-templates.js, not
-the .twig sources, so this commit would change nothing on screen and say
-nothing about it.
+The lockfile is what makes `npm ci` — and so the bundle CI rebuilds — the same
+on every machine. Regenerate it, rebuild, and stage both:
 
-    cd build && npx gulp twig_compile
-    git add ../src/ladb_opencutlist/js/templates
-
-Staged templates:
+    cd build && npm install --package-lock-only && npm ci
+    npx gulp twig_compile
+    npx gulp js_bundle_tabs
+    git add package-lock.json ../src/ladb_opencutlist/js/bundles/tabs-bundle.js
 MSG
-echo "$staged_twig" | sed 's/^/    /' >&2
-exit 1
+    fail=1
+fi
+exit $fail

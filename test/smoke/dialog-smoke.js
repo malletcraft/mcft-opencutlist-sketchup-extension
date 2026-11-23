@@ -46,29 +46,49 @@ const win = dom.window;
 win.addEventListener('error', (e) => uncaught.push(e.error || e.message));
 win.addEventListener('unhandledrejection', (e) => uncaught.push(e.reason));
 
-// Minimal globals the tab code reaches for. i18next is stubbed to echo its key
-// — labels are not what this test is about.
-win.eval(read('js/lib/jquery-3.7.1.min.js'));
-win.eval(read('js/lib/twig.min.js'));
-// ALL FOUR BUNDLES. The tab templates include core/ and components/ ones, and
-// loading only the tabs bundle produced "Unable to find template file
-// core/_length-unit-extra.twig" — a harness gap that reads exactly like a bug
-// in the code under test.
-['core', 'components', 'modals', 'tabs'].forEach((b) => {
-  win.eval(read(`js/templates/${b}-twig-templates.js`));
+// EXACTLY WHAT SKETCHUP LOADS, in the order 8's twig/dialog-tabs.twig loads it
+// (lines 19-21): common-bundle.js and js/i18n/en.js out of the rbz — they are
+// build outputs MOP takes from the rbz on the Mac too — and the COMMITTED
+// tabs-bundle.js, which is the file MOP delivers. Not the sources: on 8 no
+// source file reaches the screen except through that bundle, so a harness that
+// read the sources would pass while the bundle SketchUp loads was stale.
+// Any of the three failing to load fails the run.
+//
+// Each runs as a vm.Script in jsdom's own context, which shares top-level
+// const/let between scripts the way separate <script> tags do. window.eval
+// does not: an indirect eval keeps each script's consts to itself, and the
+// tabs bundle then dies on TOKENFIELD_OPTIONS, which constants.js declares
+// inside common-bundle.
+const { execFileSync } = require('child_process');
+const vm = require('vm');
+const RBZ = path.join(ROOT, 'dist/ladb_opencutlist.rbz');
+const fromRbz = (p) => execFileSync('unzip', ['-p', RBZ, `ladb_opencutlist/${p}`],
+                                    { maxBuffer: 64 << 20 }).toString('utf8');
+const ctx = dom.getInternalVMContext();
+[['common-bundle.js (rbz)', () => fromRbz('js/bundles/common-bundle.js')],
+ ['tabs-bundle.js (committed)', () => read('js/bundles/tabs-bundle.js')],
+ ['i18n/en.js (rbz)', () => fromRbz('js/i18n/en.js')]].forEach(([name, src]) => {
+  try {
+    new vm.Script(src(), { filename: name }).runInContext(ctx);
+  } catch (e) {
+    console.error(`::error::smoke: ${name} did not load — ${e.message}`);
+    process.exit(1);
+  }
 });
-win.eval('window.i18next = { t: function (k) { return k; }, exists: function () { return true; } };');
 
 // SCAFFOLDING, and named as such. The real Twig filters are registered inside
 // LadbAbstractDialog.prototype.init, which also wires settings, the DOM and
 // the SketchUp bridge — far more than this harness can or should stand up. The
-// filters are stubbed to pass their value through; they affect wording, never
-// whether a template resolves or a method exists, which is what is under test.
+// filters are stubbed to pass their value through (i18next to the REAL
+// i18next, with the real English strings from en.js); they affect wording,
+// never whether a template resolves or a method exists, which is what is
+// under test.
 win.eval(`
-  ['i18next','url_beautify','format_currency','sanitize_links','trim_tilde',
+  try { Twig.extendFilter('i18next', function (v) { return i18next.t(v); }); } catch (e) {}
+  ['url_beautify','format_currency','sanitize_links','trim_tilde',
    'type_of','sanitize_html','number_format','format_infinite',
-   // twig.js's own date() cannot resolve a timezone under jsdom; the pack does
-   // not depend on a formatted date, only the slide chrome does.
+   // twig.js's own date() cannot resolve a timezone under jsdom; the estimate
+   // does not depend on a formatted date, only the slide chrome does.
    'date'].forEach(function (f) {
     try { Twig.extendFilter(f, function (v) { return v === undefined ? '' : v; }); } catch (e) {}
   });
@@ -78,22 +98,10 @@ win.eval(`
 `);
 win.eval('window.Noty = function () { return { show: function () {}, close: function () {} }; };');
 
-// THE REAL DIALOG PROTOTYPE, so a missing method stays missing.
-//
-// Two loading quirks, both of which bit before this worked:
-//  - abstract-dialog.js and abstract-tab.js open with 'use strict', and a
-//    strict-mode function declaration inside eval is scoped to that eval
-//    rather than becoming a global. So each is handed out explicitly.
-//  - the tab file is an IIFE and keeps LadbTabCutlist as a closure const. It
-//    is reachable only where the plugin publishes it, on
-//    $.fn.ladbTabCutlist.Constructor — which is also how the real dialog gets
-//    at it, so the harness is using the same door the app does.
-win.eval(read('js/plugins/jquery.ladb.abstract-dialog.js') +
-         '\nwindow.LadbAbstractDialog = LadbAbstractDialog;');
-win.eval(read('js/plugins/tabs/jquery.ladb.abstract-tab.js') +
-         '\nwindow.LadbAbstractTab = LadbAbstractTab;');
-win.eval(read('js/plugins/tabs/jquery.ladb.tab-cutlist.js'));
-
+// THE REAL DIALOG PROTOTYPE, so a missing method stays missing. The tab file
+// is an IIFE and keeps LadbTabCutlist as a closure const; it is reachable only
+// where the plugin publishes it, on $.fn.ladbTabCutlist.Constructor, which is
+// also how the real dialog gets at it.
 const TabCutlist = win.jQuery.fn.ladbTabCutlist &&
                    win.jQuery.fn.ladbTabCutlist.Constructor;
 if (!TabCutlist) {
@@ -184,6 +192,20 @@ tab.print = function () {};
 const drain = () => new Promise((res) => setTimeout(res, 400));
 
 (async () => {
+  // ONE jsdom error IS EXPECTED, and it is proof rather than noise:
+  // dialog-tabs.js, the last script in the tabs bundle, sets
+  // window.location.href = "skp:ladb_opencutlist_setup_dialog_context" on
+  // document ready. That is the SketchUp bridge, and jsdom reports it as "Not
+  // implemented: navigation to another Document". Seeing it exactly once says
+  // the bundle's entry script ran; any other error still fails the run.
+  await drain();
+  const isBridge = (e) => /Not implemented: navigation/.test(String(e && (e.message || e)));
+  const bridge = uncaught.filter(isBridge).length;
+  check(bridge === 1, `the bundle's entry script ran: one skp: bridge navigation (got ${bridge})`);
+  for (let i = uncaught.length - 1; i >= 0; i--) { if (isBridge(uncaught[i])) uncaught.splice(i, 1); }
+  check(uncaught.length === 0,
+        `nothing else thrown while the three files loaded${uncaught.length ? ' — ' + uncaught.map(String).join(' | ').slice(0, 240) : ''}`);
+
   // SCENARIO 1 WAS THE ALL-BOARDS DIAGRAM PRINT, and it is gone with the
   // engine it was built on: OpenCutList 8 deleted cutlist_group_
   // cuttingdiagram2d_start/_advance, so MOP on 8 prints each board from 8's

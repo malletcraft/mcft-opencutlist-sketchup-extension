@@ -113,30 +113,26 @@ jobs:
 
       # THE ONLY CHECK HERE THAT RUNS THE CODE. Everything else in this
       # workflow reads it: ruby -c parses, check-dialog-api.rb matches names,
-      # the templates job rebuilds a bundle. None of them can see a method that
+      # the bundle job rebuilds a file. None of them can see a method that
       # exists but is called wrongly, or a template that resolves but throws
       # while rendering.
       #
-      # It loads the real tab JS and the real compiled templates into jsdom,
-      # stubs only the SketchUp bridge, and clicks through the MCFT actions.
-      # Proved by reintroducing the TypeError of 2026-09-03: 4 checks fail and
-      # it exits 1. A test that has only ever passed proves nothing.
-      # THE OTHER THREE TEMPLATE BUNDLES ARE NOT IN GIT. .gitignore tracks
-      # only tabs-twig-templates.js (git is the Mac's delivery route for it);
-      # core/, components/ and modals/ are build outputs. They exist on a dev
-      # machine because gulp has been run there, and NOT on a fresh checkout —
-      # which is why this passed locally and died in CI on the first attempt
-      # with ENOENT for core-twig-templates.js. Compile before running.
+      # It loads EXACTLY what SketchUp loads on OpenCutList 8 — common-bundle.js
+      # and js/i18n/en.js out of dist/ladb_opencutlist.rbz, and the COMMITTED
+      # js/bundles/tabs-bundle.js — stubs only the SketchUp bridge, and clicks
+      # through the MCFT actions. Nothing is compiled first: compiling would
+      # test the sources, and the sources are not what reaches the screen.
+      # Proved by reintroducing the TypeError of 2026-09-03 into the bundle: it
+      # exits 1. A test that has only ever passed proves nothing.
       - name: Headless dialog smoke test
         run: |
           cd build
-          npm install --no-audit --no-fund --silent
-          npx gulp twig_compile
+          npm ci --no-audit --no-fund --silent
           cd ..
           NODE_PATH=build/node_modules node test/smoke/dialog-smoke.js
 
-  templates:
-    name: Committed twig bundle matches its source
+  bundle:
+    name: Committed dialog bundle matches its source
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -145,39 +141,54 @@ jobs:
         with:
           node-version: '22'
 
-      # js/templates/tabs-twig-templates.js is a BUILD OUTPUT that this branch
-      # tracks on purpose (see .gitignore for why git is the only delivery
-      # route). Tracking a generated file invites exactly one bug: someone
-      # edits a .twig, forgets to run gulp, and ships a bundle that does not
-      # contain the change — the plugin then looks stale for no visible
-      # reason, which is the failure this repo has already paid for once.
+      # js/bundles/tabs-bundle.js is a BUILD OUTPUT this branch tracks on
+      # purpose: on OpenCutList 8 the tabs dialog loads it instead of the tab
+      # plugins and templates, and the rbz's copy is stock 8's, so git is the
+      # only route by which an MCFT JS or twig change reaches SketchUp
+      # (.gitignore, and docs/mcft/MOP-ON-OCL8.md §6.1). Tracking a generated
+      # file invites exactly one bug: a source edited and committed without
+      # its output — the failure of 2026-09-03, which made a feature that could
+      # not appear.
       #
-      # Compared SORTED, and that is not a way of being lenient. The bundle is
-      # built by `gulp.src('twig/tabs/**') | concat`, and a glob's order comes
-      # from the filesystem — so the same twig compiled on two machines yields
-      # the same 99 templates concatenated in a different order. The first
-      # version of this check diffed the bytes and failed on exactly that: 16
-      # insertions, 16 deletions, every one of them a line that had simply
-      # moved. A check that cannot pass gets deleted, and would have taken the
-      # real guarantee with it.
+      # Built by TWO invocations, never `gulp bundle`: that also runs
+      # css_bundle, whose css/lib/*.min.css inputs are gitignored, so it fails
+      # on a clean checkout; and twig_compile returns before its async del()
+      # settles, so chaining it in one series can race. `npm ci` against the
+      # committed lockfile, so the tree is the same on every machine.
       #
-      # Sorting is sound here because each line is one independent
-      # Twig.twig({id: "..."}) registration keyed by its id, so order carries
-      # no meaning. Content still has to match exactly: edit a .twig without
-      # recompiling and a line's text changes, which no amount of reordering
-      # can hide.
-      - name: Recompile and compare
+      # Compared SORTED, and that is not leniency. The twig templates inside
+      # the bundle are concatenated in a glob's filesystem order, so the same
+      # sources built on two machines give the same lines in a different order.
+      # Content still has to match exactly: edit a source without rebuilding
+      # and a line's text changes, which no reordering can hide.
+      - name: Rebuild and compare
         run: |
-          f=src/ladb_opencutlist/js/templates/tabs-twig-templates.js
+          f=src/ladb_opencutlist/js/bundles/tabs-bundle.js
           sort "$f" > /tmp/committed.txt
           cd build
-          npm install --no-audit --no-fund --silent
-          npx gulp compile
+          npm ci --no-audit --no-fund --silent
+          npx gulp twig_compile
+          npx gulp js_bundle_tabs
           cd ..
           sort "$f" > /tmp/rebuilt.txt
           if ! diff -q /tmp/committed.txt /tmp/rebuilt.txt > /dev/null; then
-            echo "::error::$f is stale — run 'cd build && npx gulp compile' and commit the result"
+            echo "::error::$f is stale — run 'cd build && npm ci && npx gulp twig_compile' then 'npx gulp js_bundle_tabs', and commit the bundle"
             diff /tmp/committed.txt /tmp/rebuilt.txt | head -20
             exit 1
           fi
-          echo "committed bundle matches the twig it came from ($(grep -c '^Twig.twig({' "$f") templates)"
+          echo "committed bundle matches its sources ($(wc -l < "$f") lines, $(grep -c '^Twig.twig({' "$f") templates)"
+
+      # A later merge that runs a directory-level `git add` would drop the
+      # bundle with no error if an ignore rule ever covered it again — which is
+      # exactly what 8's own `/js/bundles/` line does. Asserted both ways, for
+      # both files this branch tracks against upstream's ignores.
+      - name: The bundle and the lockfile are tracked, and not ignored
+        run: |
+          for f in src/ladb_opencutlist/js/bundles/tabs-bundle.js build/package-lock.json; do
+            if git check-ignore -q --no-index "$f"; then
+              echo "::error::$f is matched by an ignore rule — see .gitignore (a ! line cannot re-include a file under an ignored directory)"
+              exit 1
+            fi
+            git ls-files --error-unmatch "$f" > /dev/null
+          done
+          echo "tabs-bundle.js and build/package-lock.json are tracked and not ignored"

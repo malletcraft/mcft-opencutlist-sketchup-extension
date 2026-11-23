@@ -1,0 +1,23 @@
+#!/bin/sh
+# NO MERGE ON THIS LINE IS COMMITTED BY GIT ITSELF.
+#
+# Git runs this hook, and not pre-commit, when `git merge` makes its own
+# commit. On the mcft line an upstream move is
+#     git merge --no-commit -s ours <build sha>
+#     tools/mcft-take-upstream.sh <build sha>
+#     (resolve, rebuild the tabs bundle, run the checks)
+#     git commit
+# because git's own three-way merge decides content against a merge base that
+# is virtual here, and after a go-back commit is the bad build — so it would
+# silently keep that build's changes out (docs/mcft/MOP-ON-OCL8.md §1.2, §9.1).
+# A plain `git merge` is that merge. A fast-forward makes no merge commit and
+# never reaches this hook.
+cat >&2 <<'MSG'
+REFUSED: on this branch a merge is made with --no-commit, then
+tools/mcft-take-upstream.sh, then git commit (docs/mcft/MOP-ON-OCL8.md §1.2).
+
+    git merge --abort
+    git merge --no-commit -s ours <build sha>
+    tools/mcft-take-upstream.sh <build sha>
+MSG
+exit 1

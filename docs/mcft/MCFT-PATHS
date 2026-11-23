@@ -16,11 +16,12 @@
 own:
 .githooks/
 .github/workflows/mcft-checks.yml
+build/package-lock.json
 docs/mcft/
 node_modules/
 package-lock.json
 package.json
-src/ladb_opencutlist/js/templates/tabs-twig-templates.js
+src/ladb_opencutlist/js/bundles/tabs-bundle.js
 src/ladb_opencutlist/ruby/controller/mcft_controller.rb
 src/ladb_opencutlist/ruby/worker/mcft/
 test/smoke/
