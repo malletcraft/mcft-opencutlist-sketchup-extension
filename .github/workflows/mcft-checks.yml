@@ -36,7 +36,7 @@ jobs:
           while IFS= read -r f; do
             ruby -c "$f" > /dev/null
             n=$((n+1))
-          done < <(find src/ladb_opencutlist/ruby -name '*.rb' -not -path '*/ruby/lib/*'; echo src/ladb_opencutlist.rb)
+          done < <(find src/ladb_opencutlist/ruby -name '*.rb' -not -path '*/ruby/lib/*'; echo src/ladb_opencutlist.rb; echo tools/mcft-autoupdate.rb)
           echo "ruby -c: $n files OK"
 
       - name: No syntax newer than the Ruby floor (SketchUp 2021 / Ruby 2.7)
@@ -123,6 +123,12 @@ jobs:
       # console line the startup update prints.
       - name: One upstream build everywhere, and a version that keeps IS_LAB off
         run: ruby tools/check-build-matches-rbz.rb
+
+      # The startup updater is the last gate between a commit and Amit's
+      # screen. Its decisions — what a --verify exit, a failed refresh, a CI
+      # response or a foreign Plugins entry means — are run here.
+      - name: The startup updater decides as designed
+        run: ruby tools/check-autoupdate.rb
 
       # EVERY PATH THAT IS NOT MCFT'S IS THE UPSTREAM BUILD'S, BYTE FOR BYTE.
       # An upstream move on this line is `git merge -s ours` plus
@@ -223,3 +229,20 @@ jobs:
             git ls-files --error-unmatch "$f" > /dev/null
           done
           echo "tabs-bundle.js and build/package-lock.json are tracked and not ignored"
+
+  refresh:
+    name: The build-output refresh does what every start trusts it to
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # tools/mcft-refresh-outputs.sh lays every build output down from
+      # dist/ladb_opencutlist.rbz at install and at every SketchUp start after
+      # a new rbz arrives, and its --verify is what stops the updater saying
+      # "up to date" on a clone that no longer holds MOP. RUN here against a
+      # throwaway copy of this commit, with the same cp command the Mac runs:
+      # stale outputs replaced, tracked files untouched, nothing left
+      # untracked, a build mismatch refused before src/ is touched, and each
+      # --verify exit code (docs/mcft/MOP-ON-OCL8.md §7.3 check 5).
+      - name: Refresh, --if-stale and --verify, run
+        run: bash tools/check-refresh-outputs.sh

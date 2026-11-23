@@ -79,7 +79,10 @@ WARN = [
 # file SketchUp reads first: a construct the floor Ruby cannot parse there
 # takes the whole extension down before anything else is even required.
 files = (Dir[File.join(ROOT, 'src/ladb_opencutlist/ruby/**/*.rb')] +
-         [File.join(ROOT, 'src/ladb_opencutlist.rb')])
+         [File.join(ROOT, 'src/ladb_opencutlist.rb'),
+          # And the updater: SketchUp's Ruby loads it from the clone at every
+          # start, before OpenCutList, so it is held to the same floor.
+          File.join(ROOT, 'tools/mcft-autoupdate.rb')])
         .reject { |f| f.include?('/ruby/lib/') }
         .sort
 

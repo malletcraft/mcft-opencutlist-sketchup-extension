@@ -64,4 +64,4 @@ extension_info.txt
 
 # tools/mcft-refresh-outputs.sh's stamp: which rbz the build outputs on disk
 # came from, and a cksum of each. Written on the Mac, never source.
-/src/ladb_opencutlist/.mcft-outputs
+/src/ladb_opencutlist/.mcft-outputs*
