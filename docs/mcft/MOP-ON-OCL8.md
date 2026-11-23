@@ -1712,3 +1712,267 @@ done differently, and each says why.
 Nothing was declined outright. The partial departures are in findings 3, 4,
 6 and 11 above, and each is a change to how a fix is done, not to whether it
 is done.
+
+---
+
+## 11. As built
+
+Built on 23 Nov 2026 on `mcft8` in `/home/user/mop8`, on top of the design
+commits `25581ca7` and `f14e0bf1`. **Everything below is LOCAL: nothing was
+pushed**, so no GitHub run exists yet for any of these commits. "Ran" means it
+ran in the cloud container (Ruby 3.3, Node 22, Linux). **Nothing ran in
+SketchUp**, and nothing ran on a Mac.
+
+### 11.1 The commits
+
+`mcft8` is a fast-forward of `origin/mcft` (`git merge-base --is-ancestor
+origin/mcft mcft8` is true). In first-parent order:
+
+| Commit | What it is | Design |
+|---|---|---|
+| `faa7ed7f` | **P** — `docs/mcft/MCFT-PATHS`, `docs/mcft/UPSTREAM` (= `d03f4548`), `tools/mcft-take-upstream.sh`, `tools/check-upstream-tree.rb` and its CI step, `tools/mcft_paths.rb` (the one reader of the path list), `mcft8` added to the workflow's push branches. Made on the 7.1 tree. | §1.1 step 0 |
+| `07da7c32` | **M** — the merge of `c5405bd4` (`8.0.0-lab`, build `202611191727`), with **D** (the all-boards print deleted) and **V** (the version string) folded in. | §1.1 steps 1–3, §2 |
+| `94d4de31` | **B** — `tabs-bundle.js` and `build/package-lock.json` tracked, `tabs-twig-templates.js` untracked, the two hooks, the bundle CI job, the smoke test on the bundles. | §6.1, §7.2 |
+| `66cd3038` | **U** — `check-mcft-wiring.rb`, `check-upgrade-refused.rb`, `check-build-matches-rbz.rb`, the floor check and `ruby -c` reading the loader, the job renamed "SketchUp 2021". | §7.3 checks 2–4 |
+| `adb17a0d` | **A + N** — groups as assemblies, no size map when nothing was counted, the walk's lists and the notes on the slide, the stamp's `is_rbz=`/`is_lab=`, `check-estimate-notes.rb`. | §4, §3, §5, §2.3 |
+| `13fdadc7` | **I** — `mcft-refresh-outputs.sh`, `mcft-autoupdate.rb`, the stub, `dev-install-mac.sh`, `check-refresh-outputs.sh` (its own CI job), `check-autoupdate.rb`. | §6.2, §7.3 check 5 |
+| this commit | This section. | — |
+
+There is no separate **C** commit: every CI addition landed in the commit
+whose code it checks.
+
+The tag `mcft-7.1-final` (annotated, on `6b0ba3e`, "Last MOP on OpenCutList
+7.1") exists locally and is not pushed. It must be pushed before `mcft` moves
+(§9.2).
+
+### 11.2 What was run, and what it said
+
+**MOP's CI, run job by job as `.github/workflows/mcft-checks.yml` runs it**:
+for each job a fresh depth-1 fetch of the commit, each `run:` under `bash
+--noprofile --norc -eo pipefail`, the `uses:` steps being the container's own
+Ruby 3.3 and Node 22. **Green at every one of P, M, B, U, A+N and I.** At the
+tip (`13fdadc7`), every step passed:
+
+- ruby: `ruby -c` (now including the loader and the updater); the floor check
+  — `226 files, 0 fatal, 0 warn`; check-requires — all present;
+  check-dialog-api — 57 real methods; check-csv-thickness; check-assembly-rule
+  — `18 names, 9 kind cases, the payload shape and 7 source rules hold`;
+  check-estimate-notes — `11 default-name cases`; check-push-suspended;
+  check-mcft-log; check-mcft-wiring — `2 use(s) of McftController in
+  plugin.rb, each required first`; check-upgrade-refused; check-build-matches-rbz
+  — `build 202611191727 in the rbz, src and manifest; version 8.0.0-lab.mcft.1
+  (IS_LAB false)`; check-autoupdate; check-upstream-tree — `1109 upstream
+  path(s) equal build c5405bd43`. In the fresh depth-1 checkout the build was
+  NOT present, so check 6 fetched it trees-only from GitHub, as CI will.
+- smoke: `dialog smoke: all checks passed`, loading `common-bundle.js` and
+  `en.js` from the rbz and the committed `tabs-bundle.js` as `vm.Script`s, the
+  one `skp:` bridge navigation seen exactly once.
+- bundle: the rebuilt `tabs-bundle.js` matches the committed one, sorted; both
+  files tracked and not ignored.
+- refresh: every assertion of check 5 (below).
+
+**Each new check was proved by breaking it** (all RAN):
+
+| Check | Broken by | Result |
+|---|---|---|
+| check-upstream-tree (6) | one byte appended to `README.md`; a stray `stray.txt`; a stale `own:` line | each fails, naming the path |
+| check-mcft-wiring (3) | the `require_relative` above `setup_menu` deleted | fails, `plugin.rb:1084 (setup)` |
+| check-upgrade-refused (4) | the refusal deleted | fails |
+| check-build-matches-rbz (2) | version `8.0.0-lab-mcft`; build off by one | each fails |
+| check-assembly-rule (1) | a group's definition name read; the size map always sent; the walk's Group clause dropped | each fails |
+| check-estimate-notes (7) | `is_rbz=` renamed in the stamp | fails |
+| smoke | the 2026-09-03 `this.dialog.stopProgress()` put into the bundle's `mcftRender` | exits 1 |
+| pre-commit | a staged `.twig` without the bundle; `build/package.json` without the lockfile | each refused |
+| pre-merge-commit | a plain `git merge --no-ff` | refused, HEAD unchanged |
+
+**`tools/mcft-take-upstream.sh` re-run on the tip with the same build**
+changed nothing (0 taken that differ, 0 removed, all 7 changed: files "merged
+clean", 0 conflict hunks). For the merge itself it reported exactly the design's
+numbers: 1,108 taken, 74 removed (75 with the `_slide-cuttingdiagram-2d.twig`
+it stopped on, resolved by hand), conflicts in `.gitignore` (2), `plugin.rb`
+(2), the loader, `constants.rb`, `build/package.json` and `tab-cutlist.js` (1
+each).
+
+**The bundle**: built by `cd build && npm ci && npx gulp twig_compile`, then
+`npx gulp js_bundle_tabs`. Against the rbz's own `tabs-bundle.js` (18,378
+lines; ours 19,739+), sorted, the only differences are MCFT's added
+`tab-cutlist.js` lines and the estimate slide's one template line. It was
+built by the repo's own build; it was not edited by hand.
+
+**The install and update, end to end, on Linux with fakes** (a fake `HOME`
+with a SketchUp 2026 Plugins folder holding a stock 8 LAB install unzipped
+from the rbz; a stub `UI.messagebox`; the CI gate answered locally; an
+"origin" repository on disk): `dev-install-mac.sh` replaced the stock install
+with the two links and the stub and laid 176 outputs down; then simulated
+starts:
+
+1. nothing new — `up to date @ <rev>`, `ok=true … Already up to date.`;
+2. a green commit carrying a NEW rbz — fast-forwarded, the refresh laid 177
+   outputs down, `--verify` clean, `ok=true … fast-forwarded to <rev>`;
+3. a red commit — held, the "HELD BACK" box, nothing moved;
+4. a tracked file written through the link — `NOT verified … (10)`, the box
+   naming the installer, no fetch;
+5. the folder link replaced by a real folder — `OpenCutList in Plugins is NOT
+   MOP: ladb_opencutlist`;
+6. the stamp deleted — healed by a full refresh, `--verify` clean after;
+7. an rbz that `unzip` only warns about — the refresh refused before touching
+   `src/`, `reset --keep` put the old HEAD back, "held at <rev>";
+8. the updater file missing — the stub said so and named no fallback.
+
+The installer refused a dirty clone and a clone on another branch, printing
+the fresh-clone commands. None of this ran on macOS: BSD `cp`, BSD `xargs`,
+macOS `unzip`, SketchUp's Ruby and its `UI` are inferred to behave as their
+Linux counterparts did (NOT CONFIRMED).
+
+### 11.3 What could only be read (NOT CONFIRMED)
+
+- That OpenCutList (MCFT Edition) LOADS in SketchUp 2026 on 8: the requires
+  resolve (check-requires), `McftController` is required before use
+  (check-mcft-wiring), and every OpenCutList name MOP calls exists with its
+  shape (§2.5, re-read for the new code: `Sketchup::Group#definition`,
+  `PLUGIN.get_attribute`, `DefinitionAttributes.role_of` and `ROLE_FRONT_PANEL`,
+  `Part#length_increased` / `#width_increased` / `#length_increase` /
+  `#width_increase` / `#face_material_names`, `part.def.definition`,
+  `MaterialAttributes::TYPE_SHEET_GOOD`, `Plugin::IS_RBZ` / `Plugin::IS_LAB`).
+  Requiring `controller/mcft_controller` inside `setup()` loads the MCFT
+  workers (and with them `cutlist_generate_worker`) at load time, before 8's
+  lazy `start()`; 7.1 MOP did the same from the top of `plugin.rb`, but on 8
+  this is read, not run.
+- That the estimate slide renders in SketchUp's own browser: the smoke test
+  renders it in jsdom from the very bundle SketchUp will load.
+- What `IS_RBZ` is for a symlinked install: the stamp now prints it
+  (`is_rbz=`), so the first estimate on the Mac answers it.
+- Everything in §3 about numbers on 8 (hardware as one part, machining,
+  per-part allowance) and §4 about Smart Build groups: code reads of 8. `N1`
+  uses `Part#length_increased`, which on 8 is the DEFINITION's own increase
+  only (`cutlist_generate_worker.rb:549`), exactly the part-level allowance
+  §3.1 is about.
+- Whether `Sketchup.install_from_archive` writes through the links (§6.3).
+- The `--filter=blob:none` clone on the Mac (§6.2, "Size").
+
+### 11.4 Where this build departs from the design, and why
+
+1. **The tag is `mcft-7.1-final`** (annotated), as §1.1 and §9.2 name it. The
+   build instruction said `mcft-7.1-last`; the design's name was kept because
+   §9.2's way back refers to it. One tag, not two.
+2. **Fewer commits than §1.1 lists.** D and V are folded into M, A and N are
+   one commit, and C has no commit of its own. The build instruction required
+   every commit to leave MOP's checks green, and M without D is red (the smoke
+   test's pack scenario calls a function 8 deleted). V is the conflict
+   resolution of `constants.rb` and the loader, so it is part of making M. A
+   and N change the same worker and the same slide.
+3. **`tab.twig` left `changed:`.** With the all-boards item deleted it equals
+   8's file byte for byte, so it is no longer an MCFT-changed file; check 6
+   now holds it as upstream's.
+4. **The assembly rule lives in `worker/mcft/mcft_estimate_rules.rb`**, not as
+   class methods of the worker. The worker requires SketchUp-only files, so a
+   check could not load it; the rules file has no SketchUp and no requires,
+   and the checks RUN it. The worker keeps no copy of the regex.
+5. **The stamp reads `Plugin::IS_RBZ` / `Plugin::IS_LAB`**: on 8 both are
+   constants of `class Plugin` (`plugin.rb:26-27`), not of the module, so a
+   bare `IS_RBZ` from the worker would not resolve.
+6. **`pgrep -x SketchUp > /dev/null`, not `pgrep -xq`**: the redirect means
+   the same on macOS and Linux; Linux's procps has no `-q`, so the `-q` form
+   could not be run here at all.
+7. **Refresh exit codes are 0 / 20 / 21** (done / refused before touching
+   `src/` / failed after); §6.2 asked only that they be distinct. `--verify`
+   uses 10 / 11 / 12 as designed. An `unzip` WARNING counts as a failure
+   before `src/` is touched: refusing costs one restart.
+8. **176 rbz-only outputs, not 177**: the tabs bundle is now tracked, so the
+   refresh does not lay it down.
+9. **Added beyond the design:** `check-upstream-tree.rb --index` (checks what
+   is staged, used before committing the merge); `tools/mcft_ruby_source.rb`
+   (the one method reader checks 3 and 4 share); `tools/check-autoupdate.rb`
+   (the updater's decisions RUN: what each `--verify` and refresh exit means,
+   the CI verdicts, the Plugins test, and `run()`'s order read); the updater
+   held to the Ruby floor and `ruby -c`; a smoke scenario for the notes that
+   also asserts none shows when there is nothing to say; the stamp's `*.tmp`
+   ignored.
+10. **§2.4's grep "must return nothing"** holds over MCFT's paths (only a
+    comment saying the pack is gone matches). Over all of `src`, upstream's own
+    files still name `cuttingdiagram2d` (an icon class, deprecated i18n preset
+    keys, `_modal-packing.twig`), which are 8's and are not MCFT's to remove.
+11. **N2 counts pieces** (the sum of `part.count`), so "3 part(s)" means three
+    pieces on the cut list.
+12. **The smoke harness** routes the Twig `i18next` filter to the REAL
+    `i18next.t` with `en.js`'s strings; the other filters stay stubbed, as
+    they were.
+
+**Not done here, because it cannot be done locally:** the pushes (§1.3: the
+upstream history in pieces under 400 MB to `upstream-8.0.0`, then `mcft8`;
+`git rev-list --disk-usage --objects mcft8 --not --remotes=origin` is
+1,722,445,223 bytes today, of which the MCFT commits after P are 1,300,054
+bytes), the GitHub runs on the full sha, the tag push, the fast-forward of
+`mcft`, and the S7 HUB `bootstrap.sh` change (another repository; it must land
+before step 3 below).
+
+**The one question for Amit (§4.2) was built with Claude's recommended
+answer**, yes: a Smart Build GROUP named `ASMBL_M_…` counts as a medium
+assembly. If he answers no, delete the `:group` clause of
+`McftEstimateRules.assembly_size` (and its three kind rows); everything else
+in that commit stays.
+
+### 11.5 The one-time steps on Amit's Mac, exactly as he will be given them
+
+Handed over ONE AT A TIME; the next is written only after Amit reports what
+the last one did. Before step 1 Claude reads the Mac through the bridge (reads
+only): `git -C ~/dev/malletcraft/mcft-opencutlist-sketchup-extension status
+--porcelain` and `git -C … log origin/mcft..HEAD --oneline` (anything not on
+GitHub must be dealt with first), `git --version` (2.19 or later), and
+`ls -la "$HOME/Library/Application Support/SketchUp 2026/SketchUp/Plugins"`.
+
+**Step 1 (S3 MOP), before Claude moves `mcft`.** Quit SketchUp, then in
+Terminal:
+
+```sh
+rm -f "$HOME/Library/Application Support/SketchUp 2026/SketchUp/Plugins/!mcft_autoupdate.rb"
+```
+
+The old startup stub is not an extension, so Extension Manager's uninstall
+left it; it still fetches into the old clone on every start. After this,
+SketchUp runs stock OpenCutList 8 LAB alone, exactly as today.
+
+*[Claude then pushes upstream's history in pieces, the tag, and `mcft8`;
+waits until every workflow run on the tip's full 40-character sha is green;
+fast-forwards `mcft`, pushes it and confirms its runs; and lands the S7 HUB
+`bootstrap.sh` change.]*
+
+**Step 2 (S3 MOP).** With SketchUp quit:
+
+```sh
+rm -rf ~/dev/malletcraft/mcft-opencutlist-sketchup-extension
+```
+
+**Step 3 (S3 MOP).**
+
+```sh
+git clone --filter=blob:none --branch mcft https://github.com/malletcraft/mcft-opencutlist-sketchup-extension.git ~/dev/malletcraft/mcft-opencutlist-sketchup-extension
+```
+
+**Step 4 (S3 MOP).**
+
+```sh
+bash ~/dev/malletcraft/mcft-opencutlist-sketchup-extension/tools/dev-install-mac.sh
+```
+
+It ends with "Installed. Start SketchUp: …".
+
+**Step 5 (S3 MOP).** Start SketchUp. Before clearing the Ruby Console, read
+its line `[MCFT] OpenCutList (MCFT Edition) up to date @ <rev>`, and check
+Extension Manager lists "OpenCutList (MCFT Edition)" enabled (enable it if
+not). Claude reads the update log through the bridge:
+`tail -1 "$HOME/Library/Application Support/mcft-ocl-update.log"` — it should
+show `ok=true` and an `outputs=` stamp.
+
+**Step 6 (S3 MOP).** Open a model already estimated on 7.1, run the MCFT
+estimate, and say whether it looks like the 7.1 one. Claude reads
+`mcft-estimate.log` through the bridge: the stamp line `[MCFT] estimate —
+plugin <rev> is_rbz=… is_lab=…` (expected `is_rbz=true is_lab=false`), the
+two estimates side by side (the hardware comparison of §3.2), and, on a model
+with a Boolean cut, that the cut panel is still in the parts list and the
+estimate (§3.3).
+
+After this Amit never uninstalls OpenCutList in Extension Manager, never
+clicks OpenCutList's Upgrade (MOP refuses it and says why), never installs an
+`.rbz`, and never runs `bootstrap.sh` over this repo. Restarting SketchUp is
+the update.
