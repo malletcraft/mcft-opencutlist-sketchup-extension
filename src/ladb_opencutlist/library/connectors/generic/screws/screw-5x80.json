@@ -1,0 +1,11 @@
+{
+  "format": "ocl-hardware",
+  "version": 1,
+  "id": "ad377027-0adf-40bc-be41-0fe9c35c04d6",
+  "extends": "connectors/generic/screws/screw.json",
+  "name": "Screw 5x80",
+  "variables": {
+    "diameter": { "value": "5" },
+    "length": { "value": "80" }
+  }
+}

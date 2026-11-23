@@ -1,4 +1,4 @@
-# this label must be in your language
+# this label must be your language
 _label: Magyar
 # the disabled message will be displayed when the language is not fully translated
 _disabled_msg: |
@@ -6,8 +6,8 @@ _disabled_msg: |
 
   A fordítás véglegesítéséhez kérjük, tekintse meg az [OpenCutList Documentation](https://docs.opencutlist.org/for-translators/general) dokumentumot.
 # the reload message will be displayed when a user switches to this language
-_reload_msg: "A változtatások érvényesítéséhez **be kell zárnia** és **újra meg kell nyitnia** az OpenCutList ablakot."
-_description: "Faipari Szakembereknek Szabáslista és Szabásterv készítő program. Nyílt forráskódú, közösségi finanszírozású és könnyen használható ;)"
+_reload_msg: A változtatások érvényesítéséhez **be kell zárnia** és **újra meg kell nyitnia** az OpenCutList ablakot.
+_description: Faipari Szakembereknek Szabáslista és Szabásterv készítő program. Nyílt forráskódú, közösségi finanszírozású és könnyen használható ;)
 default:
   minimize: Kis méret
   maximize: Teljes méret
@@ -15,6 +15,7 @@ default:
   stop: Stop
   validate: Alkalmaz
   confirm: Megerősít
+  finish: Befejezés
   ok: OK
   open: Megnyit
   see: Megnéz
@@ -27,6 +28,7 @@ default:
   export: Exportál
   import: Importál
   load: Betöltés
+  replace: Csere
   preview: Előnézet
   options: Beállítások
   caution: Figyelem
@@ -48,17 +50,19 @@ default:
   "yes": Igen
   "no": Nem
   automatic: Automatikus
+  # this is name of a new file saved by SketchUp
   empty_filename: Névtelen.skp
   help: Súgó
+  # mild expression of frustration or disappointment, polite and family-friendly
   error: Hoppá!
   warning: Figyelem
   tip: Tipp
   good: Jó
   bad: Rossz
   by: által
-  # date format in use for language
-  date_format: "Y.m.d H:i"
-  # short date format in use for language
+  # date format in use in your language
+  date_format: Y.m.d H:i
+  # short date format in use in your language
   date_format_short: Y.m.d
   decimal: Tizedes
   fractional: Törtszámos
@@ -82,6 +86,7 @@ default:
   setup_model_units: Modell mértékegységeinek beállítása
   load_more: Továbbiak betöltése
   reset_to_app_defaults: Alapértelmezett beállítások visszaállítása
+  # this should be the name for the key as seen on the keyboard or if it is an arrow, the name used for it.
   constrain_key: Shift
   copy_key_win: Ctrl
   copy_key_mac: Opció
@@ -101,7 +106,7 @@ core:
   menu:
     submenu: OpenCutList
     item:
-      generate_cutlist:  Alkatrészlista Készítése
+      generate_cutlist: Alkatrészlista Készítése
       edit_part_properties: $t(tab.cutlist.edit_part_properties)
       edit_part_axes_properties: $t(tab.cutlist.edit_part_axes_properties)
       edit_part_edges_properties: $t(tab.cutlist.edit_part_edges_properties)
@@ -112,10 +117,12 @@ core:
       unhide_part_instance: Alkatrész kijelölése
       edit_part_instance_properties: Az alkatrész tulajdonságainak szerkesztése
       smart_draw: $t(core.toolbar.command.smart_draw)
+      smart_build: $t(core.toolbar.command.smart_build)
       smart_handle: $t(core.toolbar.command.smart_handle)
       smart_reshape: $t(core.toolbar.command.smart_reshape)
       smart_paint: $t(core.toolbar.command.smart_paint)
       smart_axes: $t(core.toolbar.command.smart_axes)
+      smart_join: $t(core.toolbar.command.smart_join)
       smart_export: $t(core.toolbar.command.smart_export)
       reset_dialog_position: Ablak Pozíció Alaphelyzetbe
   toolbar:
@@ -124,10 +131,12 @@ core:
     command:
       dialog: OpenCutList
       smart_draw: Alkatrész Rajzolása
+      smart_build: Alkatrészek építése
       smart_handle: Alkatrészek Kezelése
       smart_reshape: Alkatrészek átformálása
       smart_paint: Alkatrészek Festése
       smart_axes: Alkatrészek Tájolása
+      smart_join: Alkatrészek összeillesztése
       smart_export: Alkatrészek Exportálása
   messagebox:
     dir_override: |
@@ -135,14 +144,17 @@ core:
 
       Egy azonos nevű mappa már létezik a(z) {{ parent }} mappában. Ha felülírja, az eredeti tartalom elvész.
   savepanel:
-    export_to_file: "Exportálás {{ file_format }} fájlba"
+    export_to_file: Exportálás {{ file_format }} fájlba
   dialog:
     title: OpenCutList by L'Air du Bois
   leftbar:
+    import: Importál
     more: Továbbiak
     more_docs: Dokumentáció
+    # this link only appears in the french version, points to https://www.lairdubois.fr/
     more_reviews: Értékelések
     more_plans: Tervek
+    # only appears in the french version
     more_extensions: Bővítmények
     more_update: Frissítés
   bottombar:
@@ -150,8 +162,6 @@ core:
   warning:
     dev: |
       Ön az *OpenCutList* **fejlesztői** verzióját használja.
-      Ez a verzió csak tesztelésre szolgál.
-      Nem ajánlott éles környezetben használni.
 
       Hiba jelentéséhez: <a href="mailto:opencutlist@lairdubois.fr?subject=Bug%20Report%20OpenCutList%20{{ version }}%20(build: {{ build }})" target="_blank">opencutlist@lairdubois.fr</a>.
     not_available_in_context: Ebben a kontextusban nem érhető el
@@ -159,11 +169,13 @@ core:
     exception: "Hiba: **{{ error }}**"
     forbidden: "Nem engedélyezett: **{{ error }}**"
     extern: "Külső hiba : **{{ error }}**"
-    feature_unavailable: "Ez a funkció SketchUp {{ version }} vagy újabb verziót igényel"
+    feature_unavailable: Ez a funkció SketchUp {{ version }} vagy újabb verziót igényel
     failed_export_to: |
       Hiba történt a *{{ path }}* exportálása során.
       **{{ error }}**
     unsupported_file_format: "A formátum nem támogatott : **{{ format }}**"
+    unsupported_skp_version: |
+      Az SKP fájl a SketchUp újabb verziójával készült: {{ version }}
   success:
     exported_to: "Sikeres exportálás ide: {{ path }}."
     copied_to_clipboard: Vágólapra másolva
@@ -184,11 +196,11 @@ core:
 
       *Fontoljon meg egy támogatást a projektnek, hogy még több funkciót adhassunk hozzá!*
     downloading: Letöltés folyamatban
-    changelog: "Újdonságok"
+    changelog: Újdonságok
     ignore_update: Frissítés kihagyása
-    download_rescue: "Problémák a letöltéssel?"
+    download_rescue: Problémák a letöltéssel?
     manual_download: Kézi letöltés
-    zzz: "Jelenleg pihenőben vagyok a frissítés után. Kérjük, indítsd újra a SketchUp-ot a teljes működéshez."
+    zzz: Jelenleg pihenőben vagyok a frissítés után. Kérjük, indítsd újra a SketchUp-ot a teljes működéshez.
     success: |
       OpenCutList frissítés befejezve!
 
@@ -208,16 +220,21 @@ core:
       *Az egyéni sablon létrehozása lehetővé teszi az aktuális űrlap beállítások globális megőrzését, így később újrahasználhatja őket minden sablonban.*
 
       Adja meg a sablon nevét:
+    rename_prompt_title: Átnevezés
+    rename_prompt: Adja meg a(z) **"{{ name }}"** sablon új nevét
     delete_confirm_title: Törlés
-    delete_confirm: "Biztosan törölni szeretné a **\"{{ name }}\"** sablont?"
+    delete_confirm: Biztosan törölni szeretné a **"{{ name }}"** sablont?
     override_confirm_title: Frissítés
-    override_confirm: "Megerősíti a **\"{{ name }}\"** sablon frissítését az űrlap paramétereivel?"
+    override_confirm: Megerősíti a **"{{ name }}"** sablon frissítését az űrlap paramétereivel?
+    new_error: Nem lehetséges, a(z) **"{{ name }}"** sablon már létezik
     new_success: "**\"{{ name }}\"** sablon létrehozva"
     override_success: "**\"{{ name }}\"** sablon frissítve"
-    restore_success: "Az űrlap kitöltésre került a **\"{{ name }}\"** sablonból"
+    restore_success: Az űrlap kitöltésre került a **"{{ name }}"** sablonból
+    rename_success: "A(z) **\"{{ name }}\"** sablon átnevezve erre: **\"{{ new_name }}\"**"
     delete_success: "**\"{{ name }}\"** sablon törölve"
     tooltip:
       save_to: "'{{ name }}' sablon frissítése"
+      rename: "'{{ name }}' sablon átnevezése"
       delete: "'{{ name }}' sablon törlése"
     dictionary:
       component_textinput_color: Színpaletta
@@ -236,16 +253,20 @@ core:
       cutlist_estimate_options: $t(tab.cutlist.label) / $t(tab.cutlist.estimate.title)
       cutlist_write2d_options: $t(tab.cutlist.label) / $t(tab.cutlist.write.title) 2D
       cutlist_write3d_options: $t(tab.cutlist.label) / $t(tab.cutlist.write.title) 3D
-      importer_import_options: $t(tab.importer.label) / $t(default.import)
-      importer_load_options: $t(tab.importer.label) / $t(default.open)
+      importers_csv_import_options: $t(tab.importers.csv.label) / $t(default.import)
+      importers_csv_load_options: $t(tab.importers.csv.label) / $t(default.open)
+      importers_bxf2_import_options: $t(tab.importers.bxf2.label) / $t(default.import)
       materials_material_attributes: $t(tab.materials.label) / $t(tab.materials.edit_material.cut_options)
       materials_options: $t(tab.materials.label) / $t(default.options)
       outliner_options: $t(tab.outliner.label) / $t(default.options)
+      outliner_deep_rename_parts_options: $t(tab.outliner.label) / $t(tab.outliner.deep_rename_parts.title)
       settings_model: $t(tab.settings.label) / Modell
       tool_smart_draw_options: $t(core.toolbar.command.smart_draw)
       tool_smart_handle_options: $t(core.toolbar.command.smart_handle)
+      tool_smart_reshape_options: $t(core.toolbar.command.smart_reshape)
       tool_smart_paint_options: $t(core.toolbar.command.smart_paint)
       tool_smart_axes_options: $t(core.toolbar.command.smart_axes)
+      tool_smart_join_options: $t(core.toolbar.command.smart_join)
       tool_smart_export_options: $t(core.toolbar.command.smart_export)
   progress:
     please_wait: Feldolgozás folyamatban...
@@ -257,9 +278,12 @@ core:
       remove: Szín törlése
     textinput_code:
       snippets: Képlet példák
-      help: Írjon **@** jelet a változók listájához.
+      help: Írjon be **@** jelet az adatváltozók listájának megnyitásához.
+    textinput_file:
+      browse: Tallózás
+      browse_library: Tallózás és másolás a könyvtárba
     textinput_size:
-      quantity: Mennyiség
+      quantity: Menny.
     three_viewer:
       view: "{{ view }} nézet"
       view_isometric: Izometrikus
@@ -279,6 +303,29 @@ core:
       failed_to_load: |
         Nem sikerült megnyitni a dokumentációt.
         Ellenőrizze, hogy van-e internetkapcsolata.
+  solid:
+    error:
+      empty: A test nem tartalmaz geometriát
+      empty_named: „{{ name }}” nem tartalmaz geometriát
+      # an edge is considered manifold when it is shared by exactly two faces in a 3D mesh
+      non_manifold_edges: A test {{ count }} nem zárt élt tartalmaz
+      non_manifold_edges_plural: A test {{ count }} többszörös élt tartalmaz
+      non_manifold_edges_named: „{{ name }}” {{ count }} többszörös élt tartalmaz
+      non_manifold_edges_named_plural: „{{ name }}” {{ count }} többszörös élt tartalmaz
+      open_edges: A test {{ count }} nyitott élt tartalmaz
+      open_edges_plural: A test {{ count }} nyitott élt tartalmaz
+      open_edges_named: „{{ name }}” {{ count }} nyitott élt tartalmaz
+      open_edges_named_plural: „{{ name }}” {{ count }} nyitott élt tartalmaz
+      locked_instances: "A művelet nem tud szerkeszteni egy zárolt elemet: {{ list }}"
+    rebuild:
+      error:
+        no_segment: A kijelölésben nincs használható szerkesztővonal
+        no_face: Nem sikerült egysíkú zárt körvonalat újraépíteni
+  library:
+    libraries: Könyvtárak
+    user: Saját könyvtár
+    bundled: OCL könyvtár
+    family_modules: Modulok
 tab:
   cutlist:
     label: Alkatrészek
@@ -310,9 +357,9 @@ tab:
       show_hide_block: Csoport Mutat / Elrejt
       show_hide_blocks: Az összes csoport megjelenítése / elrejtése
       scroll_to_block: Görgetés a csoporthoz
-      not_available_std_width: "Az*{{ std_dimension_real }}* keresztmetszet értéke nincs megadva az anyag szabványos keresztmetszetei között '{{ material_name }}'"
-      not_available_std_thickness: "A(z) *{{ std_dimension_real }}* vastagság értéke nincs megadva '{{ material_name }}' anyag szabványos vastagságai között"
-      not_available_std_section: "Az *{{ std_dimension_real }}* keresztmetszet értéke nincs megadva az '{{ material_name }}' anyag szabványos keresztmetszetei között"
+      not_available_std_width: Az*{{ std_dimension_real }}* keresztmetszet értéke nincs megadva az anyag szabványos keresztmetszetei között '{{ material_name }}'
+      not_available_std_thickness: A(z) *{{ std_dimension_real }}* vastagság értéke nincs megadva '{{ material_name }}' anyag szabványos vastagságai között
+      not_available_std_section: Az *{{ std_dimension_real }}* keresztmetszet értéke nincs megadva az '{{ material_name }}' anyag szabványos keresztmetszetei között
       add_std_width_to_material: |
         *{{ std_dimension }}* szélesség hozzáadása
         a '{{ material_name }}' anyaghoz
@@ -337,7 +384,8 @@ tab:
         Tényleges keresztmetszet: *{{ std_dimension_real }}*
         ---
         $t(tab.cutlist.tooltip.rounded_std_footer)
-      rounded_std_footer: "Állítsa be a pontosságot a *Modell információk* menüben, vagy ellenőrizze az alkatrészek méreteit ebben a csoportban."
+      # "Model Info" refers to the SketchUp menu to change the units
+      rounded_std_footer: Állítsa be a pontosságot a *Modell információk* menüben, vagy ellenőrizze az alkatrészek méreteit ebben a csoportban.
       highlight_part: $t(tab.cutlist.highlight_part)
       highlight_parts: $t(tab.cutlist.highlight_parts)
       edit_part_properties: $t(tab.cutlist.edit_part_properties)
@@ -349,42 +397,53 @@ tab:
       material_origin_3: Az alkatrészhez tartozó anyag az egyik gyermek eleméből származik
       orientation_locked_on_axis: Az alkatrész tájolása a tengelyekhez van rögzítve
       number_saved: Az alkatrész száma mentve van
-      number_hidden: "A '{{ number }}' szám, amely ezen az alkatrészen van tárolva, nem használható, mert már ki van osztva"
+      number_hidden: A '{{ number }}' szám, amely ezen az alkatrészen van tárolva, nem használható, mert már ki van osztva
       number_generated: Az alkatrészek számozása automatikusan generálódik
       resized: Ez az alkatrész át lett méretezve a komponens definíciójához képest
       flipped: Ez az alkatrész tükrözve van a komponens definíciójához képest
       symmetrical: A tükrözött alkatrész felismerése ki van kapcsolva ezen az alkatrészen
       ignore_grain_direction: A szálirányt figyelmen kívül hagyjuk ezen az alkatrészen
+      follow_grain_direction: Ezen az alkatrészen engedélyezve van a szálirány-folytonosság felismerése
       auto_oriented: Ez az alkatrész automatikusan át lett tájolva
-      oko_label_filter: "Címke hozzáadása/eltávolítása"
+      oko_label_filter: Jelvény hozzáadása/eltávolítása
       add_label_filter: "Szűrés erre: '{{ label }}'"
       remove_label_filter: "Szűrés eltávolítása erről: '{{ label }}'"
       add_edge_material_name_filter: "Szűrés erre: '{{ material_name }}'"
       remove_edge_material_name_filter: "Szűrés eltávolítása erről: '{{ material_name }}'"
       add_veneer_material_name_filter: "Szűrés erre: '{{ material_name }}'"
       remove_veneer_material_name_filter: "Szűrés eltávolítása erről: '{{ material_name }}'"
-      not_aligned_on_axes: "Figyelem, lehet, hogy ez az alkatrész nincs megfelelően a tengelyekhez igazítva"
-      instance_count_by_part: "Ezt az alkatrészt **{{ count }}** darabos egységekben tartja nyilván."
+      not_aligned_on_axes: Figyelem, lehet, hogy ez az alkatrész nincs megfelelően a tengelyekhez igazítva
+      instance_count_by_part: Ezt az alkatrészt **{{ count }}** darabos egységekben tartja nyilván.
       unused_instance_count: "Megjegyzés: az utolsó csomagból **{{ count }}** darab nem lesz felhasználva."
       unused_instance_count_plural: "Megjegyzés: az utolsó csomagból **{{ count }}** darab nem lesz felhasználva."
       used_instance_count: "**{{ count }}** darab használva a {{ total }}-ból"
       used_instance_count_plural: "**{{ count }}** darab használva a {{ total }}-ból"
-      thickness_layer_count: "A végső alkatrész **{{ count }}** rétegből áll vastagságban"
-      thickness_layered: "A mennyiség itt az összes réteg kivágásához szükséges darabszámot jelenti."
+      thickness_layer_count: A végső alkatrész **{{ count }}** rétegből áll vastagságban
+      thickness_layered: A mennyiség itt az összes réteg kivágásához szükséges darabszámot jelenti.
       thickness_layered_equation: "**{{ count }}** *alkatrész* x **{{ layerCount }}** *réteg* = **{{ cuttingPartCount }}**"
       thickness_layered_equation_plural: "**{{ count }}** *alkatrész* x **{{ layerCount }}** *réteg* = **{{ cuttingPartCount }}**"
-      multiple_content_layers: "Figyelem, ez az alkatrész {{ count }} különböző rétegben vagy címkében lévő részekből áll:<br>{{ layers }}"
-      children_warnings: "Figyelem, {{ count }} figyelmeztetés van a csoportosított alkatrészekben"
-      children_warnings_plural: "Figyelem, {{ count }} figyelmeztetés van a csoportosított alkatrészekben"
-      children_size_increase: "Ez a méret megnövelt {{ count }} csoportosított alkatrésznél"
-      invalid_final_area: "Figyelem, ezt az összesített területet nem lehetett kiszámítani, mert {{ count }} alkatrésznek ({{ total }}-ból) érvénytelen a területe"
-      invalid_final_area_plural: "Figyelem, ezt az összesített területet nem lehetett kiszámítani, mert {{ count }} alkatrésznek ({{ total }}-ból) érvénytelen a területe"
+      multiple_content_layers: Figyelem, ez az alkatrész {{ count }} különböző címkével rendelkező részből áll:<br>{{ layers }}
+      children_warnings: Figyelem, {{ count }} figyelmeztetés van a csoportosított alkatrészekben
+      children_warnings_plural: Figyelem, {{ count }} figyelmeztetés van a csoportosított alkatrészekben
+      children_size_increase: Ez a méret megnövelt {{ count }} csoportosított alkatrésznél
+      invalid_final_area: Figyelem, ezt az összesített területet nem lehetett kiszámítani, mert {{ count }} alkatrésznek ({{ total }}-ból) érvénytelen a területe
+      invalid_final_area_plural: Figyelem, ezt az összesített területet nem lehetett kiszámítani, mert {{ count }} alkatrésznek ({{ total }}-ból) érvénytelen a területe
+      is_instance_name: Az alkatrész megnevezése a csoport példánynevéből származik
       is_dynamic_attributes_name: Az alkatrész megnevezése a dinamikus komponens 'Name' attribútumából származik
-      has_edges: "Ez az alkatrész {{ count }} élzárt"
-      has_edges_plural: "Ez az alkatrész {{ count }} élzárt"
-      has_faces: "Ez az alkatrész {{ count }} furnérozott felületet tartalmaz"
-      has_faces_plural: "Ez az alkatrész {{ count }} furnérozott felületet tartalmaz"
-      edge_decremented: "Csökkentve az élzáró szalag vastagságával ({{ decrement }})"
+      has_edges: Ez az alkatrész {{ count }} élzárt
+      has_edges_plural: Ez az alkatrész {{ count }} élzárt
+      has_faces: Ez az alkatrész {{ count }} furnérozott felületet tartalmaz
+      has_faces_plural: Ez az alkatrész {{ count }} furnérozott felületet tartalmaz
+      size_increased_0: |
+        Megnövelve az Anyag ráhagyásával
+        ({{ increase_1 }})
+      size_increased_1: |
+        Megnövelve az Alkatrész ráhagyásával
+        ({{ increase_2 }})
+      size_increased_2: |
+        Megnövelve az Anyag és az Alkatrész ráhagyásával
+        ({{ increase_1 }} + {{ increase_2 }})
+      edge_decremented: Csökkentve az élzáró szalag vastagságával ({{ decrement }})
       edge_ymin: 1. Hosszanti él
       edge_ymax: 2. Hosszanti él
       edge_xmin: 1. Keresztirányú él
@@ -436,7 +495,7 @@ tab:
       title_multiple: Alkatrész Csoport Tulajdonságai
       multiple_alert: "{{ part_count }} alkatrész közös tulajdonságai."
       general: Általános
-      extra_help: "A \"**$t(tab.materials.type_{{ material_type }})**\" anyagtípusra jellemző tulajdonságok listája."
+      extra_help: A "**$t(tab.materials.type_{{ material_type }})**" anyagtípusra jellemző tulajdonságok listája.
       edges: Élek
       faces: Felületek
       name: Név
@@ -466,18 +525,25 @@ tab:
 
         *Példa:* Ha van egy *38mm* vastagságú tábla és két *19mm*-es tábla összeragasztásával szeretné elkészíteni, írjon **2**-t ebbe a mezőbe.
         *Az OpenCutList ekkor 2 db 19mm-es vastagságú táblát fog számolni 1 db 38mm-es helyett.*
+      cut_options: $t(tab.materials.edit_material.cut_options)
+      length_increase: $t(tab.materials.edit_material.length_increase)
+      length_increase_help: $t(tab.materials.edit_material.length_increase_help)
+      width_increase: $t(tab.materials.edit_material.width_increase)
+      width_increase_help: $t(tab.materials.edit_material.width_increase_help)
+      thickness_increase: $t(tab.materials.edit_material.thickness_increase)
+      thickness_increase_help: $t(tab.materials.edit_material.thickness_increase_help)
       description: Leírás
       description_help: |
         A *Leírás* személyre szabott információt ad minden alkatrész definícióhoz.
       url: URL
       url_help: |
         Az *URL* személyre szabott linket biztosít egy külső oldalra minden alkatrész definícióhoz.
-      tags: Címkék
+      tags: Jelvények
       tags_help: |
-        A *Címkék* egyéni kulcsszavak, amelyeket minden alkatrész definícióhoz hozzá lehet adni.
+        A *Jelvény* egyéni kulcsszavak, amelyeket minden alkatrész definícióhoz hozzá lehet adni.
         Tetszőleges számú címkét adhat hozzá.
         Később szűrheti a látható alkatrészeket az Alkatrészlistában ezek alapján a címkék alapján.
-      tags_multiple_info: Csak a közös címkék jelennek meg
+      tags_multiple_info: Csak a közös jelvény jelennek meg
       orientation: Tájolás
       orientation_locked_on_axis: Tájolás rögzítése a tengelyekhez
       orientation_locked_on_axis_help: |
@@ -490,11 +556,23 @@ tab:
       symmetrical: Tükrözött alkatrész felismerésének kikapcsolása ennél az alkatrésznél
       symmetrical_help: |
         Ha ez az opció be van kapcsolva, a *tükrözött alkatrész* felismerése nem lesz hatással az alkatrészre.
-      ignore_grain_direction: Szálirány figyelmen kívül hagyása ennél az alkatrésznél
+      ignore_grain_direction: Szálirány
       ignore_grain_direction_help: |
-        Ha ez az opció be van kapcsolva, az anyag száliránya figyelmen kívül lesz hagyva ennél az alkatrésznél.
+        Ezzel a beállítással ennél az alkatrésznél figyelmen kívül hagyható az anyagon megadott szálirány.
+      ignore_grain_direction_0: Szálirány a hosszal párhuzamos
+      ignore_grain_direction_1: Szálirány figyelmen kívül hagyása ennél az alkatrésznél
+      follow_grain_direction: Szálfolytonosság
+      follow_grain_direction_help: |
+        A beállítás bekapcsolásával az alkatrész példányai **Szálfolytonosságban** elhelyezett alkatrészeknek tekinthetők azokkal a szomszédaikkal, amelyekkel közös:
+        - a *Szálfolytonossági csoport*
+        - a Sík
+        - az Orientáció
+        - a száliránnyal rendelkező Anyag
+        - a Vastagság
+      follow_grain_direction_0: $t(default.no)
+      follow_grain_direction_1: Szálfolytonosság-érzékelés bekapcsolva
       axes: Tengelyek
-      axes_help: "Rendezze át a méreteket, hogy megfeleljenek a kívánt tengelyszíneknek az alkatrészben."
+      axes_help: Rendezze át a méreteket, hogy megfeleljenek a kívánt tengelyszíneknek az alkatrészben.
       axes_tip: |
         Megjegyzés: ha az *Alkatrészek automatikus tájolása* opció nincs bekapcsolva vagy az alkatrész *rögzítve van a tengelyeihez*, akkor:
          - a **hosszúság** a <strong style='color:red'>piros</strong> tengelyen,
@@ -507,8 +585,8 @@ tab:
       axes_origin_position_front_center: Origó elhelyezése az elülső oldal közepére
       over_length: Hosszirányban
       over_width: Szélességben
-      edge_disabled_help: "Ez az élzárás nem konfigurálható, mert nem észlelhető anyaghordozó felület a modellben lévő alkatrész ezen élén."
-      face_disabled_help: "Ez a felület nem konfigurálható, mert nem észlelhető anyaghordozó felület a modellben lévő alkatrész ezen élén."
+      edge_disabled_help: Ez az élzárás nem konfigurálható, mert nem észlelhető anyaghordozó felület a modellben lévő alkatrész ezen élén.
+      face_disabled_help: Ez a felület nem konfigurálható, mert nem észlelhető anyaghordozó felület a modellben lévő alkatrész ezen élén.
       multiple_values: Többszörös értékek
       loading_preview: Előnézet betöltése
     option:
@@ -524,41 +602,41 @@ tab:
       flipped_detection_help: |
         Ha ez az opció be van kapcsolva, a tükrözött alkatrészek felismerésre és külön alkatrészként jelennek meg.
       smart_material: "*Intelligens* anyag hozzárendelés"
-      smart_material_help: "Ha ez az opció be van kapcsolva, az anyag nélküli alkatrészekhez hozzárendelhető a szülő vagy gyermek elemükhöz rendelt anyag."
+      smart_material_help: Ha ez az opció be van kapcsolva, az anyag nélküli alkatrészekhez hozzárendelhető a szülő vagy gyermek elemükhöz rendelt anyag.
       dynamic_attributes_name: Dinamikus komponensek *Name* tulajdonságának használata
       dynamic_attributes_name_help: |
         Ha ez az opció be van kapcsolva, az alkatrészek megnevezése a *Name* attribútumból lesz kinyerve, ha az meg van adva.
 
         <i class='ladb-opencutlist-icon-warning'></i> Az azonos komponens definícióval rendelkező alkatrész példányok külön lesznek választva, ha a *Name* attribútum értéke nem egyezik.
       part_number_with_letters: Betűk használata az alkatrészek számozásához
-      part_number_with_letters_help: "Ha ez az opció be van kapcsolva, az alkatrészek betűkkel lesznek számozva (A, B, C, ... Z, AA, AB, ...)."
+      part_number_with_letters_help: Ha ez az opció be van kapcsolva, az alkatrészek betűkkel lesznek számozva (A, B, C, ... Z, AA, AB, ...).
       part_number_sequence_by_group: Alkatrészek számozásának újrakezdése minden csoportnál
-      part_number_sequence_by_group_help: "Ha ez az opció be van kapcsolva, az alkatrészek számozása 1-től (vagy A-tól) újrakezdődik minden csoportnál (azonos anyagtípusú és vastagságú alkatrészek listája)."
+      part_number_sequence_by_group_help: Ha ez az opció be van kapcsolva, az alkatrészek számozása 1-től (vagy A-tól) újrakezdődik minden csoportnál (azonos anyagtípusú és vastagságú alkatrészek listája).
       part_folding: Hasonló alkatrészek csoportosítása
       part_folding_help: |
-        Ha ez az opció be van kapcsolva, a **Tömör fából, Táblásanyagból vagy méretezett fűrészáru** anyagból készült, **azonos nyers mérettel**, **azonos címkékkel** és **azonos kész felülettel** rendelkező alkatrészek *(ha a felület megjelenítése nincs elrejtve)* egy sorban lesznek csoportosítva az *alkatrészlistában*
+        Ha ez az opció be van kapcsolva, a **Tömör fából, Táblásanyagból vagy méretezett fűrészáru** anyagból készült, **azonos nyers mérettel**, **azonos jelvények** és **azonos kész felülettel** rendelkező alkatrészek *(ha a felület megjelenítése nincs elrejtve)* egy sorban lesznek csoportosítva az *alkatrészlistában*
         .
         Az alkatrészek továbbra is különállónak számítanak a címkézés és a szabásterv szempontjából.
       hide_entity_names: Példány nevek elrejtése
-      hide_entity_names_help: "Ha ez az opció be van kapcsolva, az alkatrészek **példány nevei** nem lesznek megjelenítve."
+      hide_entity_names_help: Ha ez az opció be van kapcsolva, az alkatrészek **példány nevei** nem lesznek megjelenítve.
       hide_descriptions: Leírások elrejtése
-      hide_descriptions_help: "Ha ez az opció be van kapcsolva, az alkatrészekre helyezett **leírások** nem lesznek megjelenítve."
-      hide_tags: Címkék elrejtése
-      hide_tags_help: "Ha ez az opció be van kapcsolva, az alkatrészek **címkéi** nem lesznek megjelenítve."
+      hide_descriptions_help: Ha ez az opció be van kapcsolva, az alkatrészekre helyezett **leírások** nem lesznek megjelenítve.
+      hide_tags: Jelvények elrejtése
+      hide_tags_help: Ha ez az opció be van kapcsolva, az alkatrészek **jelvényei** nem lesznek megjelenítve.
       hide_cutting_dimensions: Nyers méretek elrejtése
-      hide_cutting_dimensions_help: "Ha ez az opció be van kapcsolva, az alkatrészek **nyers** méretei nem lesznek megjelenítve."
+      hide_cutting_dimensions_help: Ha ez az opció be van kapcsolva, az alkatrészek **nyers** méretei nem lesznek megjelenítve.
       hide_bbox_dimensions: Kész méretek elrejtése
-      hide_bbox_dimensions_help: "Ha ez az opció be van kapcsolva, az alkatrészek **kész** méretei nem lesznek megjelenítve."
+      hide_bbox_dimensions_help: Ha ez az opció be van kapcsolva, az alkatrészek **kész** méretei nem lesznek megjelenítve.
       hide_final_areas: "*Táblásanyag* típusú alkatrészek tényleges területének elrejtése"
-      hide_final_areas_help: "Ha ez az opció be van kapcsolva, a *Táblásanyag* típusú alkatrészek **tényleges területe** nem lesz megjelenítve."
+      hide_final_areas_help: Ha ez az opció be van kapcsolva, a *Táblásanyag* típusú alkatrészek **tényleges területe** nem lesz megjelenítve.
       hide_edges: Él oszlopok elrejtése
-      hide_edges_help: "Ha ez az opció be van kapcsolva, a *Táblásanyag* típusú alkatrészek **élzárás oszlopai** nem lesznek megjelenítve."
+      hide_edges_help: Ha ez az opció be van kapcsolva, a *Táblásanyag* típusú alkatrészek **élzárás oszlopai** nem lesznek megjelenítve.
       hide_faces: Felület oszlopok elrejtése
-      hide_faces_help: "Ha ez az opció be van kapcsolva, a *Táblásanyag* típusú alkatrészek **felület oszlopai** nem lesznek megjelenítve."
+      hide_faces_help: Ha ez az opció be van kapcsolva, a *Táblásanyag* típusú alkatrészek **felület oszlopai** nem lesznek megjelenítve.
       hide_material_colors: Anyagszínek elrejtése
-      hide_material_colors_help: "Ha ez az opció be van kapcsolva, az anyagszínek nem lesznek megjelenítve."
+      hide_material_colors_help: Ha ez az opció be van kapcsolva, az anyagszínek nem lesznek megjelenítve.
       minimize_on_highlight: Minimalizálás a *'$t(tab.cutlist.highlight_part)...'* után
-      minimize_on_highlight_help: "Ha ez az opció be van kapcsolva, az OpenCutList ablak minimalizálva lesz, amikor a *'$t(tab.cutlist.highlight_part)'* funkció használva van."
+      minimize_on_highlight_help: Ha ez az opció be van kapcsolva, az OpenCutList ablak minimalizálva lesz, amikor a *'$t(tab.cutlist.highlight_part)'* funkció használva van.
       general: Általános
       sorting: Rendezés
       group_order_strategy: Csoportok rendezése
@@ -582,30 +660,32 @@ tab:
       property_name: Megnevezés
       property_count: Mennyiség
       property_edge_pattern: Élzárások száma
-      property_tags: Címkék
+      property_tags: Jelvények
       property_thickness_layer_count: Rétegek száma
-      tags: Címkék
-      tags_help: Egyéni címkék listája az alkatrész tulajdonságok ablakban.
-      tags_placeholder: Címke hozzáadása
+      tags: Jelvények
+      tags_help: Egyéni jelvény listája az alkatrész tulajdonságok ablakban.
+      tags_placeholder: Jelvény hozzáadása
     list:
       filters: Szűrők
-      filters_warning_0: "Ez a szűrő minden alkatrészt elrejt!"
-      filters_warning: "Ez a szűrő csak **{{ count }}** alkatrészt jelenít meg a {{ total }} összesből."
-      filters_warning_plural: "Ez a szűrő csak **{{ count }}** alkatrészt jelenít meg a {{ total }} összesből."
+      filters_warning_0: Ez a szűrő minden alkatrészt elrejt!
+      filters_warning: Ez a szűrő csak **{{ count }}** alkatrészt jelenít meg a {{ total }} összesből.
+      filters_warning_plural: Ez a szűrő csak **{{ count }}** alkatrészt jelenít meg a {{ total }} összesből.
       edge_material_names_filter: Szűrés élzáró anyag szerint
       veneer_material_names_filter: Szűrés furnér anyag szerint
-      tags_filter: Szűrés címkék szerint
+      names_filter: Szűrendő megnevezések
+      tags_filter: Szűrés jelvény szerint
+      tags_filter_any: Minden jelvény
       dimensions_help: Méretek magyarázata
       summary: Összesítés
       material_type: Típus
-      material_thickness: Anyag / Vastagság
+      material_thickness: Anyag / Méretek
       part_count: Mennyiség
       area: Terület
       area_short: Terület
       volume: Térfogat
       number: Sorszám
       name: Megnevezés
-      count: Mennyiség
+      count: Menny.
       cutting: Nyers
       bbox: Kész
       final: Tényleges
@@ -649,6 +729,7 @@ tab:
       option_csv_col_sep_comma: Vessző
       option_csv_col_sep_semicolon: Pontosvessző
       option_csv_encoding: Kódolás
+      # as described in https://www.rfc-editor.org/info/rfc4180/
       copy_all: Fejlécek + Értékek
       copy_values: Csak értékek
       number: Sorszám
@@ -679,13 +760,13 @@ tab:
       entity_names: Alkatrész nevek
       description: Leírás
       url: URL
-      tags: Címkék
-      edge_ymin: 1. hosszanti él
-      edge_ymax: 2. hosszanti él
-      edge_xmin: 1. keresztirányú él
-      edge_xmax: 2. keresztirányú él
+      tags: Jelvények
+      edge_ymin: 1. Hosszanti él
+      edge_ymax: 2. Hosszanti él
+      edge_xmin: 1. Keresztirányú él
+      edge_xmax: 2. Keresztirányú él
       face_zmin: Hátoldal
-      face_zmax: Előlap
+      face_zmax: Előoldal
       layer: Címke
       layers: Címkék
       batch: Köteg
@@ -700,7 +781,7 @@ tab:
       page_description: Jelenet leírása
       placeholder:
         no_column_title: Adjon meg egy címet
-        no_column_formula_native: "A '{{ col_name }}' oszlop natív értéke"
+        no_column_formula_native: A '{{ col_name }}' oszlop natív értéke
         no_column_formula: Adjon meg egy képletet
       warning:
         is_group_selection: Az Alkatrészlista **rejtett csoportjaiban** lévő alkatrészek nem kerülnek exportálásra.
@@ -715,7 +796,7 @@ tab:
       total_unused: Nem használt
       total_mass: Σ Súly
       total_cost: Σ Költség
-      total_count: Mennyiség
+      total_count: Menny.
       total_instance_count: Σ Egység
       total_volume: Σ Térfogat
       total_area: Σ Terület
@@ -726,12 +807,13 @@ tab:
       type_4: $t(tab.materials.type_4)
       type_5: $t(tab.materials.type_5)
       type_6: $t(tab.materials.type_6)
+      type_7: $t(tab.materials.type_7)
       type_-1: $t(default.cut_plural)
       tooltip:
         incompatible_unit: Nem kompatibilis mértékegység az anyagbecslési beállításokkal
         multiplier_coefficient: Szorzótényező
       error:
-        no_typed_material_parts: "Nincs megadva alkatrész definiált anyagtípussal (**$t(tab.materials.type_1)**, **$t(tab.materials.type_2)**, **$t(tab.materials.type_3)**, **$t(tab.materials.type_4)**, **$t(tab.materials.type_6)** vagy **$t(tab.materials.type_5)**) a becslés elkészítéséhez."
+        no_typed_material_parts: Nincs megadva alkatrész definiált anyagtípussal (**$t(tab.materials.type_1)**, **$t(tab.materials.type_2)**, **$t(tab.materials.type_3)**, **$t(tab.materials.type_4)**, **$t(tab.materials.type_6)** vagy **$t(tab.materials.type_5)**) a becslés elkészítéséhez.
         entry_error: "*{{ material_name }} / {{ std_dimension }}* : **{{ count }} hiba**."
         entry_error_plural: "*{{ material_name }} / {{ std_dimension }}* : **{{ count }} hiba**."
       warning:
@@ -742,243 +824,6 @@ tab:
           A becslés helyes kiszámításához:
           - a felhasznált anyagoknak rendelkezniük kell legalább sűrűséggel és árral.
           - a felhasznált kiegészítőknek rendelkezniük kell legalább súllyal és árral.
-    cuttingdiagram:
-      title: Szabásterv
-      start_msg: Optimalizálás folyamatban
-      end_msg: Optimalizálás befejezve
-      options_material: Anyag
-      options_config: Beállítások
-      options_display: Megjelenítés
-      option_bar_folding_dimensional: Hasonló deszkák csoportosítása
-      option_bar_folding_edge: Hasonló élzárók csoportosítása
-      option_bar_folding_0: Nem
-      option_bar_folding_1: Igen
-      option_bar_folding_help: Azonos darabokat és vágásokat tartalmazó deszkák vagy élzárók csoportosítása.
-      option_sheet_folding_good: Hasonló táblák csoportosítása
-      option_sheet_folding_veneer: Hasonló furnérlapok csoportosítása
-      option_sheet_folding_0: Nem
-      option_sheet_folding_1: Igen
-      option_sheet_folding_help: Azonos darabokat és vágásokat tartalmazó táblák vagy lapok csoportosítása.
-      option_hide_part_list: Alkatrészlista
-      option_hide_part_list_1d_dimensional_0: Megjelenítve minden deszkánál
-      option_hide_part_list_1d_edge_0: Megjelenítve minden élzárónál
-      option_hide_part_list_2d_good_0: Megjelenítve minden táblánál
-      option_hide_part_list_2d_veneer_0: Megjelenítve minden furnérlapnál
-      option_hide_part_list_1: Elrejtve
-      option_hide_part_list_1d_help: Alkatrészlista megjelenítése vagy elrejtése minden deszkánál vagy élzárónál.
-      option_hide_part_list_2d_help: Alkatrészlista megjelenítése vagy elrejtése minden táblánál vagy furnérlapnál.
-      option_use_names: Alkatrész azonosítás
-      option_use_names_0: Sorszám használata
-      option_use_names_1: Megnevezés használata
-      option_use_names_help: Válasszon a **sorszám** és a **megnevezés** között az alkatrészek azonosításához a szabásterven.
-      option_origin_corner: Origó pozíciója
-      option_origin_corner_1d_0: Balról
-      option_origin_corner_1d_1: Jobbról
-      option_origin_corner_2d_0: Bal felső sarok
-      option_origin_corner_2d_1: Bal alsó sarok
-      option_origin_corner_2d_2: Jobb felső sarok
-      option_origin_corner_2d_3: Jobb alsó sarok
-      option_origin_corner_1d_help: "Lehetővé teszi, hogy meghatározza, melyik sarokból induljon a koordinátarendszer a méretezett fűrészáru vagy élzárók darabjainak elhelyezéséhez."
-      option_origin_corner_2d_help: "Lehetővé teszi, hogy meghatározza, melyik sarokból induljon a koordinátarendszer a táblákon elhelyezett darabokhoz."
-      option_full_width_diagram: Teljes szélesség használata
-      option_full_width_diagram_0: Nem
-      option_full_width_diagram_1: Igen
-      option_full_width_diagram_help: "Ha ez az opció be van kapcsolva, a szabástervek a rendelkezésre álló teljes szélességben jelennek meg. Ellenkező esetben a szélességüket egy, az összes diagramtól függő méretarány határozza meg."
-      option_wrap_length: Deszka hossz tördelése
-      option_wrap_length_help: "Maximális hossz, ami után a deszka vagy élzáró több sorba lesz tördelve."
-      option_hide_cross: Lehullók
-      option_hide_cross_0: Méretek és kereszt
-      option_hide_cross_1: Csak méretek
-      option_hide_cross_help: Megjeleníti vagy elrejti a hulladékként megjelölt részeket jelző keresztet a diagramon.
-      option_highlight_primary_cuts: Legelső vágások
-      option_highlight_primary_cuts_0: Csak rámutatáskor
-      option_highlight_primary_cuts_1: Mindig látható
-      option_highlight_primary_cuts_help: Lehetővé teszi az első vágások állandó kiemelését.
-      option_hide_edges_preview: Élzárók megjelenítése
-      option_hide_edges_preview_0: Megjelenítve a szabásterven
-      option_hide_edges_preview_1: Elrejtve a szabásterven
-      option_hide_edges_preview_help: Lehetővé teszi az élzárók vizuális megjelenítésének mutatását vagy elrejtését minden alkatrésznél a szabásterven.
-      option_part_drawing_type: Alkatrészek alakja
-      option_part_drawing_type_0: Elrejtve
-      option_part_drawing_type_1: Előlap megjelenítése
-      option_part_drawing_type_2: Hátlap megjelenítése
-      option_part_drawing_type_help: |
-        Megjeleníti vagy elrejti az alkatrészek tényleges alakját és megmunkálását a diagramon.
-
-        *Ezt az opciót engedélyezni kell az alakzatok exportálásához.*
-      option_saw_kerf: Vágásrés
-      option_saw_kerf_help: A fűrészlap által eltávolított anyag szélessége.
-      option_spacing: Hézag
-      option_spacing_help: Minimális térköz az egyes alkatrészek között.
-      option_trimming: Tisztítóvágás
-      option_trimming_help_1d: A deszka vagy élzáró mindkét végén hulladékként kezelendő anyag mennyisége.
-      option_trimming_help_2d: A nyers tábla körül hulladékként kezelendő anyag mennyisége.
-      option_optimization: Optimalizálási szint
-      option_optimization_help: "Az optimalizálási szint meghatározza a kiszámított lehetőségek számát, és ezáltal a számítási időt is."
-      option_optimization_0: Közepes
-      option_optimization_1: Haladó
-      option_stacking: Preferált irány
-      option_stacking_help: Az azonos hosszúságú vagy szélességű alkatrészek egymás mellé helyezésének iránya.
-      option_stacking_0: Nincs preferencia
-      option_stacking_1: Hosszirányban
-      option_stacking_2: Keresztirányban
-      option_stacking_3: Minden lehetőség
-      option_keep: Lehulló min. mérete
-      option_keep_help: A minimális hossznál és szélességnél nagyobb lehullók **megtartandóként** lesznek megjelölve.
-      option_std_bar_dimensional: Szabványos fűrészáru
-      option_std_bar_edge: Szabványos élzáró
-      option_std_bar_help: |
-        Válassza ki a szabványos deszkát vagy élzárót, amely az összes alkatrész befogadásához lesz sokszorosítva.
-        Ez a lista az anyag **$t(tab.materials.edit_material.std_lengths)** mezőjében van meghatározva.
-        Az anyag '{{ material_name }}' szerkesztésével frissítheti ezt a listát.
-      option_std_bar_add: Hossz hozzáadása
-      option_std_bar_none: Nincs
-      option_scrap_bar_dimensional_lengths: Maradék deszkák
-      option_scrap_bar_edge_lengths: Maradék élzárók
-      option_scrap_bar_lengths_placeholder: hossz x mennyiség ; ...
-      option_scrap_bar_lengths_help: |
-        Sorolja fel azokat a maradék deszkákat vagy élzárókat, amelyeket elsőként kell figyelembe venni a szabásterven.
-        Várt formátum: **H**x**M**, ahol **H** a maradék *hossza* és **M** a mennyiség.
-        A mennyiség opcionális.
-        *A mértékegység nélküli méretek a modell mértékegységében értendők.*
-      option_std_sheet_good: Szabványos tábla
-      option_std_sheet_veneer: Szabványos furnérlap
-      option_std_sheet_help: |
-        Válassza ki a szabványos táblát vagy furnérlapot, amely sokszorosítva lesz a legjobb elrendezés kiszámításához.
-        Ez a lista az anyag **$t(tab.materials.edit_material.std_sizes)** mezőjében van meghatározva.
-        Az anyag '{{ material_name }}' szerkesztésével frissítheti ezt a listát.
-      option_std_sheet_add: Méret hozzáadása
-      option_std_sheet_none: Nincs
-      option_scrap_sheet_good_sizes: Maradék táblák
-      option_scrap_sheet_veneer_sizes: Maradék furnérlapok
-      option_scrap_sheet_sizes_placeholder: hossz x szélesség x mennyiség ; ...
-      option_scrap_sheet_sizes_help: |
-        Sorolja fel azokat a maradék táblásanyagokat vagy furnérlapokat, amelyeket elsőként szeretne figyelembe venni a szabásterven.
-        Várt formátum: **H**x**SZ**x**M**, ahol **H** és **SZ** a tábla tényleges *hosszát* és *szélességét* jelöli, **M** pedig a mennyiség.
-        A mennyiség opcionális.
-        *A mértékegység nélküli méretek a modell mértékegységében értendők.*
-      tooltip:
-        scroll_to_block_1d: Görgetés az első deszkához vagy élzáróhoz
-        scroll_to_block_2d: Görgetés az első táblához
-        copy_leftovers_to_clipboard: Lehullók másolása a vágólapra
-      list:
-        unplaced_parts: El nem helyezett alkatrészek
-        summary: Összesítés
-        count: Mennyiség
-        bar: Fűrészáru
-        sheet: Tábla
-        length: Hossz
-        width: Szélesség
-        total_length: Σ Hossz
-        total_area: Σ Terület
-        total_part_count: "# Alkatrész"
-        total_used: Összes felhasznált
-        trimming: Tisztítóvágás
-        stats: Statisztika
-        total_cut_count: Vágások száma
-        total_cut_length: Vágások hossza
-        overall_efficiency: Teljes hatékonyság
-        efficiency: Hatékonyság
-        leftover: Maradék
-        leftover_to_keep: Megtartandó maradék
-        leftover_to_keep_plural: Megtartandó lehullók
-        leftover_to_throw_away: Eldobható maradék
-        cut: Vágás
-        cut_plural: Vágások
-        cut_trimming: Tisztítóvágás
-        cut_bounding: Elsődleges vágás (1. szint)
-        cut_bounding_plural: Elsődleges vágások (1. szint)
-        cut_internal_through: Elsődleges vágás (2. szint)
-        cut_internal_through_plural: Elsődleges vágások (2. szint)
-        cut_none: Nincs
-        bar_dimensional_type_0: Szabványos fűrészáru
-        bar_dimensional_type_1: Maradék deszka
-        bar_edge_type_0: Szabványos élzáró
-        bar_edge_type_1: Maradék élzáró
-        sheet_good_type_0: Szabványos tábla
-        sheet_good_type_1: Maradék tábla
-        sheet_veneer_type_0: Szabványos furnérlap
-        sheet_veneer_type_1: Maradék furnérlap
-        unused: Nem használt
-        parts: "{{ count }} alkatrész"
-        parts_plural: "{{ count }} alkatrész"
-        settings: Beállítások
-      write:
-        title: Szabásterv exportálása
-        info_0: |
-          Ez a modul lehetővé teszi a **szabásterv** * geometriájának* exportálását [SVG](https://en.wikipedia.org/wiki/Scalable_Vector_Graphics) vagy [DXF](https://en.wikipedia.org/wiki/AutoCAD_DXF) formátumban..
-        option_file_format: $t(tab.cutlist.write.option_file_format)
-        option_file_format_help: $t(tab.cutlist.write.option_file_format_help)
-        option_dxf_structure: DXF struktúra
-        option_dxf_structure_1: Rétegek
-        option_dxf_structure_2: Rétegek + Blokkok
-        option_dxf_structure_help: |
-          Válassza ki a DXF fájl struktúráját.
-
-          - A **Rétegek** struktúra minden vonalat síkban rajzol, csak rétegekkel különböztetve meg a különböző vonaltípusokat. *Ez a struktúra nagyobb kompatibilitást biztosít a külső szoftverekkel.*
-          - A **Rétegek + Blokkok** struktúra minden alkatrészhez egy blokkot hoz létre, és ezeket a blokkokat illeszti be annyiszor, ahányszor az alkatrészek ismétlődnek. *Ez a struktúra nagyobb rugalmasságot biztosít a fájl szerkesztéséhez.*
-        option_unit: $t(tab.cutlist.write.option_unit)
-        option_unit_help: $t(tab.cutlist.write.option_unit_help)
-        option_smoothing: $t(tab.cutlist.write.option_smoothing)
-        option_smoothing_0: $t(tab.cutlist.write.option_smoothing_0)
-        option_smoothing_1: $t(tab.cutlist.write.option_smoothing_1)
-        option_smoothing_help: $t(tab.cutlist.write.option_smoothing_help)
-        option_merge_holes: $t(tab.cutlist.write.option_merge_holes)
-        option_merge_holes_0: $t(tab.cutlist.write.option_merge_holes_0)
-        option_merge_holes_1: $t(tab.cutlist.write.option_merge_holes_1)
-        option_merge_holes_help: $t(tab.cutlist.write.option_merge_holes_help)
-        option_include_paths: $t(tab.cutlist.write.option_include_paths)
-        option_include_paths_0: $t(tab.cutlist.write.option_include_paths_0)
-        option_include_paths_1: $t(tab.cutlist.write.option_include_paths_1)
-        option_include_paths_help: $t(tab.cutlist.write.option_include_paths_help)
-        option_sheet_good: Táblásanyag
-        option_sheet_good_help: |
-          Engedélyezi a táblásanyag exportálását és a szín kiválasztását.
-        option_sheet_veneer: Furnérlap
-        option_sheet_veneer_help: |
-          Engedélyezi a furnérlap exportálását és a szín kiválasztását.
-        option_bar_dimensional: Fűrészáru
-        option_bar_dimensional_help: |
-          Engedélyezi a fűrészáru exportálását és a szín kiválasztását.
-        option_bar_band: Élzáró
-        option_bar_band_help: |
-          Engedélyezi az élzáró exportálását és a szín kiválasztását.
-        option_parts: Alkatrészek
-        option_parts_help: |
-          Engedélyezi az alkatrészek exportálását és a szín kiválasztását.
-        option_parts_holes: Furatok
-        option_parts_holes_help: |
-          Válassza ki a furatok színét.
-        option_parts_paths: $t(tab.cutlist.write.option_parts_paths)
-        option_parts_paths_help: $t(tab.cutlist.write.option_parts_paths_help)
-        option_texts: Azonosítók
-        option_texts_help: |
-          Engedélyezi az alkatrész azonosító szövegek exportálását és a szín kiválasztását.
-        option_leftovers: Lehullók
-        option_leftovers_help: |
-          Engedélyezi a lehullók exportálását és a szín kiválasztását.
-        option_cuts: Vágások
-        option_cuts_help: |
-          Válassza ki, hogy a vágások megjelenjenek-e, és válassza ki a színüket.
-        warning:
-          is_sheet_selection: A **rejtett táblák** nem kerülnek exportálásra.
-      error:
-        no_bar_dimensional: A szabványos deszka nem lett megfelelően beállítva és nincsenek definiált maradékok.
-        no_bar_edge: A szabványos élzáró nem lett megfelelően beállítva és nincsenek definiált maradékok.
-        parameters: "A paraméterek helytelenek. A tisztítóvágás mérete nagyobb, mint a leghosszabb deszka vagy élzáró 25%-a."
-        no_parts: Nincsenek alkatrészek.
-        no_sheet: A szabványos táblaméretek rosszul vannak beállítva és nincsenek elérhető maradékok.
-        no_placement_possible_1d: "Nem lehetséges az elhelyezés (túl kicsi a szabványos anyag, túl nagy a tisztítóvágás, túl nagy a vágásrés, ...)."
-        no_placement_possible_2d: "Nem lehetséges az elhelyezés (túl kicsi a szabványos tábla, túl nagy a tisztítóvágás, túl nagy a vágásrés, ...)."
-        bad_error: "Algoritmus hiba. Kérjük, lépjen kapcsolatba a fejlesztőkkel, mivel ez egy érdekes eset."
-        unplaced_parts: "**1 alkatrész** túl nagy ahhoz, hogy elférjen."
-        unplaced_parts_plural: "**{{ count }} alkatrész** túl nagy ahhoz, hogy elférjen."
-      warning:
-        is_part_selection: Ez a szabásterv csak a **kiválasztott alkatrészekre** korlátozódik.
-        cutting_dimensions: Ez a szabásterv az alkatrészek **nyers** méreteit használja.
-        cutting_dimensions_increase_1d: "Ezek a nyers méretek a '{{ material_name }}' anyagnál lettek beállítva: hossz ráhagyás (**{{ length_increase }}**)."
-        cutting_dimensions_increase_2d: "Ezek a nyers méretek a '{{ material_name }}' anyagnál lettek beállítva: hossz ráhagyás (**{{ length_increase }}**) és szélesség ráhagyás (**{{ width_increase }}**)."
-        cutting_dimensions_edge_decrement: Az élzáró vastagságával csökkentett méretek. <i class='ladb-opencutlist-icon-edge-decremented'></i>
     packing:
       title: Szabásterv
       option_problem_type: Típus
@@ -1047,8 +892,19 @@ tab:
       option_rectangleguillotine_first_stage_orientation_horizontal: Vízszintes
       option_rectangleguillotine_first_stage_orientation_vertical: Függőleges
       option_rectangleguillotine_first_stage_orientation_any: Bármelyik
+      option_rectangleguillotine_sort_subplates_criteria: Szintek rendezése
+      option_rectangleguillotine_sort_subplates_criteria_help: |
+        Meghatározza az alkatrészek rendezési feltételeit az egyes szinteken.
+      option_rectangleguillotine_sort_subplates_criteria_l1l2: Csökkenő méret szerint
+      option_rectangleguillotine_sort_subplates_criteria_dl2l1: Csökkenő sűrűség szerint
       option_rectangleguillotine_keep: Lehullók min. mérete
       option_rectangleguillotine_keep_help: A minimális hossznál és szélességnél nagyobb lehullók **megtartandóként** lesznek megjelölve.
+      option_rectangle_leftover_mode: Elosztás iránya
+      option_rectangle_leftover_mode_help: |
+        Meghatározza az alkatrészek elosztásának irányát az utolsó, nem teli táblán.
+      option_rectangle_leftover_mode_area: Auto
+      option_rectangle_leftover_mode_x: A tábla szélessége mentén
+      option_rectangle_leftover_mode_y: A tábla hossza mentén
       option_irregular_allowed_rotations: Elforgatás engedélyezett
       option_irregular_allowed_rotations_help: |
         Beállítja, hogy az alkatrészek milyen szögben forgathatók el az elhelyezés során.
@@ -1057,18 +913,25 @@ tab:
       option_irregular_allowed_rotations_0: Nincs
       option_irregular_allowed_rotations_90: 90°-os elforgatás
       option_irregular_allowed_rotations_180: 180°-os elforgatás
+      option_irregular_allowed_rotations_free: Szabad
       option_irregular_allow_mirroring: Tükrözés engedélyezése
       option_irregular_allow_mirroring_help: |
         Meghatározza, hogy az alkatrész tükrözése engedélyezett-e az elhelyezéshez.
       option_irregular_allow_mirroring_0: $t(default.no)
       option_irregular_allow_mirroring_1: $t(default.yes)
+      option_irregular_leftover_mode: Elosztás iránya
+      option_irregular_leftover_mode_help: |
+        Meghatározza az alkatrészek elosztásának irányát az utolsó, nem teli táblán.
+      option_irregular_leftover_mode_bottom_left: Auto
+      option_irregular_leftover_mode_left: A tábla szélessége mentén
+      option_irregular_leftover_mode_bottom: A tábla hossza mentén
       option_spacing: Vágásrés
       option_spacing_help: |
         Minimális távolság az alkatrészek között.
         Ez az érték megfelelhet a fűrészlap vagy vágóeszköz szélességének.
       option_trimming: Szélezés
       option_trimming_1d_help: Ez az érték megfelelhet a fűrészlap vagy vágóeszköz szélességének.
-      option_trimming_2d_help: "Tiszta vágáshoz ráhagyás a nyers tábla vagy furnérlap szélein, amelyet hulladékként kell kezelni."
+      option_trimming_2d_help: Tiszta vágáshoz ráhagyás a nyers tábla vagy furnérlap szélein, amelyet hulladékként kell kezelni.
       option_items_formula: Képlet
       option_items_formula_help: |
         Lehetővé teszi, hogy *Ruby* kódot írj az alkatrészazonosító szövegének testreszabásához a diagramon.
@@ -1111,7 +974,7 @@ tab:
       option_origin_corner_1: Bal alsó sarok
       option_origin_corner_2: Jobb felső sarok
       option_origin_corner_3: Jobb alsó sarok
-      option_origin_corner_help: "Lehetővé teszi az alkatrészek elhelyezésének origójaként szolgáló sarok kiválasztását a táblákban, furnérlapokban, méretezett fűrészárukban vagy élzárókban."
+      option_origin_corner_help: Lehetővé teszi az alkatrészek elhelyezésének origójaként szolgáló sarok kiválasztását a táblákban, furnérlapokban, méretezett fűrészárukban vagy élzárókban.
       option_highlight_primary_cuts: Elsődleges vágások
       option_highlight_primary_cuts_0: Csak rámutatáskor
       option_highlight_primary_cuts_1: Mindig látható
@@ -1121,6 +984,7 @@ tab:
       option_hide_edges_preview_1: Elrejtve a szabásterven
       option_hide_edges_preview_help: Lehetővé teszi az élzárók vizuális megjelenítésének mutatását vagy elrejtését minden alkatrésznél a szabásterven.
       option_zoom_threshold: Nagyítás határa
+      # TODO find a better explanation
       option_zoom_threshold_help: |
         Lehetővé teszi szabászati rajzok megjelenítését szabályozza, biztosítva, hogy a túl kicsi vágási ábrák is olvashatóak legyenek.
 
@@ -1128,6 +992,11 @@ tab:
       option_time_limit: Optimalizálási Időkorlát
       option_time_limit_help: |
         Beállítja a számításra rendelkezésre álló időt
+      grain_groups:
+        title: "{{ count }} szálfolytonossági csoport"
+        title_plural: "{{ count }} szálfolytonossági csoport"
+        name: Név
+        item_count: "# Alkatrész"
       tooltip:
         scroll_to_block_1d: Görgetés az első deszkához vagy élzáróhoz
         scroll_to_block_2d: Görgetés az első táblához vagy furnérlaphoz
@@ -1143,7 +1012,7 @@ tab:
         total_cut_count: Vágások száma
         total_cut_length: Vágások hossza
         efficiency: Hatékonyság
-        count: Mennyiség
+        count: Menny.
         length: Hosszúság
         width: Szélesség
         total_length: Σ Hossz
@@ -1178,7 +1047,7 @@ tab:
         cut_primary: Elsődleges vágás
         cut_primary_plural: Elsődleges vágások
         cut_none: Nincs
-        cut_depth: "Szint {{ depth }}"
+        cut_depth: Szint {{ depth }}
       write:
         title: Szabásterv exportálása
         info_0: |
@@ -1220,13 +1089,14 @@ tab:
             A megmunkálási túllógás ({{ overflow }}) nem haladhatja meg a kivágási rajzban beállított távolságot ({{ spacing }}).
       error:
         no_part: Nincsenek alkatrészek.
-        no_bin_1d: "Nem lett kiválasztva szabványos léc vagy élzáró szalag, és nincs megadva maradékanyag sem."
-        no_bin_2d: "Nem lett kiválasztva szabványos tábla vagy furnérlap, és nincs megadva maradékanyag sem."
-        invalid_part_shapes: "A '{{ name }}' nevű alkatrész alakja érvénytelen."
+        no_bin_1d: Nem lett kiválasztva szabványos léc vagy élzáró szalag, és nincs megadva maradékanyag sem.
+        no_bin_2d: Nem lett kiválasztva szabványos tábla vagy furnérlap, és nincs megadva maradékanyag sem.
+        invalid_part_shapes: A '{{ name }}' nevű alkatrész alakja érvénytelen.
         no_solution: Az összes alkatrész **összes alkatrész** nem fért el a rendelkezésre álló anyagon.
         unplaced_parts: "**1 alkatrészt** nem sikerült elhelyezni."
         unplaced_parts_plural: "**{{ count }} alkatrészt** nem sikerült elhelyezni."
-        unusable_part: Az alkatrész túl nagy
+        unusable_part_1: Az alkatrész túl nagy
+        unusable_part_2: Túl nagy szálfolytonossági csoport
       warning:
         is_part_selection: Ez a szabásterv csak a **kiválasztott alkatrészekre** korlátozódik.
         cutting_dimensions: Ez a szabásterv az alkatrészek **nyers** méreteit használja.
@@ -1302,7 +1172,7 @@ tab:
         part_length: Hosszúság
         part_width: Szélesség
         part_thickness: Vastagság
-        part_tags: Címkék
+        part_tags: Jelvények
         part_batch: Köteg
         part_edge_ymin: Élhosszúság 1
         part_edge_ymax: Élhosszúság 2
@@ -1325,7 +1195,7 @@ tab:
       error:
         invalid_size: A megadott konfigurációs paraméterek nem teszik lehetővé érvényes címkeméret beállítását.
       warning:
-        is_group_selection: "A szabástervben szereplő, **rejtett csoportokban lévő** alkatrészek nem kapnak címkét."
+        is_group_selection: A szabástervben szereplő, **rejtett csoportokban lévő** alkatrészek nem kapnak címkét.
         is_part_selection: Ezek a címkék csak a **kiválasztott alkatrészekre** korlátozódnak.
     layout:
       title: Rajz
@@ -1341,6 +1211,7 @@ tab:
       option_parts_opacity_0: Átlátszó
       option_parts_opacity_1: Átlátszatlan
       option_parts_opacity_help: Válassza ki az alkatrészek átlátszóságát.
+      # A callout is a piece of descriptive text connected to a drawing element via a leader line.
       option_pins: Címkék
       option_pins_hidden: Megjelenítés
       option_pins_hidden_0: Címkékkel
@@ -1357,6 +1228,7 @@ tab:
       option_pins_length_1: Rövid
       option_pins_length_2: Közepes
       option_pins_length_3: Hosszú
+      option_pins_length_4: $t(default.automatic)
       option_pins_length_help: Válassza ki a vezetővonal hosszát.
       option_pins_direction: Irány
       option_pins_direction_0: Piros tengely mentén
@@ -1439,6 +1311,13 @@ tab:
 
         - A **Rétegek** struktúra minden vonalat síkban rajzol, csak rétegekkel különböztetve meg a különböző vonaltípusokat. *Ez a struktúra nagyobb kompatibilitást biztosít a külső szoftverekkel.*
         - A **Rétegek + Blokkok** struktúra minden alkatrészhez egy blokkot hoz létre, és ezeket a blokkokat illeszti be annyiszor, ahányszor az alkatrészek ismétlődnek. *Ez a struktúra nagyobb rugalmasságot biztosít a fájl szerkesztéséhez.*
+      option_dxf_depth_to_z: Mélységek Z-ben
+      option_dxf_depth_to_z_0: $t(default.no)
+      option_dxf_depth_to_z_1: A rétegek mélységének elosztása a Z tengely mentén
+      option_dxf_depth_to_z_help: |
+        Bekapcsolja a rétegek mélységük szerinti elosztását a Z tengely mentén.
+
+        Kapcsolja ki ezt a beállítást, ha csak 2D DXF-et szeretne exportálni.
       option_unit: Mértékegység
       option_unit_help: |
         Válassza ki az exportált fájlban használt mértékegységet.
@@ -1524,16 +1403,16 @@ tab:
       area: Terület
       volume: Térfogat
     error:
-      no_model: Nincs megnyitott modell. További információra lesz szükségem ;)
+      no_model: Nincs nyitott modell. További információra van szükségem ;)
       no_entities: A modell üres. További információra lesz szükségem ;)
       no_component_in_selection: Nem található látható komponens példány a kijelölésben.
       no_component_in_model: Nem található látható komponens példány a jelenetben.
       unknow_part: A kiválasztott alkatrész nem létezik az alkatrészlistában.
-      obsolete_cutlist: "Nem lehetséges, az alkatrészlista elavult. Kérem, generálja újra."
+      obsolete_cutlist: Nem lehetséges, az alkatrészlista elavult. Kérem, generálja újra.
     warning:
       is_entity_selection: Csak a modellben kiválasztott alkatrészek lettek figyelembe véve.
-      no_typed_materials_in_model: "A modell nem használ definiált anyagot (**$t(tab.materials.type_1)**, **$t(tab.materials.type_2)**, **$t(tab.materials.type_3)** vagy **$t(tab.materials.type_5)**)."
-      no_typed_materials_in_selection: "A kijelölés nem használ definiált anyagot (**$t(tab.materials.type_1)**, **$t(tab.materials.type_2)**, **$t(tab.materials.type_3)** vagy **$t(tab.materials.type_5)**)."
+      no_typed_materials_in_model: A modell nem használ definiált anyagot (**$t(tab.materials.type_1)**, **$t(tab.materials.type_2)**, **$t(tab.materials.type_3)** vagy **$t(tab.materials.type_5)**).
+      no_typed_materials_in_selection: A kijelölés nem használ definiált anyagot (**$t(tab.materials.type_1)**, **$t(tab.materials.type_2)**, **$t(tab.materials.type_3)** vagy **$t(tab.materials.type_5)**).
       export_empty: Az exportálási kijelölés nem tartalmaz alkatrészt.
     success:
       part_selected: "{{ count }} alkatrész kiválasztva az Alkatrészlistában."
@@ -1543,8 +1422,8 @@ tab:
         Az *alkatrészlistába* felveendő alkatrészeknek **komponens** példányoknak kell lenniük.
         Ha csak csoportokat használ, alakítsa át őket komponensekké.
         A komponensek használata lehetővé teszi az azonos alkatrészek másolását azok megkettőzése nélkül.
-      no_typed_materials: "Alkalmazzon anyagot az alkatrészlistába felveendő alkatrészekre, és határozza meg az anyag tulajdonságait (**$t(tab.materials.type_1)**, **$t(tab.materials.type_2)**, **$t(tab.materials.type_3)** vagy **$t(tab.materials.type_5)**) az <i class=\"ladb-opencutlist-icon-materials\"></i> **Anyagok** fülön."
-    obsolete_base: "A friss adatokhoz újra kell generálni az alkatrészlistát."
+      no_typed_materials: Alkalmazzon anyagot az alkatrészlistába felveendő alkatrészekre, és határozza meg az anyag tulajdonságait (**$t(tab.materials.type_1)**, **$t(tab.materials.type_2)**, **$t(tab.materials.type_3)** vagy **$t(tab.materials.type_5)**) az <i class="ladb-opencutlist-icon-materials"></i> **Anyagok** fülön.
+    obsolete_base: A friss adatokhoz újra kell generálni az alkatrészlistát.
   materials:
     label: Anyagok
     title: Anyagok
@@ -1555,6 +1434,7 @@ tab:
     type_4: Élzáró
     type_5: Vasalat
     type_6: Furnér
+    type_7: Megmunkálás
     tooltip:
       type_0: "Anyagtípus: $t(tab.materials.type_0)"
       type_1: "Anyagtípus: $t(tab.materials.type_1)"
@@ -1563,16 +1443,17 @@ tab:
       type_4: "Anyagtípus: $t(tab.materials.type_4)"
       type_5: "Anyagtípus: $t(tab.materials.type_5)"
       type_6: "Anyagtípus: $t(tab.materials.type_6)"
+      type_7: "Anyagtípus: $t(tab.materials.type_7)"
       grained_0: $t(tab.materials.edit_material.grained_0)
       grained_1: $t(tab.materials.edit_material.grained_1)
       grain_direction: Száliránya
       raw_estimated_0: A tényleges térfogat alapján becsült
-      colorized: "Ez az árnyalat lesz alkalmazva a textúrára, amikor a modellben megjelenik"
+      colorized: Ez az árnyalat lesz alkalmazva a textúrára, amikor a modellben megjelenik
       texture_load: Új kép betöltése
       texture_export: Kép exportálása
       texture_clear: Textúra eltávolítása
       edit: "'{{ name }}' tulajdonságainak szerkesztése"
-      set_current: "Alkatrészek festése '{{ name }}' anyaggal"
+      set_current: Alkatrészek festése '{{ name }}' anyaggal
       open_url: Anyag URL megnyitása
       import_from_skm: Anyag importálása (.skm)
     menu:
@@ -1602,6 +1483,7 @@ tab:
       formats: Formátum
       cut_options: Vágási paraméterek
       estimate_options: Becslési beállítások
+      export_options: Export beállítások
       attributes: Tulajdonságok
       thickness: Vastagság
       thickness_help: |
@@ -1609,11 +1491,14 @@ tab:
 
         *Ha nincs megadva mértékegység, a modell alapértelmezett egysége kerül alkalmazásra.*
       length_increase: Hossz ráhagyás
-      length_increase_help: A **nyers hossz** meghatározásához alkalmazott ráhagyás.
+      length_increase_help: Az alkatrész kész hosszára alkalmazott ráhagyás, amely meghatározza a **nyers hosszát**.
+      length_increase_help_plural: A **nyers hossz** meghatározásához alkalmazott ráhagyás.
       width_increase: Szélesség ráhagyás
-      width_increase_help: A **nyers szélesség** meghatározásához alkalmazott ráhagyás.
+      width_increase_help: Az alkatrész kész szélességére alkalmazott ráhagyás, amely meghatározza a **nyers szélességét**.
+      width_increase_help_plural: A **nyers szélesség** meghatározásához alkalmazott ráhagyás.
       thickness_increase: Vastagság ráhagyás
-      thickness_increase_help: A **nyers vastagság** meghatározásához alkalmazott ráhagyás.
+      thickness_increase_help: Az alkatrész kész vastagságára alkalmazott ráhagyás, amely meghatározza a **nyers vastagságát**.
+      thickness_increase_help_plural: A **nyers vastagság** meghatározásához alkalmazott ráhagyás.
       std_lengths: Szabványos hosszak
       std_lengths_help: |
         Ehhez az anyaghoz választható szabványos hosszúságok
@@ -1644,7 +1529,7 @@ tab:
       grained_0: Nincs szálirány
       grained_1: Szálirány a hosszal párhuzamos
       edge_decremented: Méretek csökkentése
-      edge_decremented_help: "Megadhatja, hogy az alkatrészek méreteit csökkenteni kell-e az élzáró vastagságával."
+      edge_decremented_help: Megadhatja, hogy az alkatrészek méreteit csökkenteni kell-e az élzáró vastagságával.
       edge_decremented_0: Nincs levonás
       edge_decremented_1: A szabásméret csökkentése az élzárás vastagságával
       raw_estimated: Használt térfogat
@@ -1660,11 +1545,34 @@ tab:
       raw_estimated_1: Szükséges nyersanyag térfogata
       multiplier_coefficient: Szorzótényező
       multiplier_coefficient_help: Lehetővé teszi a nyers térfogatra alkalmazott szorzó tényező megadását.
+      machining_separated: Megmunkálási geometriák
+      machining_separated_help: |
+        Meghatározza, hogyan exportálódnak 2D-be (DXF, SVG) ennek az anyagnak a megmunkálási geometriái.
+
+        **$t(tab.materials.edit_material.machining_separated_0)**
+        A megmunkálási geometriák kivonódnak az alkatrész alakjából, és egyesülnek a mélységi rétegeivel, mintha a testművelet az alkatrész geometriájában történt volna.
+        *A kilógó megmunkálási geometriák levágásra kerülnek.*
+
+        **$t(tab.materials.edit_material.machining_separated_1)**
+        Az alkatrész megtartja eredeti alakját. Minden megmunkálási geometria változatlanul, a többivel való egyesítés nélkül exportálódik egy mélységenkénti, az anyagról elnevezett `MACHININGS` rétegre.
+      machining_separated_0: Az alkatrészbe mélyítve
+      machining_separated_1: Külön, saját rétegeken
+      machining_material_colored: Színek exportáláskor
+      machining_material_colored_help: |
+        Meghatározza a különválasztott megmunkálások színeit a 2D exportokban (DXF, SVG).
+
+        **$t(tab.materials.edit_material.machining_material_colored_1)**
+        A megmunkálások körvonala ennek az anyagnak a színét kapja, kitöltés nélkül.
+
+        **$t(tab.materials.edit_material.machining_material_colored_0)**
+        A megmunkálások annak a színét kapják, amit az alkatrészből kivágnak: átmenő esetben a furatokét, egyébként az üregekét. Hasznos azoknál a gépeknél, amelyek a színekből határozzák meg a vágás típusát.
+      machining_material_colored_0: Automatikus
+      machining_material_colored_1: Az anyag színe
       std_attributes_dim_placeholder: Válasszon méretet
       std_volumic_masses: Sűrűség
-      std_volumic_masses_help: "Lehetővé teszi az anyag sűrűségének térfogattömegének beállítását minden mérethez, valamint minden egyes szabványos mérethez külön."
+      std_volumic_masses_help: Lehetővé teszi az anyag sűrűségének térfogattömegének beállítását minden mérethez, valamint minden egyes szabványos mérethez külön.
       std_prices: Ár
-      std_prices_help: "Lehetővé teszi az ár meghatározását minden méretre, valamint minden szabványos anyagméretre."
+      std_prices_help: Lehetővé teszi az ár meghatározását minden méretre, valamint minden szabványos anyagméretre.
       std_cut_prices: Szabványos vágási ár
       std_cut_prices_help: |
         Lehetővé teszi az anyag vágási árának meghatározását.
@@ -1690,7 +1598,7 @@ tab:
       title: Exportálás .skm fájlba
     option:
       minimize_on_smart_paint: "Csökkentés a következő után: *'Alkatrészek színezése ezzel...'*"
-      minimize_on_smart_paint_help: "Ha ez az opció engedélyezve van, az OpenCutList ablak automatikusan kisméretű lesz, amikor az *'Alkatrészek színezése ezzel...'* funkciót használja."
+      minimize_on_smart_paint_help: Ha ez az opció engedélyezve van, az OpenCutList ablak automatikusan kisméretű lesz, amikor az *'Alkatrészek színezése ezzel...'* funkciót használja.
       general: Általános
       material_order_strategy: Anyagok rendezése
       material_order_strategy_help: |
@@ -1710,12 +1618,12 @@ tab:
       no_materials: A modell nem tartalmaz anyagokat.
       material_not_found: Nem található anyag.
       no_texture: Az anyag nem tartalmaz textúrát.
-      failed_import_skm_file: "Hiba történt a .skm fájl importálása közben. **{{ error }}**"
-      failed_export_skm_file: "Hiba történt a .skm fájlba exportálás közben. **{{ error }}**"
-      failed_deleting_material: "Hiba történt az anyag törlése közben. **{{ error }}**"
-      failed_duplicating_material: "Hiba történt az anyag másolása közben. **{{ error }}**"
+      failed_import_skm_file: Hiba történt a .skm fájl importálása közben. **{{ error }}**
+      failed_export_skm_file: Hiba történt a .skm fájlba exportálás közben. **{{ error }}**
+      failed_deleting_material: Hiba történt az anyag törlése közben. **{{ error }}**
+      failed_duplicating_material: Hiba történt az anyag másolása közben. **{{ error }}**
       invalid_image_file: Érvénytelen kép
-    obsolete_base: "A friss adatokhoz újra kell generálni az anyaglistát."
+    obsolete_base: A friss adatokhoz újra kell generálni az anyaglistát.
   outliner:
     label: Szerkezet
     title: Szerkezet
@@ -1738,23 +1646,42 @@ tab:
       unselect_node: Kijelölés megszüntetése
       open_node_url: Alkatrész URL megnyitása
     edit_node:
-      title_model: "A modell tulajdonságai"
+      title_model: A modell tulajdonságai
       title_instance: "**{{ name }}** alkatrész tulajdonságai"
-      title_instance_multiple: "Alkatrész csoportjának tulajdonságai"
-      multiple_alert: "A {{ node_count }} alkatrész álló csoport közös tulajdonságai."
+      title_instance_multiple: Alkatrész csoportjának tulajdonságai
+      multiple_alert: A {{ node_count }} alkatrész álló csoport közös tulajdonságai.
       general: Általános
       name: Név
       instance_name: Alkatrész
       material: Anyag
+      is_grain_group: Beállítás **Szálfolytonossági csoportként**
+      is_grain_group_help: A beállítás bekapcsolásával a program **Szálirány-folytonossági csoportként** kezeli ezt a példányt a benne lévő olyan alkatrészeknél, amelyeken be van kapcsolva a *Szálirány-folytonosság*.
       definition_name: Definíció
       description: Leírás
       url: URL
-      tags: Címkék
+      tags: Jelvények
       layer_name: Címke
+      snapto: Kapcsolódás
+      snapto_none: Nincs
+      snapto_0: Bármelyik
+      snapto_1: Vízszintes
+      snapto_2: Függőleges
+      snapto_3: Ferde
+      cuts_opening: Nyílás kivágása
+      always_face_camera: Mindig a kamera felé néz
+      shadows_face_sun: Nap szerinti árnyékolás
+      no_scale_mask: Méretezés és nyújtás
+      no_scale_mask_0: Nyújtható a piros tengely mentén (X)
+      no_scale_mask_1: Nyújtható a zöld tengely mentén (Y)
+      no_scale_mask_2: Nyújtható a kék tengely mentén (Z)
+      no_scale_mask_3: Nyújtható a piros/kék síkban (X+Z)
+      no_scale_mask_4: Nyújtható a zöld/kék síkban (Y+Z)
+      no_scale_mask_5: Nyújtható a piros/zöld síkban (X+Y)
+      no_scale_mask_6: Nyújtható a sarkoknál (XYZ)
       explode: Szétrobbantás
-      explode_message: "Biztosan fel szeretnéd bontani a **{{ name }}** elemet?"
+      explode_message: Biztosan fel szeretnéd bontani a **{{ name }}** elemet?
       erase: Töröl
-      erase_message: "Biztosan törölni szeretnéd a **{{ name }}** elemet?"
+      erase_message: Biztosan törölni szeretnéd a **{{ name }}** elemet?
     deep_make_unique:
       title: Egyedivé tétel
     deep_rename_parts:
@@ -1766,108 +1693,193 @@ tab:
       new_name: Új név
       count: Db.
     create_container:
-      title_group: "Csoport létrehozása"
-      title_component: "Komponens létrehozása"
+      title_group: Csoport létrehozása
+      title_component: Komponens létrehozása
     option:
       general: Általános
       show_hidden_instances: Mutassa az elrejtett példányokat
-      show_hidden_instances_help: "Ha ez az opció engedélyezve van, a modellben elrejtett példányok megjelennek a szerkezeti fában."
+      show_hidden_instances_help: Ha ez az opció engedélyezve van, a modellben elrejtett példányok megjelennek a szerkezeti fában.
       hide_descriptions: Leírások elrejtése
-      hide_descriptions_help: "Ha ez az opció be van kapcsolva, az alkatrészekre helyezett **leírások** nem lesznek megjelenítve."
-      hide_tags: Címkék elrejtése
-      hide_tags_help: "Ha ez az opció be van kapcsolva, az alkatrészek **címkéi** nem lesznek megjelenítve."
+      hide_descriptions_help: Ha ez az opció be van kapcsolva, az alkatrészekre helyezett **leírások** nem lesznek megjelenítve.
+      hide_tags: Jelvények elrejtése
+      hide_tags_help: Ha ez az opció be van kapcsolva, az alkatrészek **jelvényei** nem lesznek megjelenítve.
       minimize_on_set_active: Kisméretűre állítás '$t(tab.outliner.tooltip.set_active_node)' után
-      minimize_on_set_active_help: "Ha ez az opció engedélyezve van, az OpenCutList ablak automatikusan kisméretű lesz, amikor a *'$t(tab.outliner.tooltip.set_active_node)'* funkciót használja."
+      minimize_on_set_active_help: Ha ez az opció engedélyezve van, az OpenCutList ablak automatikusan kisméretű lesz, amikor a *'$t(tab.outliner.tooltip.set_active_node)'* funkciót használja.
+    snippet:
+      name_size: Megnevezés - Méret
     error:
       no_model: Nincs nyitott modell. További információra van szükségem ;)
       no_entities: A modell üres!
       node_not_found: Csomópont nem található
       entity_not_found: Alkatrész nem található
       invalid_target: A kiválasztott alkatrész nem engedélyezi ezt a műveletet
-      obsolete_outliner: "Nem lehetséges, a generált szerkezet elavult. Kérem, generálja újra."
+      obsolete_outliner: Nem lehetséges, a generált szerkezet elavult. Kérem, generálja újra.
     tip:
       no_node: |
         A modell nem tartalmaz megjeleníthető alkatrészeket.
         Az alkatrész lehet **csoport** vagy **komponens** a jelenetben.
-    obsolete_base: "A friss adatokhoz újra kell generálni a szerkezetet."
-  importer:
-    label: Importálás
-    title: Alkatrészek importálása
-    help: |
-      Ezen az oldalon alkatrészeket importálhat téglalap alakú befoglaló dobozzal meghatározva a modelljébe [CSV](https://hu.wikipedia.org/wiki/CSV) fájlból.
-      Így az *OpenCutList* funkcióit olyan alkatrészekhez is használhatja amelyeket nem a *SketchUp*-ban hozott létre.
-      Kattintson a **CSV fájl megnyitása** gombra a kezdéshez.
-    open_csv: CSV fájl megnyitása
-    import_to_model: Importálás a modellbe
-    load:
-      title: CSV fájl feltöltése
-      info_0: |
-        Válassza ki a fájl olvasásához szükséges beállításokat:
-        **{{ filename }}**.
-      info_1: |
-        *A modellben beállított mértékegység: **{{ unit }}**.
-        Ez a mértékegység lesz használva azoknál a méreteknél, ahol nincs megadva mértékegység*.
-      options: Betöltési beállítások
-      option_col_sep: Elválasztó
-      option_col_sep_tab: Tabulátor
-      option_col_sep_comma: Vessző
-      option_col_sep_semicolon: Pontosvessző
-      option_first_line_headers: Első sor
-      option_first_line_headers_0: Adat
-      option_first_line_headers_1: Oszlopcímek
-    import:
-      title: Alkatrészek importálása a modellbe
-      info_0: |
-        **{{ count }} alkatrész** fog importálni a modellbe.
-        Ez az alkatrész egy csoportba kerül a fő jelenet origójában.
-      info_0_plural: |
-        **{{ count }} alkatrész** fog importálni a modellbe.
-        Ezek az alkatrészek egymásra halmozva egy csoportba kerülnek a fő jelenet origójától kezdve.
-      info_1: Kattintson az **Importálás** gombra a megerősítéshez.
-      options: |
-        A modell már tartalmaz *alkatrészeket*, *definíciókat* vagy *anyagokat*.
-        Válassza ki a megfelelő importálási beállításokat.
-      option_remove_all_?: "Válassza ki a következő lépést:"
-      option_remove_all_false: Hozzáadás a meglévőkhöz
-      option_remove_all_true: Meglévők törlése!
-      option_keep_definitions_settings: Definíció beállítások megtartása
-      option_keep_materials_settings: Anyag beállítások megtartása
-    column:
-      unused: Nem használt
-      mandatory: Kötelező mezők
-      optional: Opcionális mezők
-      name: Megnevezés
-      count: Mennyiség
-      bbox_length: Hosszúság
-      bbox_width: Szélesség
-      bbox_thickness: Vastagság
-      material: Anyag
-      tags: Címkék
-    tooltip:
-      errors: Ez az alkatrész nem lesz importálva a következő hibák miatt
-      warnings: "Ez az alkatrész importálva lesz, de a következő figyelmeztetéseket generálta"
-    error:
-      no_model: Nincs nyitott modell. Nem lehet alkatrészeket importálni a semmibe ;)
-      file_not_found: "Fájl nem található: **{{ filename }}**"
-      bad_extension: "A *{{ filename }}* fájl nem rendelkezik **.CSV** vagy **.TSV** kiterjesztéssel."
-      failed_to_load_csv_file: |
-        Nem sikerült betölteni a CSV fájlt: **{{ error }}**
-        *Ellenőrizze, hogy a megfelelő mezőelválasztót választotta-e ki.*
-      empty_file: A fájl üresnek tűnik vagy nem olvasható megfelelően.
-      no_importable_part: Nem importálható egyetlen alkatrész sem. Rendelje hozzá a kötelező mezőket a megfelelő oszlopokhoz.
-      invalid_name: Érvénytelen megnevezés
-      invalid_length: Érvénytelen hosszúság
-      invalid_width: Érvénytelen szélesség
-      invalid_thickness: Érvénytelen vastagság
-      failed_to_import: Az importálás sikertelen.
-    warning:
-      invalid_count: Érvénytelen mennyiség
-      invalid_material: Érvénytelen anyag
-    success:
-      imported_title: Importálás kész
-      imported_body: "{{ count }} alkatrész sikeresen importálva!"
-      imported_body_plural: "{{ count }} alkatrész sikeresen importálva!"
-    obsolete_base: "A friss adatokhoz újra be kell töltenie a CSV fájlt."
+    obsolete_base: A friss adatokhoz újra kell generálni a szerkezetet.
+  importers:
+    default:
+      open_file: "{{ extension }} fájl megnyitása"
+      import_to_model: Importálás a modellbe
+      error:
+        no_data: Nincs importálható adat.
+        no_model: Nincs megnyitott modell. A semmibe nem lehet importálni ;)
+        file_not_found: "Fájl nem található: **{{ filename }}**"
+        bad_extension: A(z) *{{ filename }}* fájl kiterjesztése nem a szükséges (**{{ extensions }}**).
+        failed_to_import: Az importálás sikertelen.
+      success:
+        imported_title: Importálás kész
+    csv:
+      label: CSV
+      title: Alkatrészek importálása
+      help: |
+        Ezen az oldalon egy [CSV](https://fr.wikipedia.org/wiki/Comma-separated_values) fájlból importálhat alkatrészeket (téglatest alakúakat) a modelljébe.
+        Így az *OpenCutList* szabásjegyzékének minden lehetőségét kihasználhatja a *SketchUp*-tól eltérő szoftverrel létrehozott alkatrészekhez is.
+
+        A kezdéshez kattintson a **CSV fájl megnyitása** gombra.
+      load:
+        title: CSV fájl feltöltése
+        info_0: |
+          Válassza ki a fájl olvasásához szükséges beállításokat:
+          **{{ filename }}**.
+        info_1: |
+          *A modellben beállított mértékegység: **{{ unit }}**.
+          Ez a mértékegység lesz használva azoknál a méreteknél, ahol nincs megadva mértékegység*.
+        options: Betöltési beállítások
+        option_col_sep: Elválasztó
+        option_col_sep_tab: Tabulátor
+        option_col_sep_comma: Vessző
+        option_col_sep_semicolon: Pontosvessző
+        option_first_line_headers: Első sor
+        option_first_line_headers_0: Adat
+        option_first_line_headers_1: Oszlopcímek
+      import:
+        title: Alkatrészek importálása a modellbe
+        info_0: |
+          **{{ count }} alkatrész** fog importálni a modellbe.
+          Ez az alkatrész egy csoportba kerül a fő jelenet origójában.
+        info_0_plural: |
+          **{{ count }} alkatrész** fog importálni a modellbe.
+          Ezek az alkatrészek egymásra halmozva egy csoportba kerülnek a fő jelenet origójától kezdve.
+        info_1: Kattintson az **Importálás** gombra a megerősítéshez.
+        options: |
+          A modell már tartalmaz *alkatrészeket*, *definíciókat* vagy *anyagokat*.
+          Válassza ki a megfelelő importálási beállításokat.
+        option_remove_all_?: "Válassza ki a következő lépést:"
+        option_remove_all_false: Hozzáadás a meglévőkhöz
+        option_remove_all_true: Meglévők törlése!
+        option_keep_definitions_settings: Definíció beállítások megtartása
+        option_keep_materials_settings: Anyag beállítások megtartása
+      column:
+        unused: Nem használt
+        mandatory: Kötelező mezők
+        optional: Opcionális mezők
+        name: Megnevezés
+        count: Mennyiség
+        bbox_length: Hosszúság
+        bbox_width: Szélesség
+        bbox_thickness: Vastagság
+        material: Anyag
+        tags: Jelvények
+      tooltip:
+        errors: Ez az alkatrész nem lesz importálva a következő hibák miatt
+        warnings: Ez az alkatrész importálva lesz, de a következő figyelmeztetéseket generálta
+      error:
+        failed_to_load_csv_file: |
+          Nem sikerült betölteni a CSV fájlt: **{{ error }}**
+          *Ellenőrizze, hogy a megfelelő mezőelválasztót választotta-e ki.*
+        empty_file: A fájl üresnek tűnik vagy nem olvasható megfelelően.
+        no_importable_part: Nem importálható egyetlen alkatrész sem. Rendelje hozzá a kötelező mezőket a megfelelő oszlopokhoz.
+        invalid_name: Érvénytelen megnevezés
+        invalid_length: Érvénytelen hosszúság
+        invalid_width: Érvénytelen szélesség
+        invalid_thickness: Érvénytelen vastagság
+      warning:
+        invalid_count: Érvénytelen mennyiség
+        invalid_material: Érvénytelen anyag
+      success:
+        imported_body: "{{ count }} alkatrész sikeresen importálva!"
+        imported_body_plural: "{{ count }} alkatrész sikeresen importálva!"
+      obsolete_base: A friss adatokhoz újra be kell töltenie a CSV fájlt.
+    bxf2:
+      label: BXF2
+      title: Blum konfiguráció importálása
+      help: |
+        Ezen az oldalon egy BXF2 fájlból importálhat konfigurációt a modelljébe.
+        BXF2 fájlokat a [Blum](https://www.blum.com) [Bútorkonfigurátorával](https://e-services.blum.com/) hozhat létre.
+
+        A kezdéshez kattintson a **BXF2 fájl megnyitása** gombra.
+      load:
+        title: BXF2 fájl betöltése
+      import:
+        title: A konfiguráció importálása a modellbe
+        info_0: |
+          **{{ count }} korpuszból** álló konfigurációt készül importálni a modellbe.
+        info_0_plural: |
+          **{{ count }} korpuszból** álló konfigurációt készül importálni a modellbe.
+        info_1: Lehetősége lesz megadni a helyét az aktív modellben.
+        materials: Anyagok
+        layers: Címkék
+        geometry: Geometria
+        option_parts_formula: Képlet
+        option_parts_formula_help: A képlettel testre szabhatja az importált alkatrészek nevét.
+        option_part_wood_material_name: Fa
+        option_part_wood_material_name_help: A **fa** alkatrészekre alkalmazandó anyag.
+        option_part_aluminium_material_name: Alumínium
+        option_part_aluminium_material_name_help: Az **alumínium** alkatrészekre alkalmazandó anyag.
+        option_part_glass_material_name: Üveg
+        option_part_glass_material_name_help: Az **üveg** alkatrészekre alkalmazandó anyag.
+        option_front_part_layer_name: Előlapok
+        option_front_part_layer_name_help: Az előlap-alkatrészekre alkalmazandó címke.
+        option_back_part_layer_name: Hátfalak
+        option_back_part_layer_name_help: A korpuszok hátfalaira alkalmazandó címke.
+        option_machining_material_name: Megmunkálások
+        option_machining_material_name_help: A **megmunkálásokra** alkalmazandó anyag.
+        option_machining_layer_name: Megmunkálások
+        option_machining_layer_name_help: A megmunkálásokra alkalmazandó címke.
+        option_hardware_material_name: Vasalatok
+        option_hardware_material_name_help: A **vasalatokra** alkalmazandó anyag.
+        option_hardware_layer_name: Vasalatok
+        option_hardware_layer_name_help: A vasalatokra alkalmazandó címke.
+        option_no_material_help: "*Hagyja üresen ezt a mezőt, ha nem szeretne anyagot alkalmazni*."
+        option_default_material_help: "*Ha ez a mező üres, egy alapértelmezett anyag jön létre*."
+        option_no_layer_help: "*Hagyja üresen ezt a mezőt, ha nem szeretne címkét alkalmazni*."
+        option_subtract_machinings: Megmunkálások kimarása az alkatrészekből
+        option_subtract_machinings_help: Az alkatrészek **hornyai**, **falcai** és **élletörései**, a vasalatokhoz tartozókat is beleértve, kivonódnak a térfogatukból ahelyett, hogy megrajzolódnának. A furatok rajzolva maradnak.
+        warning:
+          subtract_machinings_failed: "A megmunkálásokat nem sikerült kimarni ezekből az alkatrészekből, helyette megrajzolódtak: {{ names }}"
+        old_name: Eredeti név
+        new_name: Új név
+        count: Db.
+        formula:
+          part: Alkatrész
+          project: Projekt
+          cabinet: Bútor
+      model:
+        author: Szerző
+        date: Dátum
+      cabinet:
+        list: Bútorok listája
+        description: Név
+        width: Szélesség
+        height: Magasság
+        depth: Mélység
+      article:
+        list: Tételek listája
+        total_quantity: Menny.
+        article_number: Cikksz.
+        description: Leírás
+        material: Anyag
+      error:
+        failed_to_load_bxf2_file: |
+          A BXF2 fájl nem tölthető be: **{{ error }}**
+      warning:
+        partial_support: |
+          Az összes funkció használatához **SketchUp 2021.1** vagy újabb verzió szükséges.
+          A vasalatok 3D geometriája **nem importálható**.
+      obsolete_base: A szinkron megőrzéséhez újra be kell töltenie a BXF2 fájlt.
   tutorials:
     label: Oktatóanyagok
     title: Oktatóanyagok
@@ -1914,15 +1926,17 @@ tab:
     contribute: Támogatás
     backers: "{{ count }} anyagi támogató"
     backers_plural: "{{ count }} anyagi támogató"
-    ad: "Az OpenCutList nem ingyenes"
+    ad: Az OpenCutList nem ingyenes
     objective: Célkitűzés
-    objective_slogan: "Az OpenCutList mindannyiunké"
+    objective_slogan: Az OpenCutList mindannyiunké
     objective_title:
       default: Célkitűzések
+      # @no-translate
       cuttingdiagram_export: A vágási diagram exportálás finanszírozása
     objective_details:
       default: |
         Az *OpenCutList* folyamatos fejlesztése fontos számunkra, és a projektnek továbbra is szüksége van a segítségére a következő frissítéshez!
+      # @no-translate
       cuttingdiagram_export: |
         Fontos számunkra, hogy az *OpenCutList* alkalmazkodni tudjon a felhasználók nagyon különböző elvárásaihoz a *vágási diagram* funkció terén.
         A lehetőségek további bővítéséhez szeretnénk lehetővé tenni az elrendezési diagramok exportálását **SVG** és **DXF** formátumban.
@@ -1966,13 +1980,17 @@ tab:
     presets:
       export_global_presets: Beállítások exportálása
       export_global_presets_help: |
-        Ez a funkció lehetővé teszi a beállítások exportálását egy **.json** fájlba.
-        Válassza ki az exportálni kívánt beállításokat.
+        Ez a funkció lehetővé teszi a sablonok exportálását egy **.json** fájlba.
+        Válassza ki az exportálni kívánt sablonokat.
+        Ha a kiválasztott sablonok **.skp** vagy **.skm** fájlokra hivatkoznak, ezek egy **.oclp** archívumba kerülnek, hogy az export változtatás nélkül megosztható legyen.
       export_global_presets_success: A beállítások sikeresen exportálva.
+      export_global_presets_success_with_assets: A sablonok exportálása sikeres volt, {{ count }} kapcsolódó fájllal együtt.
       import_global_presets: Beállítások importálása
       import_global_presets_help: |
-        Válassza ki a **.json** fájlból importálni kívánt beállításokat.
-        Megjegyzés: ha már létezik azonos nevű beállítás, azt felülírja az importált verzió.
+        Válassza ki a **.json** vagy **.oclp** fájlban található, importálni kívánt sablonokat.
+        Figyelem: ha már létezik azonos nevű sablon, azt az importált változat fogja felülírni.
+        Az **.oclp** archívumban lévő fájlok a könyvtárába másolódnak, ugyanarra a helyre, ahol a küldő könyvtárában voltak.
+      open_library_dir: Könyvtár mappájának megnyitása
       import_global_presets_success: |
         Az *OpenCutList* beállítások sikeresen importálva.
         A változtatások érvényesítéséhez **be kell zárnia** és **újra kell nyitnia** az OpenCutList ablakot.
@@ -1997,6 +2015,8 @@ tab:
       error:
         no_preset_to_export: Nincs exportálható beállítás.
         no_preset_to_import: Nincs importálható beállítás.
+        failed_to_export: "A sablonok nem exportálhatók: **{{ error }}**."
+        failed_to_open_library_dir: "A könyvtár mappája nem nyitható meg: **{{ error }}**."
         failed_to_import: "Nem sikerült importálni a beállításokat: **{{ error }}**."
         failed_to_import_invalid_hexdigest: Ez a fájl módosítva lett. Nem importálható.
         failed_to_import_bad_file_format: Érvénytelen fájlformátum.
@@ -2047,51 +2067,67 @@ tool:
     middle_point: Középpont
     third_point: Egyharmad rész
     vcb_length: Hosszúság
+    vcb_thickness: Vastagság
     vcb_size: Méretek
     vcb_radius: Sugár
     vcb_diameter: Átmérő
     vcb_distance: Távolság
+    vcb_spacings: Térköz mérete
+    vcb_angle: Szög
+    locked_on_last_measure_status: Zárolás az utolsó mérésre
+    library_choose: Válasszon könyvtárat
+    modal_only_help: Csak ebben az ablakban elérhető beállítás, az eszköztáron nem szerepel
     error:
       no_direction: Jelöljön ki egy irányt az egérrel
-      invalid_length: "A(z) {{ value }} hossz nem használható"
-      invalid_multiplicator: "A(z) {{ value }} szorzó nem használható"
-      invalid_divider: "A(z) {{ value }} osztó nem használható"
-      invalid_offset: "A(z) {{ value }} eltolás nem használható"
-      invalid_segment_count: "A szegmensek száma {{ value }} nem megfelelő. Az értéknek 3 és 999 között kell lennie."
+      invalid_length: A(z) {{ value }} hossz nem használható
+      invalid_thickness: A(z) {{ value }} vastagság érvénytelen
+      invalid_multiplicator: A(z) {{ value }} szorzó nem használható
+      invalid_divider: A(z) {{ value }} osztó nem használható
+      invalid_offset: A(z) {{ value }} eltolás nem használható
+      invalid_angle: A(z) {{ value }} szög érvénytelen
+      invalid_segment_count: A szegmensek száma {{ value }} nem megfelelő. Az értéknek 3 és 999 között kell lennie.
       syntax_error: "Szintaktikai hiba: {{ error }}"
-      unexpected_close_parenthesis: "Nem várt záró zárójel"
-      missing_close_parenthesis: "Hiányzó záró zárójel"
-      missing_operand: "Hiányzó szám vagy érték"
-      zero_division: "Nem lehet nullával osztani"
+      unexpected_close_parenthesis: Nem várt záró zárójel
+      missing_close_parenthesis: Hiányzó záró zárójel
+      missing_operand: Hiányzó szám vagy érték
+      zero_division: Nem lehet nullával osztani
+      invalid_argument_count: A min, max, floor vagy ceil függvényhez legalább két érték szükséges
+      comma_argument_separator: "Az értékeket „;” jellel válassza el: a vessző egyben tizedesjel is"
+      invalid_dimension: "Hosszúsághoz csak hosszúság adható: a mértékegység nélküli szám szorzótényező"
+      no_matching_value: A javasolt értékek egyike sem megfelelő
       lt_min_distance: "A(z) {{ value1 }} távolság nem éri el a minimálisan megengedett értéket ami: {{ value2 }}"
-      gt_max_distance: "Az {{ value1 }} távolság nagyobb, mint az {{ value2 }} maximális távolság"
-  highlight:
-    transparency: $t(tool.default.transparency)
-    zoom_extents: $t(tool.default.zoom_extents)
+      gt_max_distance: Az {{ value1 }} távolság nagyobb, mint az {{ value2 }} maximális távolság
+      locked_part: Ez az alkatrész zárolt
+      not_sibling_part: Ez az alkatrész nem ugyanabban a csoportban vagy komponensben van, mint a kijelölés többi része
+      selection_contains_locked_entities: A kijelölés zárolt entitásokat tartalmaz
+      wrong_material_type: A célalkatrésznek '{{ type }}' típusúnak kell lennie
   smart_select:
     state_0_status: Kattintson egy alkatrészre a kijelöléséhez
-    state_0_to_6_status: ""
-    state_4_status: ""
-    state_5_status: ""
-    state_6_status: ""
+    state_0_to_6_status: Szülőelem kiválasztása
+    state_0_to_7_status: Többszörös kijelölés
+    state_4_status: Húzd egy ugyanazon szülőben lévő azonos alkatrészre a kijelölés bővítéséhez, majd engedd fel a folytatáshoz
+    state_5_status: Húzza a kijelöléshez adáshoz, majd engedje el a folytatáshoz
+    state_6_status: Válasszon elemet a listából
+    state_7_status: Kattintson egy alkatrészre a kijelöléshez adáshoz vagy onnan való eltávolításhoz
     warning:
-      no_active_part: ""
+      no_active_part: Először egy alkatrész fölé kell vinnie a kurzort
+      no_parent_group: A kurzor alatti alkatrésznek nincs szülő csoportja vagy komponense
   smart_draw:
     title: Rajzol
     action_0: Téglalap rajzolása
     action_0_status: Térfogat rajzolása téglalap alakú forma alapján
-    action_0_state_0_status: ""
-    action_0_state_1_status: "Kattintson az átellenes sarok megadásához, vagy írjon be egy hosszt és szélességet"
+    action_0_state_0_status: Kattintson a téglalap első pontjának megadásához
+    action_0_state_1_status: Kattintson az átellenes sarok megadásához, vagy írjon be egy hosszt és szélességet
     action_1: Kör rajzolása
-    action_1_state_0_status: ""
+    action_1_state_0_status: Kattintson a kör középpontjának megadásához
     action_1_status: Térfogat rajzolása kör alakú forma alapján
-    action_1_state_1_radius_status: "Kattintson a sugár beállításához, vagy adjon meg egy távolságot"
-    action_1_state_1_diameter_status: "Kattintson az átmérő beállításához, vagy adjon meg egy távolságot"
+    action_1_state_1_radius_status: Kattintson a sugár beállításához, vagy adjon meg egy távolságot
+    action_1_state_1_diameter_status: Kattintson az átmérő beállításához, vagy adjon meg egy távolságot
     action_2: Sokszög rajzolása
-    action_2_state_0_status: ""
+    action_2_state_0_status: Kattintson a sokszög első pontjának megadásához
     action_2_status: Térfogat rajzolása sokszög alakú forma alapján
-    action_2_state_1_status: "Kattintson egy új pont meghatározásához, vagy adjon meg egy távolságot"
-    action_x_state_2_status: "Kattintson a magasság beállításához, vagy adjon meg egy távolságot"
+    action_2_state_1_status: Kattintson egy új pont meghatározásához, vagy adjon meg egy távolságot
+    action_x_state_2_status: Kattintson a magasság beállításához, vagy adjon meg egy távolságot
     action_option_group_offset: Eltolás
     action_option_group_segments: Szegmensek
     action_option_group_options: Beállítások
@@ -2113,30 +2149,176 @@ tool:
     action_option_options_measure_reversed_status: A mérés irányának megfordítása
     action_option_options_pull_centered: Középpontos magasság állítás
     action_option_options_pull_centered_status: A középpontól indul kétirányba az emelés
+    action_option_options_pull_locked_status: A magasság rögzítése egy tengelyen
+    action_option_options_draw_in: Rajzolás ide
+    action_option_options_draw_in_0: Rajzolás az aktív elembe
+    action_option_options_draw_in_1: Rajzolás az első pont alkatrészének szülőjébe
+    action_option_options_draw_in_status: Rajzolás az első pont által célzott alkatrész szülőjébe
+    action_option_options_pick_material: Színválasztó
+    action_option_options_pick_material_status: Az első ponttal érintett alkatrész anyagának alkalmazása az újonnan létrehozott alkatrészre
     action_option_options_ask_name: Alkatrészek elnevezése
     action_option_options_ask_name_status: Az alkatrész nevének kézi megadása
-    action_measure_locked_status: Zárolás az utolsó mérésre
     action_toggle_move_copy_status: Váltás másolás/mozgatás között
     action_change_move_anchor_status: Referenciapont módosítása
     success:
       part_created: "Új alkatrész létrehozva: {{ name }}"
+      part_created_plural: "{{ count }} új alkatrész létrehozva: {{ name }}"
+  smart_build:
+    title: Építés
+    action_0: Modul elhelyezése
+    action_0_status: SKP fájlból importált modul elhelyezése, a megrajzolt doboz méreteire nyújtva
+    action_0_state_0_status: Válasszon modulfájlt a könyvtárból
+    action_0_state_1_status: Kattintson a modul origójának elhelyezéséhez
+    action_0_state_2_status: Kattintson a modul szélességének megadásához (X tengely)
+    action_0_state_2_lock_status: Rögzítés a forrásfájl szélességére
+    action_0_state_2_arrows_status: Rögzítés egy tengelyre
+    action_0_state_3_status: Kattintson a modul mélységének megadásához (Y tengely)
+    action_0_state_3_lock_status: Rögzítés a forrásfájl mélységére
+    action_0_state_3_arrows_status: Az XY sík normálisának rögzítése egy tengelyre
+    action_0_state_4_status: Kattintson a modul magasságának megadásához (Z tengely)
+    action_0_state_4_lock_status: Rögzítés a forrásfájl magasságára
+    action_0_state_5_status: Kattintson a hozzáadandó példányra
+    action_0_state_6_status: Kattintson a modul ELÜLSŐ oldalára
+    action_0_state_7_status: Kattintson a modul FELSŐ oldalára
+    action_0_add_title: Modul hozzáadása
+    action_0_add_name: Fájlnév
+    action_0_add_overwrite: A(z) „{{ name }}.skp” fájl már létezik. Felülírja?
+    action_0_add_front_label: ELÖL
+    action_0_add_up_label: FENT
+    action_0_flip_status: Elő- és hátoldal felcserélése
+    action_0_flip_up_status: Felső és alsó oldal felcserélése
+    action_1: Válaszfal építése
+    action_1_status: Válaszfal építése meglévő alkatrészek csoportja által alkotott üregben
+    action_1_state_0_status: Kattintson egy falra válaszfal építéséhez
+    action_1_state_1_status: Kattintson egy falra válaszfalak építéséhez
+    action_2: Előlap építése
+    action_2_status: Előlap építése, amely meglévő alkatrészek csoportja által alkotott üreget zár le
+    action_2_state_0_status: Kattintson egy üregbe, hogy előlapot építsen a nyílására
+    action_2_state_0_merge_status: Húzza a szomszédos üregekig a közös előlaphoz
+    action_3: Hátfal építése
+    action_3_status: Hátfal építése, amely meglévő alkatrészek csoportja által alkotott üreget zár le
+    action_3_state_0_status: Kattintson egy üregbe, hogy hátfalat építsen a nézettel ellentétes nyílására
+    action_3_state_0_merge_status: Húzza a szomszédos üregekig a közös hátfalhoz
+    action_option_group_groove: Horony
+    action_2_option_group_offset: Hézag
+    action_option_group_thickness: Vastagság
+    action_option_group_overlay: Beépítés
+    action_option_group_axes: Tengelyek
+    action_option_group_measure_type: Mérés
+    action_option_group_measure_origin: Kiindulás
+    action_option_group_anchor: Referenciapontok
+    action_option_group_options: Beállítások
+    action_option_offset_front_panel_offset: Hézag
+    action_option_offset_front_panel_offset_status: Meghatározza az előlap minden élén hagyott hézagot
+    action_option_groove_groove_depth: Horonymélység
+    action_option_groove_groove_depth_status: Meghatározza annak a horonynak a mélységét, amelybe a hátfal illeszkedik
+    action_option_groove_groove_panel_reduction: Táblacsökkentés
+    action_option_groove_groove_panel_reduction_status: Meghatározza, mennyivel csökken a hátfal minden horonyba illeszkedő élén, így ez a hézag a horony alján marad
+    action_option_groove_groove_width_clearance: Szélességi hézag
+    action_option_groove_groove_width_clearance_status: Meghatározza, mennyivel szélesebbre marják a hornyot a hátfal vastagságánál, teljes egészében a korpusz külső oldalán
+    action_option_groove_groove_setback: Beljebb húzás
+    action_option_groove_groove_setback_status: Meghatározza, mennyivel húzódik beljebb a hátfal a korpuszba, és így hol marják ki a hornyot
+    action_option_groove_groove_through: Átmenő horony
+    action_option_groove_groove_through_status: A horony meghosszabbítása a szomszédjukat takaró alkatrészek végéig, ha ott láthatatlanul fut ki
+    action_option_thickness_thickness: Vastagság
+    action_option_thickness_thickness_status: Meghatározza a táblák vastagságát
+    action_option_overlay_inset_status: "Közézáródó: a nyílásba építve, az elülső felülettel egy síkban"
+    action_3_option_overlay_inset_status: "Horonyba illesztett hátfal: a nyílást határoló alkatrészekbe mart horonyba illeszkedik"
+    action_option_overlay_full_overlay_status: "Rázáródó: az elülső sík elé szerelve, a szekrény külső éléig takarja az oldalakat, a belső válaszfalaknál pedig azok vastagságának feléig ér"
+    action_3_option_overlay_full_overlay_status: "Ráütődő hátfal: az elülső sík elé szerelve, a szekrény külső éléig takarja az oldalakat, a belső válaszfalaknál pedig azok vastagságának feléig ér"
+    action_option_overlay_against_protrusions_status: "Ráütődő előlap kiállások között: a nyílás síkjában lévő táblákra ráütődve, a kiálló táblákhoz igazítva"
+    action_3_option_overlay_against_protrusions_status: "Ráütődő hátfal kiállások között: a nyílás síkjában lévő táblákra ráütődve, a kiálló táblák (túlnyúló oldalak) közé igazítva, megmunkálás nélkül"
+    action_option_measure_type_inside_status: A vastagság elhelyezése a célzott pont belső oldalára
+    action_option_measure_type_centered_status: A vastagság középre igazítása a célzott ponton
+    action_option_measure_type_outside_status: A vastagság elhelyezése a célzott pont külső oldalára
+    action_option_measure_origin_wall_status: Mérés az üreg belső falaitól
+    action_option_measure_origin_overall_status: Mérés az üreget lezáró alkatrészek külső oldalaitól
+    action_option_axes_active_status: Kezelés az aktív tengelyek mentén
+    action_option_axes_context_status: Mozgatás a befogadó csoport vagy komponens tengelyei mentén
+    action_option_options_measure_reversed: Fordított mérés
+    action_option_options_measure_reversed_status: A mérés irányának megfordítása
+    action_option_options_reduce_envelope: Beljebb húzott alkatrészek
+    action_option_options_reduce_envelope_status: A beljebb húzott alkatrészek figyelembevétele
+    action_option_options_reuse_definition: Alkatrészek újrahasználata
+    action_option_options_reuse_definition_status: Az azonos alakú és azonos környezetű meglévő alkatrész újrahasználata új létrehozása helyett
+    action_option_options_mirror: Tükrözött elhelyezés
+    action_option_options_mirror_status: Minden páros sorszámú előlap a szomszédja tükörképeként kerül elhelyezésre
+    action_option_options_pick_material: Színválasztó
+    action_option_options_pick_material_status: A kurzor alatti alkatrész anyagának alkalmazása a létrehozott alkatrészekre
+    action_option_options_face_camera: Kamera felé
+    action_option_options_face_camera_status: A modul elejének automatikus elforgatása a kamera felé
+    action_option_options_top_up: Felső oldal Z+ felé
+    action_option_options_top_up_status: A modul felső oldalának automatikus elforgatása a lehető legjobban felfelé (Z+)
+    action_option_options_ask_name: Alkatrészek elnevezése
+    action_option_options_ask_name_status: Az alkatrész nevének kézi megadása
+    action_option_options_layer_name: Címke
+    action_option_options_layer_name_status: Annak a címkének a neve, amelyre az alkatrészek kerülnek
+    action_option_anchor_center_x_status: X mentén középre
+    action_option_anchor_center_y_status: Y mentén középre
+    action_option_anchor_center_z_status: Z mentén középre
+    action_option_anchor_origin_status: A komponens origója
+    action_option_no_layer_help: "*Hagyja üresen ezt a mezőt, ha nem szeretne címkét alkalmazni*."
+    detecting_cavities: Üregek keresése...
+    error:
+      invalid_divider_seed: Ez az alkatrésztípus nem teszi lehetővé válaszfal építését
+      invalid_divider_container: "Ez az alkatrész elszigetelt: nincs közös csoportja vagy komponense más alkatrészekkel"
+      invalid_divider_cavity: Ezen a helyen nincs üreg
+      no_divider_cavity: Ebben a csoportban vagy komponensben nem található üreg
+      invalid_front_panel_seed: Ez az alkatrésztípus nem teszi lehetővé előlap építését
+      invalid_front_panel_container: "Ez az alkatrész elszigetelt: nincs közös csoportja vagy komponense más alkatrészekkel"
+      invalid_front_panel_cavity: Ezen a helyen nincs ön felé nyitott üreg
+      no_front_panel_cavity: Ebben a csoportban vagy komponensben nem található üreg
+      invalid_back_panel_seed: Ez az alkatrésztípus nem teszi lehetővé hátfal építését
+      invalid_back_panel_container: "Ez az alkatrész elszigetelt: nincs közös csoportja vagy komponense más alkatrészekkel"
+      invalid_back_panel_cavity: Ezen a helyen nincs a nézettel ellentétes oldalon nyitott üreg
+      no_back_panel_cavity: Ebben a csoportban vagy komponensben nem található üreg
+      too_complex_cavity: A geometria túl összetett az üregek felismeréséhez
+      closed_front_panel_opening: Ezt a nyílást már lezárja egy előlap
+      closed_back_panel_opening: Ezt a nyílást már lezárja egy hátfal
+      divider_number_overflow: Nem lehet {{ number }} válaszfalat elosztani ebben az üregben
+      front_panel_number_overflow: Nem lehet {{ number }} előlapot elosztani ezen a nyíláson
+      back_panel_number_overflow: Nem lehet {{ number }} hátfalat elosztani ezen a nyíláson
+      back_panel_severs_parts: "A horony teljesen átvágná: {{ names }}. Csökkentse a mélységét"
+      module_file_not_found: "A modulfájl nem található: {{ file }}"
+      module_file_invalid: "A modulfájl nem tölthető be: {{ file }}"
+      module_file_invalid_name: "Érvénytelen fájlnév: {{ name }}"
+      module_file_save_failed: "A modulfájl nem menthető: {{ name }}.skp"
+      module_stretch_failed: A modul nem nyújtható ezekre a méretekre
+    warning:
+      no_back_panel_machining: "Egyetlen hornyot sem sikerült kimarni: ezen a mélységen egyetlen szomszédos alkatrész sem határolja a hátfalat"
+      no_module_file: Ebben a mappában nincs .skp fájl
+      module_axis_no_scale: "A modul nem nyújtható {{ axis }} mentén: a komponens viselkedése megakadályozza"
+      module_axis_curve_intersect: "A modul nem nyújtható {{ axis }} mentén: az egyik metszősík nem nyújtható görbén halad át"
+    success:
+      part_created: "Új alkatrész létrehozva: {{ name }}"
+      part_created_plural: "{{ count }} új alkatrész létrehozva: {{ name }}"
+      part_reused: "A meglévő alkatrész új előfordulása: {{ name }}"
+      part_reused_plural: "A meglévő alkatrész {{ count }} új előfordulása: {{ name }}"
+      module_file_saved: "Modul mentve: {{ name }}.skp"
+      module_created: "Új modul elhelyezve: {{ name }}"
   smart_handle:
     title: Kezelés
     action_0: Kijelöl
-    action_0_status: ""
+    action_0_status: Alkatrész kijelölése
     action_1: Másolás vonal mentén
-    action_1_status: ""
-    action_1_state_2_status: "Kattintson a másolat elhelyezéséhez, vagy adjon meg egy távolságot"
+    action_1_status: Alkatrész másolása egy tengely mentén
+    action_1_state_2_status: Kattintson a másolat elhelyezéséhez, vagy adjon meg egy távolságot
     action_2: Másolás rács mentén
-    action_2_status: ""
-    action_2_state_2_status: "Kattintson a másolatok elhelyezéséhez, vagy adjon meg egy távolságot"
+    action_2_status: Alkatrész másolása egy rács mentén
+    action_2_state_2_status: Kattintson a másolatok elhelyezéséhez, vagy adjon meg egy távolságot
     action_3: Mozgatás
-    action_3_status: ""
-    action_3_state_2_status: "Kattintson az alkatrész elhelyezéséhez, vagy adjon meg egy távolságot"
+    action_3_status: Alkatrész mozgatása egy tengely mentén
+    action_3_state_1_status: Kattintson az első mérési pont meghatározásához
+    action_3_state_2_status: Kattintson az alkatrész elhelyezéséhez, vagy adjon meg egy távolságot
     action_4: Elosztás
-    action_4_status: ""
+    action_4_status: Alkatrész elosztása egy tengely mentén
     action_4_state_1_status: Kattintson az első mérési pont meghatározásához
-    action_4_state_2_status: "Kattintson a második mérési pont meghatározásához, vagy adjon meg egy távolságot"
+    action_4_state_2_status: Kattintson a második mérési pont meghatározásához, vagy adjon meg egy távolságot
+    action_5: Interakció
+    action_5_status: Ajtó nyitása vagy zárása
+    action_5_state_0_status: Kattintson egy ajtóra a nyitásához vagy zárásához, vagy húzza a nyitás mértékének beállításához
+    action_5_state_0_amend_status: Adjon meg egy szöget a nyitás módosításához, vagy kattintson egy ajtóra a nyitásához vagy zárásához
+    action_5_state_20_status: Húzza az ajtó nyitásának beállításához, majd engedje el a jóváhagyáshoz
     action_option_group_copy_measure_type: Mérés
     action_option_group_move_measure_type: Mérés
     action_option_group_axes: Tengelyek
@@ -2144,40 +2326,100 @@ tool:
     action_option_copy_measure_type_outside_status: Külső mérés
     action_option_copy_measure_type_centered_status: Középponttól középpontig történő mérés
     action_option_copy_measure_type_inside_status: Mérés az alkatrészek között
-    action_option_move_measure_type_outside_status: Kívülről mérve
-    action_option_move_measure_type_centered_status: Mérés középpontból
-    action_option_move_measure_type_inside_status: Belső méret mérése
     action_option_axes_active_status: Kezelés az aktív tengelyek mentén
-    action_option_axes_context_status: "Kezelés annak a csoportnak vagy komponensnek a tengelyei mentén, amely tartalmazza az alkatrészt"
+    action_option_axes_context_status: Kezelés annak a csoportnak vagy komponensnek a tengelyei mentén, amely tartalmazza az alkatrészt
     action_option_axes_entity_status: Kezelés az alkatrész tengelyei mentén
     action_option_options_mirror_status: Szimmetrikus másolás
+    action_toggle_raytest_status: Vetítés a következő pontra
     warning:
       copies_disable_mirror: Több másolat esetén a '$t(tool.smart_handle.action_option_options_mirror_status)' opció kikapcsolásra kerül
     error:
-      min_distance: "A {{ value1 }} távolság nem éri el a minimálisan megengedett értéket ami: {{ value2 }}"
+      not_door: Ez az alkatrész nem zsanérokkal szerelt ajtó
+      incoherent_door: Az ajtó zsanérjai nem ugyanazon tengely körül forognak
   smart_reshape:
     title: Módosítás
     action_0: Húzás
-    action_0_status: ""
+    action_0_status: Alkatrész nyújtása
     action_0_state_1_status: Kattintson egy fogópontra a nyújtáshoz
     action_0_state_1a_status: Kattintson egy metszősíkra az áthelyezéséhez
     action_0_state_1b_status: Metszősík hozzáadása
     action_0_state_1c_status: Metszősík törlése
+    action_0_state_1d_status: Kattintson a két metszősík közötti geometria mozgatásához
     action_0_state_10_status: Húzza a metszősíkot az áthelyezéshez
     action_0_state_11_status: Kattintson a metszősík hozzáadásához
     action_0_state_12_status: Kattintson egy metszősíkra a törléséhez
-    action_0_state_2_status: "Kattintson a nyújtás véglegesítéséhez, vagy írjon be egy távolságot"
+    action_0_state_2_status: Kattintson a nyújtás véglegesítéséhez, vagy írjon be egy távolságot
+    action_1: Panelezés
+    action_1_status: Alkatrészsorozat létrehozása zárt testből vagy szerkesztővonalas rajzból
+    action_1_state_0_status: Kattintson egy zárt testre vagy szerkesztővonalak csoportjára a referenciageometria megadásához
+    action_1_state_1_status: Válassza ki a kihúzandó felületeket
+    action_1_rollover_face_status: Kurzor alatti felület
+    action_1_select_similar_status: Minden azonos alakú felület kijelölése
+    action_1_select_all_edges_status: Minden érintkező él kijelölése
+    action_2: Egyesítés
+    action_2_status: Több alkatrész egyesítése egyetlen alkatrésszé
+    action_2_state_0_status: Válassza ki az A alkatrészt
+    action_2_state_1_status: Válassza ki a B alkatrészt
+    action_3: Kivágás
+    action_3_status: Egy alkatrész kivágása egy másikkal
+    action_3_state_0_status: Válassza ki az A alkatrészt
+    action_3_state_1_status: Válassza ki a B alkatrészt
+    action_4: Metszet
+    action_4_status: Több alkatrész metszetének megfelelő alkatrész létrehozása
+    action_4_state_0_status: Válassza ki az A alkatrészt
+    action_4_state_1_status: Válassza ki a B alkatrészt
+    action_5: Darabolás
+    action_5_status: Egy vagy több alkatrész darabolása síkkal
+    action_5_state_1_status: Kattintson a referenciafelületre, bárhol a modellben
+    action_5_state_1_arrows_status: Darabolás egy tengelyre merőlegesen a kijelölés végétől
+    action_5_state_1b_status: Kattintson a referenciasík {{ index }}/3. pontjának elhelyezéséhez, bárhol a modellben
+    action_5_state_1b_arrows_status: Rögzítés egy tengelyre
+    action_5_state_1c_status: Kattintson a referenciasík véglegesítéséhez, vagy nyomja meg az Esc billentyűt az utolsó pont eltávolításához
+    action_5_state_2_status: Kattintson az alkatrészek feldarabolásához, vagy írjon be egy távolságot
+    action_5_state_2a_status: Kattintson a metszősík elhelyezéséhez, vagy írjon be egy távolságot
+    action_5_state_2_arrows_status: Tengelyváltás
+    action_5_state_3_status: Kattintson a megtartandó rész oldalára
+    action_5_state_4_status: Kattintson az alkatrészek {{ number }} részre darabolásához, vagy írjon be távközöket
+    action_option_group_thickness: Vastagság
     action_option_group_stretch_measure_type: Mérés
     action_option_group_axes: Tengelyek
+    action_option_group_paneling_joint_type: Illesztés
+    action_option_group_paneling_direction: Irány
+    action_option_group_csg_operation: Művelet
+    action_option_group_slice_mode: Mód
+    action_option_group_slice_reference: Referencia
     action_option_group_options: Beállítások
+    action_option_thickness_thickness: Vastagság
+    action_option_thickness_thickness_status: Meghatározza a táblák vastagságát
     action_option_stretch_measure_type_outside_status: Külső mérés
     action_option_stretch_measure_type_offset_status: A különbség mérése
     action_option_axes_active_status: Kezelés az aktív tengelyek mentén
-    action_option_axes_context_status: "Kezelés annak a csoportnak vagy komponensnek a tengelyei mentén, amely tartalmazza az alkatrészt"
+    action_option_axes_context_status: Kezelés annak a csoportnak vagy komponensnek a tengelyei mentén, amely tartalmazza az alkatrészt
     action_option_axes_entity_status: Kezelés az alkatrész tengelyei mentén
-    action_option_options_make_unique_status: ""
+    action_option_paneling_joint_type_flat_status: Tompa illesztés
+    action_option_paneling_joint_type_miter_status: Gérvágás
+    action_option_paneling_direction_inward_status: Befelé
+    action_option_paneling_direction_outward_status: Kifelé
+    action_option_slice_mode_slice_status: Az alkatrészek feldarabolása és az összes rész megtartása
+    action_option_slice_mode_cut_status: Az alkatrészek elvágása és csak egy rész megtartása
+    action_option_slice_reference_face_status: Felületről vett referenciasík
+    action_option_slice_reference_points_status: 3 ponton átmenő referenciasík
+    action_option_options_centered_status: Középre igazítás a nyújtott elemekre
+    action_option_options_make_unique_status: Az átformált elemek egyedivé tétele
+    action_option_options_keep_a: A megtartása
+    action_option_options_keep_a_status: Az A példányok megtartása a művelet után, és az eredmény új alkatrészbe helyezése
+    action_option_options_keep_b: B megtartása
+    action_option_options_keep_b_status: A B példányok megtartása a művelet után
+    action_option_options_remove_unused_definitions_status: A művelet után már nem használt komponensdefiníciók törlése
+    action_option_options_reuse_definition: Alkatrészek újrahasználata
+    action_option_options_reuse_definition_status: Azonos komponensdefiníció használata az azonos alakú alkatrészek között
+    action_option_options_reuse_definition_mirrored: Tükrözött elhelyezés
+    action_option_options_reuse_definition_mirrored_status: Tükrözött elhelyezés az egymással szemben lévő, azonos alakú alkatrészekhez
+    notify:
+      validate_a: Hagyja jóvá a B kijelöléséhez
+      validate_b: Hagyja jóvá a művelet végrehajtásához
     error:
-      curve_intersect: ""
+      curve_intersect: Az egyik metszősík nem nyújtható görbén halad át
   smart_paint:
     title: Festés
     default_material: Nincs definiált anyag
@@ -2189,6 +2431,7 @@ tool:
     filter_4: $t(tab.materials.type_4)
     filter_5: $t(tab.materials.type_5)
     filter_6: $t(tab.materials.type_6)
+    filter_7: $t(tab.materials.type_7)
     action_0: Alkatrészek színezése
     action_0_status: Kattintson egy alkatrészre annak példányának festéséhez
     action_1: Élek festése
@@ -2209,6 +2452,8 @@ tool:
     action_option_edges_2_status: Az alkatrész mind a 4 élének színezése
     action_option_faces_0_status: Csak a célfelület színezése
     action_option_faces_1_status: Az alkatrész mindkét lapjának színezése
+    state_8_status: Jelölje be a cserélendő anyagokat, majd hagyja jóvá
+    select_filter_title: Cserélendő anyagok
     edges: "{{ count }} él"
     edges_plural: "{{ count }} él"
     edge_ymin: Hossz 1
@@ -2218,15 +2463,15 @@ tool:
     faces: "{{ count }} felület"
     faces_plural: "{{ count }} felület"
     face_zmin: Hátoldal
-    face_zmax: Előlap
+    face_zmax: Előoldal
     warning:
       no_material: Nincs anyag
-      no_material_type: "Nincs '{{ type }}' típusú anyag"
+      no_material_type: Nincs '{{ type }}' típusú anyag
+      selection_disable_instances_all: A téglalapos kijelölés kikapcsolja a(z) '$t(tool.smart_paint.action_option_instances_1_status)' beállítást
     error:
       not_part: A célobjektum nem alkatrész (komponens)
       not_edge: A célfelület nem él
       not_face: A célfelület nem tábla felület
-      wrong_material_type: "A célalkatrésznek '{{ type }}' típusúnak kell lennie"
   smart_axes:
     title: Tájolás
     action_0: Átfordítás
@@ -2238,7 +2483,11 @@ tool:
     action_3: Tengelyek igazítása
     action_3_status: Kattintson egy alkatrész felületére vagy élére a tengelyeinek igazításához
     action_4: Eredet áthelyezése
-    action_4_status: "Jelöljön ki egy alkatrész felületet, majd kattintson egy pontra az origó elhelyezéséhez"
+    action_4_status: Jelöljön ki egy alkatrész felületet, majd kattintson egy pontra az origó elhelyezéséhez
+    action_5: Szálfolytonosság beállítása
+    action_5_status: Kattintson egy alkatrészre a szálfolytonosság-érzékelés be- vagy kikapcsolásához
+    action_5_to_state_10_status: Szálfolytonossági csoport kiválasztása
+    action_5_state_10_status: Kattintson a lista egy elemére a szálfolytonossági csoport állapotának módosításához
     action_option_group_direction: Irány
     action_option_direction_0: H
     action_option_direction_1: SZ
@@ -2251,6 +2500,13 @@ tool:
     error:
       not_part: A célobjektum nem alkatrész (komponens)
       not_orientable: Ennek az alkatrésznek a típusa nem teszi lehetővé a tájolását
+      not_grained: A célzott alkatrésznek nincs száliránya
+      not_single_thickness_layer: A célzott alkatrésznek egyetlen rétegből kell állnia
+  # @no-translate
+  smart_join:
+    action_option_group_height: Magasság
+    action_option_group_options: Beállítások
+    action_option_height: Magasság
   smart_export:
     title: Exportálás
     action_0: 3D alkatrész exportálása
@@ -2279,8 +2535,12 @@ tool:
     action_option_options_anchor_status: $t(tab.cutlist.write.option_anchor_1)
     action_option_options_smoothing_status: $t(tab.cutlist.write.option_smoothing_1)
     action_option_options_merge_holes_status: Átmenő furatok elkülönítése és mélységek egyesítése minden üreghez
-    action_option_options_include_paths_status: "Exportálás nyomvonalként azoknak az éleknek, amelyek az alkatrészben találhatók, de nem kapcsolódnak felülethez"
+    action_option_options_include_paths_status: Exportálás nyomvonalként azoknak az éleknek, amelyek az alkatrészben találhatók, de nem kapcsolódnak felülethez
     error:
       not_part: Ez a felület nem tartozik alkatrészhez (komponenshez)
       not_flat_face: Ez a felület nem sík
       incompatible_active_path: Az aktív útvonal nem teszi lehetővé ennek az alkatrésznek az exportálását
+  smart_importers_bxf2:
+    title: Importál
+    action_0: $t(tab.importers.bxf2.title)
+    action_0_status: Helyezze el a konfigurációt

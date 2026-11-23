@@ -25,6 +25,8 @@ module Ladb::OpenCutList
                    grained: nil,
                    edge_decremented: nil,
                    raw_estimated: nil,
+                   machining_separated: nil,
+                   machining_material_colored: nil,
                    multiplier_coefficient: nil,
                    std_volumic_masses: nil,
                    std_prices: nil,
@@ -63,6 +65,8 @@ module Ladb::OpenCutList
       @grained = grained
       @edge_decremented = edge_decremented
       @raw_estimated = raw_estimated
+      @machining_separated = machining_separated
+      @machining_material_colored = machining_material_colored
       @multiplier_coefficient = multiplier_coefficient
       @std_volumic_masses = std_volumic_masses
       @std_prices = std_prices
@@ -121,14 +125,16 @@ module Ladb::OpenCutList
 
       if @texture_changed || @texture_rotation > 0
 
+        texture_file = PLUGIN.resolve_dialog_temp_url(@texture_file)
+
         # Rotate texture
-        if @texture_rotation > 0 && @texture_file
+        if @texture_rotation > 0 && texture_file
 
           require_relative '../../lib/fiddle/imagy/imagy'
 
-          if Fiddle::Imagy.load(@texture_file)
+          if Fiddle::Imagy.load(texture_file)
             Fiddle::Imagy.rotate!(@texture_rotation)
-            Fiddle::Imagy.write(@texture_file)
+            Fiddle::Imagy.write(texture_file)
             Fiddle::Imagy.clear!
           end
 
@@ -142,7 +148,7 @@ module Ladb::OpenCutList
         end
 
         # Set a new texture to the material and re-apply the previous color
-        material.texture = @texture_file
+        material.texture = texture_file
 
         # Re-apply color if colorized material
         material.color = color if color
@@ -186,6 +192,8 @@ module Ladb::OpenCutList
       material_attributes.grained = @grained
       material_attributes.edge_decremented = @edge_decremented
       material_attributes.raw_estimated = @raw_estimated
+      material_attributes.machining_separated = @machining_separated
+      material_attributes.machining_material_colored = @machining_material_colored
       material_attributes.multiplier_coefficient = @multiplier_coefficient
       material_attributes.std_volumic_masses = @std_volumic_masses
       material_attributes.std_prices = @std_prices

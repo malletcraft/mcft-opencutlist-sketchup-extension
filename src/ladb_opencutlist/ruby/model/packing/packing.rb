@@ -51,9 +51,9 @@ module Ladb::OpenCutList
       @options = _def.options_def.create_options
       @summary = _def.summary_def.create_summary
 
-      @bins = _def.bin_defs.map { |bin_def| bin_def.create_bin }
+      @bins = _def.bin_defs.map(&:create_bin)
 
-      @unused_part_infos = _def.unused_part_info_defs.map { |part_info_def| part_info_def.create_part_info }
+      @unused_part_infos = _def.unused_part_info_defs.map(&:create_part_info)
 
     end
 
@@ -139,7 +139,7 @@ module Ladb::OpenCutList
       @total_unused_item_count = _def.total_unused_item_count
       @total_usable_item_count = _def.total_usable_item_count
 
-      @bin_type_stats = _def.bin_type_stats_defs.map { |bin_type_stats_def| bin_type_stats_def.create_summary_bin_type_stats }
+      @bin_type_stats = _def.bin_type_stats_defs.map(&:create_summary_bin_type_stats)
 
     end
 
@@ -205,10 +205,10 @@ module Ladb::OpenCutList
       @count = _def.count
       @efficiency = _def.efficiency
 
-      @items = _def.item_defs.map { |item_def| item_def.create_item }
-      @leftovers = _def.leftover_defs.map { |leftover_def| leftover_def.create_leftover }
-      @cuts = _def.cut_defs.map { |cut_def| cut_def.create_cut }
-      @part_infos = _def.part_info_defs.map { |part_info_def| part_info_def.create_part_info }
+      @items = _def.item_defs.map(&:create_item)
+      @leftovers = _def.leftover_defs.map(&:create_leftover)
+      @cuts = _def.cut_defs.map(&:create_cut)
+      @part_infos = _def.part_info_defs.map(&:create_part_info)
 
       @number_of_items = _def.number_of_items
       @number_of_leftovers = _def.number_of_leftovers
@@ -233,16 +233,19 @@ module Ladb::OpenCutList
 
   # -----
 
-  class Packingtem < DataContainer
+  class PackingItem < DataContainer
 
     include DefHelper
     include HashableHelper
 
-    attr_reader :x, :y, :angle, :mirror,
+    attr_reader :depth,
+                :x, :y, :angle, :mirror,
                 :label_offset
 
     def initialize(_def)
       @_def = _def
+
+      @depth = _def.depth
 
       @x = _def.x.to_s
       @y = _def.y.to_s
@@ -250,6 +253,29 @@ module Ladb::OpenCutList
       @mirror = _def.mirror
 
       @label_offset = _def.label_offset
+
+    end
+
+  end
+
+  class PackingCompositeItem < DataContainer
+
+    include DefHelper
+    include HashableHelper
+
+    attr_reader :depth,
+                :x, :y,
+                :items
+
+    def initialize(_def)
+      @_def = _def
+
+      @depth = _def.depth
+
+      @x = _def.x.to_s
+      @y = _def.y.to_s
+
+      @items = _def.item_defs.map(&:create_item)
 
     end
 
@@ -309,7 +335,7 @@ module Ladb::OpenCutList
     include HashableHelper
 
     attr_reader :part, :count,
-                :usable
+                :usable, :unusable_reason
 
     def initialize(_def)
       @_def = _def
@@ -318,6 +344,7 @@ module Ladb::OpenCutList
       @count = _def.count
 
       @usable = _def.usable
+      @unusable_reason = _def.unusable_reason
 
     end
 

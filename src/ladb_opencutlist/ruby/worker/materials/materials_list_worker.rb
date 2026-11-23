@@ -44,12 +44,14 @@ module Ladb::OpenCutList
           :dimensional_material_count => 0,
           :edge_material_count => 0,
           :hardware_material_count => 0,
+          :veneer_material_count => 0,
+          :machining_material_count => 0,
           :untyped_material_count => 0,
           :materials => []
       }
 
       if materials
-        materials.each { |material|
+        materials.each do |material|
 
           thumbnail_file = File.join(material_thumbnails_dir, "#{SecureRandom.uuid}.png")
           size = material.texture.nil? ? 8 : [ 128, material.texture.image_width - 1, material.texture.image_height - 1 ].min
@@ -57,60 +59,64 @@ module Ladb::OpenCutList
 
           material_attributes = MaterialAttributes.new(material)
 
-          response[:materials].push(
-              {
-                  :id => material.entityID,
-                  :name => material.name,
-                  :display_name => material.display_name,
-                  :thumbnail_file => thumbnail_file,
-                  :color => ColorUtils.color_to_hex(material.color),
-                  :alpha => material.alpha,
-                  :description => material_attributes.description,
-                  :url => material_attributes.url,
-                  :type => material_attributes.type,
-                  :thickness => material_attributes.thickness,
-                  :length_increase => material_attributes.length_increase,
-                  :width_increase => material_attributes.width_increase,
-                  :thickness_increase => material_attributes.thickness_increase,
-                  :std_lengths => material_attributes.std_lengths,
-                  :std_widths => material_attributes.std_widths,
-                  :std_thicknesses => material_attributes.std_thicknesses,
-                  :std_sections => material_attributes.std_sections,
-                  :std_sizes => material_attributes.std_sizes,
-                  :grained => material_attributes.grained,
-                  :edge_decremented => material_attributes.edge_decremented,
-                  :raw_estimated => material_attributes.raw_estimated,
-                  :multiplier_coefficient => material_attributes.multiplier_coefficient,
-                  :std_volumic_masses => material_attributes.std_volumic_masses,
-                  :std_prices => material_attributes.std_prices,
-                  :std_cut_prices => material_attributes.std_cut_prices,
-                  :colorized => material.materialType == Sketchup::Material::MATERIAL_COLORIZED_TEXTURED,
-                  :textured => (material.materialType == Sketchup::Material::MATERIAL_TEXTURED || material.materialType == Sketchup::Material::MATERIAL_COLORIZED_TEXTURED),
-                  :texture_rotation => 0,
-                  :texture_file => nil,
-                  :texture_width => material.texture.nil? ? nil : material.texture.width.to_l.to_s,
-                  :texture_height => material.texture.nil? ? nil : material.texture.height.to_l.to_s,
-                  :texture_ratio => material.texture.nil? ? nil : material.texture.width / material.texture.height,
-                  :texture_image_width => material.texture.nil? ? nil : material.texture.image_width,
-                  :texture_image_height => material.texture.nil? ? nil : material.texture.image_height,
-              }
-          )
+          response[:materials] << {
+            :id => material.entityID,
+            :name => material.name,
+            :display_name => material.display_name,
+            :thumbnail_file => PLUGIN.dialog_temp_url(thumbnail_file),
+            :color => ColorUtils.color_to_hex(material.color),
+            :alpha => material.alpha,
+            :description => material_attributes.description,
+            :url => material_attributes.url,
+            :type => material_attributes.type,
+            :thickness => material_attributes.thickness,
+            :length_increase => material_attributes.length_increase,
+            :width_increase => material_attributes.width_increase,
+            :thickness_increase => material_attributes.thickness_increase,
+            :std_lengths => material_attributes.std_lengths,
+            :std_widths => material_attributes.std_widths,
+            :std_thicknesses => material_attributes.std_thicknesses,
+            :std_sections => material_attributes.std_sections,
+            :std_sizes => material_attributes.std_sizes,
+            :grained => material_attributes.grained,
+            :edge_decremented => material_attributes.edge_decremented,
+            :raw_estimated => material_attributes.raw_estimated,
+            :machining_separated => material_attributes.machining_separated,
+            :machining_material_colored => material_attributes.machining_material_colored,
+            :multiplier_coefficient => material_attributes.multiplier_coefficient,
+            :std_volumic_masses => material_attributes.std_volumic_masses,
+            :std_prices => material_attributes.std_prices,
+            :std_cut_prices => material_attributes.std_cut_prices,
+            :colorized => material.materialType == Sketchup::Material::MATERIAL_COLORIZED_TEXTURED,
+            :textured => (material.materialType == Sketchup::Material::MATERIAL_TEXTURED || material.materialType == Sketchup::Material::MATERIAL_COLORIZED_TEXTURED),
+            :texture_rotation => 0,
+            :texture_file => nil,
+            :texture_width => material.texture.nil? ? nil : material.texture.width.to_l.to_s,
+            :texture_height => material.texture.nil? ? nil : material.texture.height.to_l.to_s,
+            :texture_ratio => material.texture.nil? ? nil : material.texture.width / material.texture.height,
+            :texture_image_width => material.texture.nil? ? nil : material.texture.image_width,
+            :texture_image_height => material.texture.nil? ? nil : material.texture.image_height,
+          }
 
           case material_attributes.type
-            when MaterialAttributes::TYPE_SOLID_WOOD
-              response[:solid_wood_material_count] += 1
-            when MaterialAttributes::TYPE_SHEET_GOOD
-              response[:sheet_good_material_count] += 1
-            when MaterialAttributes::TYPE_DIMENSIONAL
-              response[:dimensional_material_count] += 1
-            when MaterialAttributes::TYPE_EDGE
-              response[:edge_material_count] += 1
-            when MaterialAttributes::TYPE_HARDWARE
-              response[:hardware_material_count] += 1
-            else
-              response[:untyped_material_count] += 1
+          when MaterialAttributes::TYPE_SOLID_WOOD
+            response[:solid_wood_material_count] += 1
+          when MaterialAttributes::TYPE_SHEET_GOOD
+            response[:sheet_good_material_count] += 1
+          when MaterialAttributes::TYPE_DIMENSIONAL
+            response[:dimensional_material_count] += 1
+          when MaterialAttributes::TYPE_EDGE
+            response[:edge_material_count] += 1
+          when MaterialAttributes::TYPE_HARDWARE
+            response[:hardware_material_count] += 1
+          when MaterialAttributes::TYPE_VENEER
+            response[:veneer_material_count] += 1
+          when MaterialAttributes::TYPE_MACHINING
+            response[:machining_material_count] += 1
+          else
+            response[:untyped_material_count] += 1
           end
-        }
+        end
       end
 
       # Errors
@@ -129,6 +135,8 @@ module Ladb::OpenCutList
         response[:dimensional_material_count],
         response[:edge_material_count],
         response[:hardware_material_count],
+        response[:veneer_material_count],
+        response[:machining_material_count],
         response[:untyped_material_count]
       ].select { |v| v > 0 }.length > 1
 

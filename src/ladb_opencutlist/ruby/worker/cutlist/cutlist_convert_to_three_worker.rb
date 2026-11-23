@@ -2,6 +2,7 @@ module Ladb::OpenCutList
 
   require_relative '../../helper/layer_visibility_helper'
   require_relative '../../helper/hashable_helper'
+  require_relative '../../helper/material_attributes_caching_helper'
   require_relative '../../utils/axis_utils'
   require_relative '../../model/attributes/material_attributes'
   require_relative '../../model/formula/formula_data'
@@ -10,6 +11,7 @@ module Ladb::OpenCutList
   class CutlistConvertToThreeWorker
 
     include LayerVisibilityHelper
+    include MaterialAttributesCachingHelper
 
     def initialize(parts,
 
@@ -53,8 +55,11 @@ module Ladb::OpenCutList
 
           part.def.instance_infos.each do |serialized_path, instance_info|
 
+            material = materials[part.material_name]
+            material_attributes = _get_material_attributes(material)
+
             # Populate part definitions
-            _create_three_part_def(three_model_def, part, instance_info.entity.definition, materials[part.material_name])
+            _create_three_part_def(three_model_def, part, instance_info.entity.definition, material, material_attributes.type == MaterialAttributes::TYPE_HARDWARE)
 
             # Create the three part instance def
             three_part_instance_def = ThreePartInstanceDef.new
@@ -106,8 +111,11 @@ module Ladb::OpenCutList
           # Extract first instance
           instance_info = part.def.get_one_instance_info
 
+          material = materials[part.material_name]
+          material_attributes = _get_material_attributes(material)
+
           # Populate part definitions
-          _create_three_part_def(three_model_def, part, instance_info.entity.definition, materials[part.material_name])
+          _create_three_part_def(three_model_def, part, instance_info.entity.definition, material, material_attributes.type == MaterialAttributes::TYPE_HARDWARE)
 
           mt = Geom::Transformation.new
           if part.auto_oriented && part.group.material_type != MaterialAttributes::TYPE_HARDWARE
@@ -179,7 +187,7 @@ module Ladb::OpenCutList
       CommonEvalFormulaWorker.new(formula: formula, data: data).run
     end
 
-    def _create_three_part_def(three_model_def, part, definition, material)
+    def _create_three_part_def(three_model_def, part, definition, material, grab_sub_components = false)
 
       three_part_def = three_model_def.part_defs.fetch(part.id, nil)
       if three_part_def.nil?
@@ -191,7 +199,7 @@ module Ladb::OpenCutList
         three_part_def.soft_edge_vertices,
         three_part_def.soft_edge_controls0,
         three_part_def.soft_edge_controls1,
-        three_part_def.soft_edge_directions = _grab_entities_vertices_and_colors(definition.entities, material)
+        three_part_def.soft_edge_directions = _grab_entities_vertices_and_colors(definition.entities, material, grab_sub_components)
         three_part_def.color = _to_three_color(material)
 
         three_model_def.part_defs.store(part.id, three_part_def)
@@ -199,7 +207,7 @@ module Ladb::OpenCutList
 
     end
 
-    def _grab_entities_vertices_and_colors(entities, material, transformation = nil)
+    def _grab_entities_vertices_and_colors(entities, material, grab_sub_components = false, transformation = IDENTITY)
       face_vertices = []
       face_colors = []
       hard_edge_vertices = []
@@ -210,29 +218,23 @@ module Ladb::OpenCutList
       entities.each do |entity|
 
         next unless entity.visible? && _layer_visible?(entity.layer)
-
-        if entity.is_a?(Sketchup::Face)
+        case entity
+        when Sketchup::Face
           fv, fc = _grab_face_vertices_and_colors(entity, material, transformation)
           face_vertices.concat(fv)
           face_colors.concat(fc)
-        elsif entity.is_a?(Sketchup::Edge)
+        when Sketchup::Edge
           hev, sev, sec0, sec1, dir = _grab_edge_vertices_and_controls(entity, transformation)
           hard_edge_vertices.concat(hev)
           soft_edge_vertices.concat(sev)
           soft_edge_controls0.concat(sec0)
           soft_edge_controls1.concat(sec1)
           soft_edge_directions.concat(dir)
-        elsif entity.is_a?(Sketchup::Group)
-          fv, fc, hev, sev, sec0, sec1, dir = _grab_entities_vertices_and_colors(entity.entities, entity.material.nil? ? material : entity.material, TransformationUtils::multiply(transformation, entity.transformation))
-          face_vertices.concat(fv)
-          face_colors.concat(fc)
-          hard_edge_vertices.concat(hev)
-          soft_edge_vertices.concat(sev)
-          soft_edge_controls0.concat(sec0)
-          soft_edge_controls1.concat(sec1)
-          soft_edge_directions.concat(dir)
-        elsif entity.is_a?(Sketchup::ComponentInstance) && entity.definition.behavior.cuts_opening?
-          fv, fc, hev, sev, sec0, sec1, dir = _grab_entities_vertices_and_colors(entity.definition.entities, entity.material.nil? ? material : entity.material, TransformationUtils::multiply(transformation, entity.transformation))
+        when Sketchup::Group, Sketchup::ComponentInstance
+          next if (definition = entity.definition).behavior.always_face_camera?
+          m = entity.material || material
+          next unless grab_sub_components || definition.group? || definition.behavior.cuts_opening? || _get_material_attributes(m).type == MaterialAttributes::TYPE_MACHINING
+          fv, fc, hev, sev, sec0, sec1, dir = _grab_entities_vertices_and_colors(entity.definition.entities, m, grab_sub_components, transformation * entity.transformation)
           face_vertices.concat(fv)
           face_colors.concat(fc)
           hard_edge_vertices.concat(hev)
@@ -297,7 +299,7 @@ module Ladb::OpenCutList
               point = vertex.position
               point.transform!(transformation) unless transformation.nil?
 
-              # Inspired from LDraw specification : https://www.ldraw.org/article/218.html#lt5
+              # Inspired from LDraw specification: https://www.ldraw.org/article/218.html#lt5
               controls = soft_controls0.empty? ? soft_controls0 : soft_controls1
               2.times do
                 controls << point.x.to_f
@@ -404,7 +406,7 @@ module Ladb::OpenCutList
       puts "#{'+'.rjust(level, '-')}#{three_object_def.class.to_s} #{three_object_def.name} #{(three_object_def.is_a?(ThreePartInstanceDef) ? three_object_def.id.to_s : '')}"
       if three_object_def.is_a?(ThreeModelDef)
         three_object_def.part_defs.each do |id, part_def|
-          puts "@ #{id} - (#{part_def.number}) #{part_def.name}"
+          puts "@ #{id} - face_vertices.size=#{part_def.face_vertices.size}"
         end
       end
       if three_object_def.is_a?(ThreeGroupDef)
@@ -423,48 +425,6 @@ module Ladb::OpenCutList
       puts "#{'+'.rjust(level, ' ')} #{matrix[3].round(1)} #{matrix[7].round(1)} #{matrix[11].round(1)} #{matrix[15].round(1)}"
     end
 
-    def _separate_translation_scaling_rotation(transformation)
-
-      m = transformation.to_a
-
-      m = m.clone
-
-      # Extract translation
-      translation = m.values_at(12, 13, 14)
-
-      # Extract scaling, considering uniform scale factor (last matrix element)
-      scaling = Array.new(3)
-      scaling[0] = m[15] * Math.sqrt(m[0]**2 + m[1]**2 + m[2]**2)
-      scaling[1] = m[15] * Math.sqrt(m[4]**2 + m[5]**2 + m[6]**2)
-      scaling[2] = m[15] * Math.sqrt(m[8]**2 + m[9]**2 + m[10]**2)
-      # Remove scaling to prepare for extraction of rotation
-      [0, 1, 2].each{ |i| m[i] /= scaling[0] } unless scaling[0] == 0.0
-      [4, 5, 6].each{ |i| m[i] /= scaling[1] } unless scaling[1] == 0.0
-      [8, 9,10].each{ |i| m[i] /= scaling[2] } unless scaling[2] == 0.0
-      m[15] = 1.0
-      # Verify orientation, if necessary invert it.
-      tmp_z_axis = Geom::Vector3d.new(m[0], m[1], m[2]).cross(Geom::Vector3d.new(m[4], m[5], m[6]))
-      if tmp_z_axis.dot( Geom::Vector3d.new(m[8], m[9], m[10]) ) < 0
-        scaling[0] *= -1
-        m[0] = -m[0]
-        m[1] = -m[1]
-        m[2] = -m[2]
-      end
-
-      # Extract rotation
-      # Source: Extracting Euler Angles from a Rotation Matrix, Mike Day, Insomniac Games
-      # http://www.insomniacgames.com/mike-day-extracting-euler-angles-from-a-rotation-matrix/
-      theta1 = Math.atan2(m[6], m[10])
-      c2 = Math.sqrt(m[0]**2 + m[1]**2)
-      theta2 = Math.atan2(-m[2], c2)
-      s1 = Math.sin(theta1)
-      c1 = Math.cos(theta1)
-      theta3 = Math.atan2(s1*m[8] - c1*m[4], c1*m[5] - s1*m[9])
-      rotation = [-theta1, -theta2, -theta3]
-
-      [ translation, scaling, rotation ]
-    end
-
   end
 
   # -----
@@ -473,7 +433,7 @@ module Ladb::OpenCutList
 
     include HashableHelper
 
-    attr_accessor :face_vertices, :face_colors, :hard_edge_vertices, :soft_edge_vertices, :soft_edge_controls0, :soft_edge_controls1, :soft_edge_directions, :text, :color
+    attr_accessor :face_vertices, :face_colors, :hard_edge_vertices, :soft_edge_vertices, :soft_edge_controls0, :soft_edge_controls1, :soft_edge_directions, :color
 
     def initialize
       @face_vertices = []

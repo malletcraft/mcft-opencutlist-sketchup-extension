@@ -42,6 +42,10 @@
     border-left: 3px solid @ladb-group-type-6;
   }
 
+  &.ladb-group-type-7 {
+    border-left: 3px solid @ladb-group-type-7;
+  }
+
   &.ladb-group-type--1 {
     border-left: 3px solid @ladb-group-type--1;
   }
@@ -217,6 +221,10 @@
         text-align: right;
       }
 
+      &.ladb-cutlist-value-bold {
+        font-weight: 500;
+      }
+
       span.ladb-opencutlist-icon {
         color: #999;
       }
@@ -383,6 +391,28 @@
     .ladb-three-viewer.ladb-three-viewer-modal-part iframe {
       height: 200px;
     }
+  }
+
+}
+
+.ladb-part-increase {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+
+  > .ladb-part-increase-material {
+    flex: 50%;
+    line-height: 32px;
+    background-color: #eee;
+    border: 1px solid #ccc;
+    padding: 0 5px;
+    text-align: right;
+    display: flex;
+    gap: 10px;
+  }
+
+  > .ladb-part-increase-part {
+    flex-grow: 1;
   }
 
 }

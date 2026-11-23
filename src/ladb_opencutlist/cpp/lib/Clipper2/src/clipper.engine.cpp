@@ -1,8 +1,8 @@
 /*******************************************************************************
 * Author    :  Angus Johnson                                                   *
-* Date      :  4 May 2025                                                      *
+* Date      :  21 February 2026                                                *
 * Website   :  https://www.angusj.com                                          *
-* Copyright :  Angus Johnson 2010-2025                                         *
+* Copyright :  Angus Johnson 2010-2026                                         *
 * Purpose   :  This is the main polygon clipping module                        *
 * License   :  https://www.boost.org/LICENSE_1_0.txt                           *
 *******************************************************************************/
@@ -617,7 +617,7 @@ namespace Clipper2Lib {
         {return a + path.size(); });
     if (total_vertex_count == 0) return;
 
-    Vertex* vertices = new Vertex[total_vertex_count], * v = vertices;
+    Vertex* allVertices = new Vertex[total_vertex_count], * v = allVertices;
     for (const Path64& path : paths)
     {
       //for each path create a circular double linked list of vertices
@@ -709,7 +709,7 @@ namespace Clipper2Lib {
       }
     } // end processing current path
 
-    vertexLists.emplace_back(vertices);
+    vertexLists.emplace_back(allVertices);
   }
 
   //------------------------------------------------------------------------------
@@ -1568,7 +1568,7 @@ namespace Clipper2Lib {
     outrec->pts = prevOp;
 
     Point64 ip;
-    GetSegmentIntersectPt(prevOp->pt, splitOp->pt,
+    GetLineIntersectPt(prevOp->pt, splitOp->pt,
       splitOp->next->pt, nextNextOp->pt, ip);
 
 #ifdef USINGZ
@@ -1653,25 +1653,14 @@ namespace Clipper2Lib {
       if (SegmentsIntersect(op2->prev->pt,
         op2->pt, op2->next->pt, op2->next->next->pt))
       {
-        if (SegmentsIntersect(op2->prev->pt,
-          op2->pt, op2->next->next->pt, op2->next->next->next->pt))
-        {
-          // adjacent intersections (ie a micro self-intersections)
-          op2 = DuplicateOp(op2, false);
-          op2->pt = op2->next->next->next->pt;
-          op2 = op2->next;
-        }
-        else
-        {
-          if (op2 == outrec->pts || op2->next == outrec->pts)
-            outrec->pts = outrec->pts->prev;
-          DoSplitOp(outrec, op2);
-          if (!outrec->pts) break;
-          op2 = outrec->pts;
-          if (op2->prev == op2->next->next)
-            break; // again, because triangles can't self-intersect
-          continue;
-        }
+        if (op2 == outrec->pts || op2->next == outrec->pts)
+          outrec->pts = outrec->pts->prev;
+        DoSplitOp(outrec, op2);
+        if (!outrec->pts) break;
+        op2 = outrec->pts;
+        if (op2->prev == op2->next->next)
+          break; // again, because triangles can't self-intersect
+        continue;
       }
       else
         op2 = op2->next;
@@ -2119,10 +2108,9 @@ namespace Clipper2Lib {
       e->prev_in_sel = e->prev_in_ael;
       e->next_in_sel = e->next_in_ael;
       e->jump = e->next_in_sel;
-      if (e->join_with == JoinWith::Left)
-        e->curr_x = e->prev_in_ael->curr_x; // also avoids complications
-      else
-        e->curr_x = TopX(*e, top_y);
+      // it is safe to ignore 'joined' edges here because
+      // if necessary they will be split in IntersectEdges()
+      e->curr_x = TopX(*e, top_y);
       e = e->next_in_ael;
     }
   }
@@ -2272,7 +2260,8 @@ namespace Clipper2Lib {
     if (!toOr->splits) toOr->splits = new OutRecList();
     OutRecList::iterator orIter = fromOr->splits->begin();
     for (; orIter != fromOr->splits->end(); ++orIter)
-      toOr->splits->emplace_back(*orIter);
+      if (toOr != *orIter) // #987
+        toOr->splits->emplace_back(*orIter);
     fromOr->splits->clear();
   }
 
@@ -2356,7 +2345,7 @@ namespace Clipper2Lib {
   void ClipperBase::AddNewIntersectNode(Active& e1, Active& e2, int64_t top_y)
   {
     Point64 ip;
-    if (!GetSegmentIntersectPt(e1.bot, e1.top, e2.bot, e2.top, ip))
+    if (!GetLineIntersectPt(e1.bot, e1.top, e2.bot, e2.top, ip))
       ip = Point64(e1.curr_x, top_y); //parallel edges
 
     //rounding errors can occasionally place the calculated intersection
@@ -2940,8 +2929,10 @@ namespace Clipper2Lib {
 
   bool ClipperBase::CheckSplitOwner(OutRec* outrec, OutRecList* splits)
   {
-    for (auto split : *splits)
+    // nb: use indexing (not an iterator) in case 'splits' is modified inside this loop (#1029)
+    for (size_t idx = 0; idx < splits->size(); ++idx)
     {
+      OutRec* split = (*splits)[idx]; 
       if (!split->pts && split->splits &&
         CheckSplitOwner(outrec, split->splits)) return true; //#942
       split = GetRealOutRec(split);
@@ -2970,7 +2961,6 @@ namespace Clipper2Lib {
     // post-condition: if a valid path, outrec will have a polypath
 
     if (outrec->polypath || outrec->bounds.IsEmpty()) return;
-
     while (outrec->owner)
     {
       if (outrec->owner->splits && CheckSplitOwner(outrec, outrec->owner->splits)) break;

@@ -3,8 +3,8 @@ module Ladb::OpenCutList
   require_relative '../../constants'
   require_relative '../../helper/dxf_writer_helper'
   require_relative '../../helper/svg_writer_helper'
-  require_relative '../../helper/sanitizer_helper'
   require_relative '../../utils/color_utils'
+  require_relative '../../utils/file_path_utils'
   require_relative '../../model/drawing/drawing_def'
   require_relative '../../worker/common/common_drawing_projection_worker'
 
@@ -12,7 +12,6 @@ module Ladb::OpenCutList
 
     include DxfWriterHelper
     include SvgWriterHelper
-    include SanitizerHelper
 
     LAYER_PART = 'OCL_PART'.freeze
     LAYER_ANCHOR = 'OCL_ANCHOR'.freeze
@@ -24,6 +23,8 @@ module Ladb::OpenCutList
                    folder_path: nil,
                    file_name: 'FACE',
                    file_format: nil,
+
+                   dxf_depth_to_z: true,
 
                    unit: nil,
                    anchor: false,
@@ -46,8 +47,10 @@ module Ladb::OpenCutList
       @drawing_def = drawing_def
 
       @folder_path = folder_path
-      @file_name = _sanitize_filename(file_name)
+      @file_name = FilePathUtils.sanitize_file_name(file_name)
       @file_format = file_format
+
+      @dxf_depth_to_z = dxf_depth_to_z
 
       @unit = unit
       @anchor = anchor
@@ -207,10 +210,18 @@ module Ladb::OpenCutList
     def _write_to_dxf_file(file, projection_def)
 
       unit_factor = _dxf_get_unit_factor(@unit)
-      unit_transformation = Geom::Transformation.scaling(ORIGIN, unit_factor, unit_factor, 1.0)
+      unit_transformation = Geom::Transformation.scaling(ORIGIN, unit_factor, unit_factor, unit_factor)
 
-      min = projection_def.bounds.min.transform(unit_transformation)
-      max = projection_def.bounds.max.transform(unit_transformation)
+      min = Geom::Point3d.new(
+        projection_def.bounds.min.x,
+        projection_def.bounds.min.y,
+        @dxf_depth_to_z ? -projection_def.max_depth : 0
+      ).transform!(unit_transformation)
+      max = Geom::Point3d.new(
+        projection_def.bounds.max.x,
+        projection_def.bounds.max.y,
+        0
+      ).transform!(unit_transformation)
 
       layer_defs = []
       layer_defs.concat(_dxf_get_projection_def_depth_layer_defs(projection_def,
@@ -232,6 +243,7 @@ module Ladb::OpenCutList
                                            smoothing: @smoothing,
                                            transformation: unit_transformation,
                                            unit_transformation: unit_transformation,
+                                           depth_to_z: @dxf_depth_to_z,
                                            layer: LAYER_PART)
 
       end

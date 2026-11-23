@@ -2,20 +2,19 @@ module Ladb::OpenCutList
 
   require_relative 'plane_manipulator'
   require_relative 'loop_manipulator'
-  require_relative '../helper/entities_helper'
-  require_relative '../helper/face_triangles_helper'
+  require_relative '../helper/face_matcher_helper'
+  require_relative '../lib/geometrix/geometrix'
 
   class FaceManipulator < PlaneManipulator
 
-    include EntitiesHelper
-    include FaceTrianglesHelper
+    include FaceMatcherHelper
 
     attr_reader :face
     attr_accessor :surface_manipulator
 
-    def initialize(face, transformation = IDENTITY)
-      super(face.plane, transformation)
+    def initialize(face, transformation = IDENTITY, material = nil, layer = nil)
       raise "face must be a Sketchup::Face." unless face.is_a?(Sketchup::Face)
+      super(face.plane, transformation, _combine_material(face.material, material), _combine_layer(face.layer, layer))
       @face = face
       @surface_manipulator = nil
     end
@@ -26,8 +25,12 @@ module Ladb::OpenCutList
       super
       @normal = nil
       @triangles = nil
+      @centroid = nil
+      @pole_of_inaccessibility = nil
       @outer_loop_manipulator = nil
+      @inner_loop_manipulators = nil
       @loop_manipulators = nil
+      @signatures = nil
     end
 
     # -----
@@ -38,7 +41,7 @@ module Ladb::OpenCutList
     end
 
     def belongs_to_a_surface?
-      @face.edges.index { |edge| edge.soft? }
+      @face.edges.any?(&:soft?)
     end
 
     # -----
@@ -49,32 +52,80 @@ module Ladb::OpenCutList
 
     def mesh
       @mesh ||= @face.mesh(4).transform!(@transformation) # PolygonMeshPoints | PolygonMeshNormals
-      @mesh
     end
 
     def triangles
-      @triangles ||= _compute_face_triangles(@face, @transformation)
-      @triangles
+      @triangles ||= mesh.polygons.flat_map do |polygon|
+        polygon.map { |index| mesh.point_at(index.abs) }
+      end
+    end
+
+    def centroid
+      @centroid ||= Geometrix::PointFinder.find_centroid(outer_loop_manipulator.points)
+    end
+
+    def pole_of_inaccessibility
+      @pole_of_inaccessibility ||= begin
+
+                                     # find_pole_of_inaccessibility only considers X and Y point coordinates : project loops into the face's plane local space
+                                     t = Geom::Transformation.new(position, normal)
+                                     ti = t.inverse
+
+                                     pole = Geometrix::PointFinder.find_pole_of_inaccessibility(
+                                       outer_loop_manipulator.points.map { |point| point.transform(ti) },
+                                       inner_loop_manipulators.map { |loop_manipulator| loop_manipulator.points.map { |point| point.transform(ti) } }
+                                     )
+
+                                     pole.nil? ? nil : pole.transform(t)
+                                   end
     end
 
     def longest_outer_edge
-      _find_longest_outer_edge(@face, @transformation)
+      @longest_outer_edge ||= begin
+                                edges = @face.outer_loop.edges
+                                visible_edges = edges.reject { |e| !e.visible? || e.smooth? || e.soft? }
+
+                                candidates = (visible_edges.empty? ? edges : visible_edges)
+                                               .group_by { |e| e.length(@transformation).round(4) }
+                                               .max_by { |length, _| length }
+                                               .last
+
+                                candidates.min_by { |e|
+                                  _, v = e.line
+                                  v.reverse! if e.reversed_in?(@face)
+                                  v.angle_between(X_AXIS).abs
+                                }
+                              end
     end
 
     def has_cuts_opening?
-      @face.get_glued_instances.select { |entity| entity.is_a?(Sketchup::ComponentInstance) && entity.definition.behavior.cuts_opening? }.any?
+      @face.get_glued_instances.select { |entity| entity.respond_to?(:definition) && entity.definition.behavior.cuts_opening? }.any?
+    end
+
+    def has_inner_loops?
+      @face.loops.length > 1
+    end
+
+    def signature(mirror: true)
+      @signatures ||= {}
+      @signatures[mirror] = _face_signature(self, mirror: mirror) unless @signatures.key?(mirror)
+      @signatures[mirror]
     end
 
     # -----
 
     def outer_loop_manipulator
-      @outer_loop_manipulator ||= LoopManipulator.new(@face.outer_loop, @transformation)
-      @outer_loop_manipulator
+      @outer_loop_manipulator ||= LoopManipulator.new(@face.outer_loop, @transformation, material, layer)
+    end
+
+    def inner_loop_manipulators
+      @inner_loop_manipulators ||= @face.loops
+                                        .reject { |loop| loop.outer? }
+                                        .map { |loop| LoopManipulator.new(loop, @transformation, material, layer) }
     end
 
     def loop_manipulators
-      @loop_manipulators ||= @face.loops.map { |loop| loop.outer? ? outer_loop_manipulator : LoopManipulator.new(loop, @transformation) }
-      @loop_manipulators
+      @loop_manipulators ||= [ outer_loop_manipulator ] + inner_loop_manipulators
     end
 
     # -----

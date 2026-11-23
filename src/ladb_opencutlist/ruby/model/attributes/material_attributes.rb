@@ -16,18 +16,24 @@
     TYPE_EDGE = 4
     TYPE_HARDWARE = 5
     TYPE_VENEER = 6
+    TYPE_MACHINING = 7
 
     DEFAULTS_DICTIONARY = 'materials_material_attributes'.freeze
 
-    attr_accessor :uuid, :type, :description, :url, :thickness, :length_increase, :width_increase, :thickness_increase, :std_lengths, :std_widths, :std_thicknesses, :std_sections, :std_sizes, :grained, :edge_decremented, :raw_estimated, :multiplier_coefficient, :std_volumic_masses, :std_prices, :std_cut_prices
+    attr_accessor :uuid,
+                  :type,
+                  :description, :url,
+                  :grained, :edge_decremented, :raw_estimated,
+                  :machining_separated, :machining_material_colored,
+                  :multiplier_coefficient
     attr_reader :material
 
     @@cached_uuids = {}
     @@used_uuids = []
 
-    def initialize(material, force_unique_uuid = false)
+    def initialize(material, force_unique_uuid = false, defaults_type = nil)
       @material = material
-      read_from_attributes(force_unique_uuid)
+      read_from_attributes(force_unique_uuid, defaults_type)
     end
 
     # -----
@@ -58,13 +64,38 @@
     def self.valid_type(type)
       if type
         i_type = type.to_i
-        if i_type < TYPE_UNKNOWN || i_type > TYPE_VENEER
-          return TYPE_UNKNOWN
-        end
+        return TYPE_UNKNOWN if i_type < TYPE_UNKNOWN || i_type > TYPE_MACHINING
         i_type
       else
         TYPE_UNKNOWN
       end
+    end
+
+    # The model's material called +name+, created with +type+ (and +color+, if
+    # it has to be created) when the model holds none.
+    #
+    # Looked up by NAME : a material IS its name to the user - it is what the
+    # cutlist groups parts by, and renaming one is renaming the material - so
+    # the name is the identity here, and the type is only what a new one starts
+    # out as. An existing material is left exactly as it is, type included : it
+    # is the user's.
+    #
+    # nil for a blank name, so a caller may offer the setting as optional
+    # without testing for it.
+    def self.fetch_or_create_material(model, name, type, color = nil)
+      return nil if !name.is_a?(String) || name.strip.empty?
+
+      material = model.materials[name]
+      return material unless material.nil?
+
+      material = model.materials.add(name)
+      material.color = color unless color.nil?
+
+      material_attributes = MaterialAttributes.new(material)
+      material_attributes.type = type
+      material_attributes.write_to_attributes
+
+      material
     end
 
     def self.material_order(material_a, material_b, strategy)
@@ -117,6 +148,8 @@
           6
         when TYPE_VENEER
           5
+        when TYPE_MACHINING
+          7
         else
           99
       end
@@ -136,6 +169,8 @@
         'hardware'
       when TYPE_VENEER
         'veneer'
+      when TYPE_MACHINING
+        'machining'
       else
         'unknow'
       end
@@ -151,7 +186,7 @@
       else
         return false
       end
-      type == TYPE_EDGE || type == TYPE_VENEER
+      type == TYPE_EDGE || type == TYPE_VENEER || type == TYPE_MACHINING
     end
 
     def self.is_1d?(value)
@@ -198,6 +233,10 @@
       @uuid
     end
 
+    def thickness=(thickness)
+      @thickness = thickness.is_a?(String) ? thickness : ''
+    end
+
     def thickness
       case @type
       when TYPE_EDGE, TYPE_VENEER
@@ -209,6 +248,11 @@
 
     def l_thickness
       DimensionUtils.d_to_ifloats(thickness).to_l
+    end
+
+
+    def length_increase=(length_increase)
+      @length_increase = length_increase.is_a?(String) ? length_increase : ''
     end
 
     def length_increase
@@ -224,6 +268,11 @@
       DimensionUtils.d_to_ifloats(length_increase).to_l
     end
 
+
+    def width_increase=(width_increase)
+      @width_increase = width_increase.is_a?(String) ? width_increase : ''
+    end
+
     def width_increase
       case @type
         when TYPE_SOLID_WOOD, TYPE_SHEET_GOOD, TYPE_VENEER, TYPE_EDGE
@@ -237,6 +286,11 @@
       DimensionUtils.d_to_ifloats(width_increase).to_l
     end
 
+
+    def thickness_increase=(thickness_increase)
+      @thickness_increase = thickness_increase.is_a?(String) ? thickness_increase : ''
+    end
+
     def thickness_increase
       case @type
         when TYPE_SOLID_WOOD
@@ -248,6 +302,11 @@
 
     def l_thickness_increase
       DimensionUtils.d_to_ifloats(thickness_increase).to_l
+    end
+
+
+    def std_lengths=(std_lengths)
+      @std_lengths = std_lengths.is_a?(String) ? std_lengths : ''
     end
 
     def std_lengths
@@ -272,6 +331,11 @@
       a
     end
 
+
+    def std_widths=(std_widths)
+      @std_widths = std_widths.is_a?(String) ? std_widths : ''
+    end
+
     def std_widths
       case @type
       when TYPE_EDGE
@@ -292,6 +356,11 @@
       }
       a.sort_by! { |v| v.to_f }   # Force sort on true float value
       a
+    end
+
+
+    def std_thicknesses=(std_thicknesses)
+      @std_thicknesses = std_thicknesses.is_a?(String) ? std_thicknesses : ''
     end
 
     def std_thicknesses
@@ -316,6 +385,11 @@
       a
     end
 
+
+    def std_sections=(std_sections)
+      @std_sections = std_sections.is_a?(String) ? std_sections : ''
+    end
+
     def std_sections
       case @type
         when TYPE_DIMENSIONAL
@@ -337,6 +411,11 @@
       a
     end
 
+
+    def std_sizes=(std_sizes)
+      @std_sizes = std_sizes.is_a?(String) ? std_sizes : ''
+    end
+
     def std_sizes
       case @type
         when TYPE_SHEET_GOOD, TYPE_VENEER
@@ -354,6 +433,11 @@
       a
     end
 
+
+    def std_volumic_masses=(std_volumic_masses)
+      @std_volumic_masses = std_volumic_masses.is_a?(Array) ? std_volumic_masses : []
+    end
+
     def std_volumic_masses
       case @type
       when TYPE_SOLID_WOOD, TYPE_SHEET_GOOD, TYPE_DIMENSIONAL, TYPE_EDGE, TYPE_VENEER
@@ -365,6 +449,11 @@
 
     def h_std_volumic_masses
       _std_vd_to_uvd(@std_volumic_masses)
+    end
+
+
+    def std_prices=(std_prices)
+      @std_prices = std_prices.is_a?(Array) ? std_prices : []
     end
 
     def std_prices
@@ -383,6 +472,11 @@
     def has_std_prices?
       return true unless h_std_prices.find { |std_price| std_price[:val] > 0 }.nil?
       false
+    end
+
+
+    def std_cut_prices=(std_cut_prices)
+      @std_cut_prices = std_cut_prices.is_a?(Array) ? std_cut_prices : []
     end
 
     def std_cut_prices
@@ -428,7 +522,7 @@
 
       # Returns an array like [ { :unit => STRING_UNIT, :val => FLOAT }, { :unit => STRING_UNIT, :val => FLOAT , :dim => [ LENGTH or SIZE, ... ]}, ... ]
 
-      # Setup return array with the default value first
+      # Set up return array with the default value first
       std_uvd = [ { unit: nil, :val => 0.0 } ]
 
       if std_vd.is_a?(Array)
@@ -485,7 +579,7 @@
 
     # -----
 
-    def read_from_attributes(force_unique_uuid = false)
+    def read_from_attributes(force_unique_uuid = false, defaults_type = nil)
       if @material
 
         # Try to retrieve uuid from cached UUIDs
@@ -502,28 +596,30 @@
           end
         end
 
-        defaults = PLUGIN.get_app_defaults(DEFAULTS_DICTIONARY, @type)
+        defaults = PLUGIN.get_global_preset(DEFAULTS_DICTIONARY, defaults_type, defaults_type)
 
-        @type = MaterialAttributes.valid_type(PLUGIN.get_attribute(@material, 'type', TYPE_UNKNOWN))
-        @description = PLUGIN.get_attribute(@material, 'description', nil)
-        @url = PLUGIN.get_attribute(@material, 'url', nil)
-        @thickness = PLUGIN.get_attribute(@material, 'thickness', defaults['thickness'])
-        @length_increase = PLUGIN.get_attribute(@material, 'length_increase', defaults['length_increase'])
-        @width_increase = PLUGIN.get_attribute(@material, 'width_increase', defaults['width_increase'])
-        @thickness_increase = PLUGIN.get_attribute(@material, 'thickness_increase', defaults['thickness_increase'])
-        @std_sections = PLUGIN.get_attribute(@material, 'std_sections', defaults['std_sections'])
-        @std_lengths = PLUGIN.get_attribute(@material, 'std_lengths', defaults['std_lengths'])
-        @std_widths = PLUGIN.get_attribute(@material, 'std_widths', defaults['std_widths'])
-        @std_thicknesses = PLUGIN.get_attribute(@material, 'std_thicknesses', defaults['std_thicknesses'])
-        @std_sizes = PLUGIN.get_attribute(@material, 'std_sizes', defaults['std_sizes'])
-        @grained = PLUGIN.get_attribute(@material, 'grained', defaults['grained'])
-        @edge_decremented = PLUGIN.get_attribute(@material, 'edge_decremented', defaults['edge_decremented'])
-        @raw_estimated = PLUGIN.get_attribute(@material, 'raw_estimated', defaults['raw_estimated'])
-        @multiplier_coefficient = PLUGIN.get_attribute(@material, 'multiplier_coefficient', defaults['multiplier_coefficient'])
+        @type = MaterialAttributes.valid_type(PLUGIN.get_attribute(@material, 'type', defaults_type))
+        @description = PLUGIN.get_attribute(@material, 'description', nil).to_s
+        @url = PLUGIN.get_attribute(@material, 'url', nil).to_s
+        self.thickness = PLUGIN.get_attribute(@material, 'thickness', defaults['thickness'])
+        self.length_increase = PLUGIN.get_attribute(@material, 'length_increase', defaults['length_increase'])
+        self.width_increase = PLUGIN.get_attribute(@material, 'width_increase', defaults['width_increase'])
+        self.thickness_increase = PLUGIN.get_attribute(@material, 'thickness_increase', defaults['thickness_increase'])
+        self.std_sections = PLUGIN.get_attribute(@material, 'std_sections', defaults['std_sections'])
+        self.std_lengths = PLUGIN.get_attribute(@material, 'std_lengths', defaults['std_lengths'])
+        self.std_widths = PLUGIN.get_attribute(@material, 'std_widths', defaults['std_widths'])
+        self.std_thicknesses = PLUGIN.get_attribute(@material, 'std_thicknesses', defaults['std_thicknesses'])
+        self.std_sizes = PLUGIN.get_attribute(@material, 'std_sizes', defaults['std_sizes'])
         volumic_mass = PLUGIN.get_attribute(@material, 'volumic_mass', nil)  # Deprecated since 6.0
-        @std_volumic_masses = PLUGIN.get_attribute(@material, 'std_volumic_masses', volumic_mass.nil? ? defaults['std_volumic_masses'] : [ { 'val' => volumic_mass, 'dim' => nil } ])
-        @std_prices = PLUGIN.get_attribute(@material, 'std_prices', defaults['std_prices'])
-        @std_cut_prices = PLUGIN.get_attribute(@material, 'std_cut_prices', defaults['std_cut_prices'])
+        self.std_volumic_masses = PLUGIN.get_attribute(@material, 'std_volumic_masses', volumic_mass.nil? ? defaults['std_volumic_masses'] : [ { 'val' => volumic_mass, 'dim' => nil } ])
+        self.std_prices = PLUGIN.get_attribute(@material, 'std_prices', defaults['std_prices'])
+        self.std_cut_prices = PLUGIN.get_attribute(@material, 'std_cut_prices', defaults['std_cut_prices'])
+        @grained = PLUGIN.get_attribute(@material, 'grained', defaults['grained']) == true
+        @edge_decremented = PLUGIN.get_attribute(@material, 'edge_decremented', defaults['edge_decremented']) == true
+        @raw_estimated = PLUGIN.get_attribute(@material, 'raw_estimated', defaults['raw_estimated']) == true
+        @machining_separated = PLUGIN.get_attribute(@material, 'machining_separated', defaults['machining_separated']) == true
+        @machining_material_colored = PLUGIN.get_attribute(@material, 'machining_material_colored', defaults['machining_material_colored']) == true
+        @multiplier_coefficient = PLUGIN.get_attribute(@material, 'multiplier_coefficient', defaults['multiplier_coefficient']).to_f
       else
         @description = ''
         @type = TYPE_UNKNOWN
@@ -550,14 +646,16 @@
         @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'std_widths', DimensionUtils.d_add_units(@std_widths))
         @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'std_thicknesses', DimensionUtils.d_add_units(@std_thicknesses))
         @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'std_sizes', DimensionUtils.dxd_add_units(@std_sizes))
-        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'grained', @grained)
-        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'edge_decremented', @edge_decremented)
-        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'raw_estimated', @raw_estimated)
-        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'multiplier_coefficient', [ 1.0, @multiplier_coefficient.to_f ].max)
         @material.delete_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'volumic_mass')  # Delete unused 'volumic_mass' attribute since 6.0
         @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'std_volumic_masses', @std_volumic_masses.to_json)
         @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'std_prices', @std_prices.to_json)
         @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'std_cut_prices', @std_cut_prices.to_json)
+        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'grained', @grained)
+        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'edge_decremented', @edge_decremented)
+        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'raw_estimated', @raw_estimated)
+        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'machining_separated', @machining_separated)
+        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'machining_material_colored', @machining_material_colored)
+        @material.set_attribute(Plugin::ATTRIBUTE_DICTIONARY, 'multiplier_coefficient', [ 1.0, @multiplier_coefficient.to_f ].max)
       end
     end
 

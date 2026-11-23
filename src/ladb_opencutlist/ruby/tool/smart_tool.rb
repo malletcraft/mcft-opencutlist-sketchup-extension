@@ -3,14 +3,22 @@ module Ladb::OpenCutList
   require 'timeout'
   require_relative '../lib/kuix/kuix'
   require_relative '../helper/layer_visibility_helper'
+  require_relative '../helper/instance_paths_helper'
   require_relative '../helper/face_triangles_helper'
-  require_relative '../helper/sanitizer_helper'
   require_relative '../helper/part_helper'
+  require_relative '../helper/material_attributes_caching_helper'
+  require_relative '../worker/common/common_drawing_decomposition_worker'
+  require_relative '../worker/common/common_solid_boolean_apply_worker'
+  require_relative '../worker/common/common_stretch_split_worker'
+  require_relative '../utils/color_utils'
   require_relative '../utils/dimension_utils'
   require_relative '../utils/hash_utils'
   require_relative '../utils/view_utils'
+  require_relative '../utils/drawingelement_utils'
+  require_relative '../utils/file_path_utils'
   require_relative '../model/geom/size3d'
   require_relative '../model/cutlist/cutlist'
+  require_relative '../model/door/door_def'
   require_relative '../manipulator/face_manipulator'
   require_relative '../manipulator/edge_manipulator'
   require_relative '../manipulator/line_manipulator'
@@ -19,26 +27,29 @@ module Ladb::OpenCutList
   class SmartTool < Kuix::KuixTool
 
     include LayerVisibilityHelper
+    include InstancePathsHelper
     include FaceTrianglesHelper
-    include SanitizerHelper
     include PartHelper
     include CutlistObserverHelper
+    include MaterialAttributesCachingHelper
 
     MESSAGE_TYPE_DEFAULT = 0
     MESSAGE_TYPE_ERROR = 1
     MESSAGE_TYPE_WARNING = 2
     MESSAGE_TYPE_SUCCESS = 3
 
-    ACTION_NONE = -1
+    STATUS_VCB_VALUE_DELAY = 0.15  # Seconds without mouse move before a live VCB value is written
+
+    NOTIFICATION_MAX_COUNT = 3
 
     COLOR_BRAND = Sketchup::Color.new(247, 127, 0).freeze
     COLOR_BRAND_DARK = Sketchup::Color.new(62, 59, 51).freeze
     COLOR_BRAND_LIGHT = Sketchup::Color.new(214, 212, 205).freeze
 
     COLOR_MESSAGE_TEXT = Kuix::COLOR_BLACK
-    COLOR_MESSAGE_TEXT_ERROR = Sketchup::Color.new('#d9534f').freeze
-    COLOR_MESSAGE_TEXT_WARNING = Sketchup::Color.new('#997404').freeze
-    COLOR_MESSAGE_TEXT_SUCCESS = Sketchup::Color.new('#569553').freeze
+    COLOR_MESSAGE_TEXT_ERROR = Kuix::COLOR_DANGER
+    COLOR_MESSAGE_TEXT_WARNING = Kuix::COLOR_WARNING
+    COLOR_MESSAGE_TEXT_SUCCESS = Kuix::COLOR_SUCCESS
     COLOR_MESSAGE_BACKGROUND = Sketchup::Color.new(255, 255, 255, 230).freeze
     COLOR_MESSAGE_BACKGROUND_ERROR = COLOR_MESSAGE_TEXT_ERROR.blend(Kuix::COLOR_WHITE, 0.2).freeze
     COLOR_MESSAGE_BACKGROUND_WARNING = Sketchup::Color.new('#ffe69c').freeze
@@ -49,6 +60,7 @@ module Ladb::OpenCutList
     COLOR_ARROW_AUTO_ORIENTED = Sketchup::Color.new(123, 213, 239).freeze
 
     attr_accessor :tab_name_to_show_on_quit,
+                  :highlighted_parts,
                   :last_mouse_x, :last_mouse_y
 
     def initialize(
@@ -79,24 +91,22 @@ module Ladb::OpenCutList
       # Action
       @current_action = current_action
 
-      # Setup action stack
+      # Init action stack
       @action_stack = []
 
       # Action handler
       @action_handler = nil
 
-      # Create cursors
-      @cursor_select_error = create_cursor('select-error', 0, 0)
-
       # Tool ID (available only if the tool is active)
       @tool_id = nil
-
-      # Picker
-      @picker = nil
 
       # Mouse
       @last_mouse_x = -1
       @last_mouse_y = -1
+
+      # Tooltips stack : only the top one is shown. The root one (index 0, nil if
+      # none) tells about the 3D view, the pushed ones about the UI
+      @tooltip_boxes = [ nil ]
 
       # UI Layers
       @layers_2d = {}
@@ -110,7 +120,25 @@ module Ladb::OpenCutList
 
     # -- UI stuff --
 
+    def get_default_cursor
+      SmartCursorManager.cursor_select
+    end
+
+    # Forced UI unit for every smart tool (nil = from the screen size, see get_unit).
+    # Video captures are made in a small viewport, where the computed unit gives a hard to read UI:
+    #   Ladb::OpenCutList::SmartTool.forced_unit = 5   # before the tool is selected
+    @@forced_unit = nil
+
+    def self.forced_unit
+      @@forced_unit
+    end
+
+    def self.forced_unit=(unit)
+      @@forced_unit = unit
+    end
+
     def get_unit(view = nil)
+      return @unit = @@forced_unit unless @@forced_unit.nil?   # @unit is also read directly
       return @unit unless @unit.nil?
       return 3 if view && Sketchup.active_model.nil?
       view = Sketchup.active_model.active_view if view.nil?
@@ -196,42 +224,100 @@ module Ladb::OpenCutList
           actions_panel.append(actions_btns_panel)
 
           @action_buttons = []
+          @action_variant_buttons = []
           @actions_options_panels = []
           get_action_defs.each do |action_def|
 
             action = action_def[:action]
 
-            data = {
-              :action => action
-            }
+            # A variant has no action button of its own : it has a variant button inside its root action's one
+            if action_def[:variant_of].nil?
 
-            actions_btn = Kuix::Button.new
-            actions_btn.layout = Kuix::BorderLayout.new
-            actions_btn.border.set!(0, unit / 4, 0, unit / 4)
-            actions_btn.min_size.set_all!(unit * 10)
-            actions_btn.set_style_attribute(:border_color, COLOR_BRAND_DARK.blend(Kuix::COLOR_WHITE, 0.8))
-            actions_btn.set_style_attribute(:border_color, COLOR_BRAND_LIGHT, :hover)
-            actions_btn.set_style_attribute(:border_color, COLOR_BRAND, :selected)
-            actions_btn.set_style_attribute(:background_color, COLOR_BRAND_DARK)
-            actions_btn.set_style_attribute(:background_color, COLOR_BRAND_LIGHT, :hover)
-            actions_btn.set_style_attribute(:background_color, COLOR_BRAND, :selected)
-            lbl = actions_btn.append_static_label(PLUGIN.get_i18n_string("tool.smart_#{get_stripped_name}.action_#{action}"), unit * 3 * get_text_unit_factor)
-            lbl.padding.set!(0, unit * 4, 0, unit * 4)
-            lbl.set_style_attribute(:color, COLOR_BRAND_LIGHT)
-            lbl.set_style_attribute(:color, COLOR_BRAND_DARK, :hover)
-            lbl.set_style_attribute(:color, Kuix::COLOR_WHITE, :selected)
-            actions_btn.data = data
-            actions_btn.on(:click) { |button|
-              set_root_action(action)
-            }
-            actions_btn.on(:enter) { |button|
-              show_message(PLUGIN.get_i18n_string("tool.smart_#{get_stripped_name}.action_#{action}_status"))
-            }
-            actions_btn.on(:leave) { |button|
-              hide_message
-            }
-            actions_btns_panel.append(actions_btn)
-            @action_buttons.push(actions_btn)
+              variant_actions = get_action_variants(action)
+
+              data = {
+                :action => action
+              }
+
+              actions_btn = Kuix::Button.new
+              actions_btn.layout = Kuix::BorderLayout.new(unit * 2)
+              actions_btn.border.set!(0, unit / 4, 0, unit / 4)
+              actions_btn.min_size.set_all!(unit * 10)
+              actions_btn.set_style_attribute(:border_color, COLOR_BRAND_DARK.blend(Kuix::COLOR_WHITE, 0.8))
+              actions_btn.set_style_attribute(:border_color, COLOR_BRAND_LIGHT, :hover)
+              actions_btn.set_style_attribute(:border_color, COLOR_BRAND, :selected)
+              actions_btn.set_style_attribute(:background_color, COLOR_BRAND_DARK)
+              actions_btn.set_style_attribute(:background_color, COLOR_BRAND_LIGHT, :hover)
+              actions_btn.set_style_attribute(:background_color, COLOR_BRAND, :selected)
+              lbl = actions_btn.append_static_label(PLUGIN.get_i18n_string("tool.smart_#{get_stripped_name}.action_#{action}#{'_family' unless variant_actions.empty?}"), unit * 3 * get_text_unit_factor)
+              lbl.padding.set!(0, variant_actions.empty? ? unit * 4 : unit * 2, 0, unit * 4)
+              lbl.set_style_attribute(:color, COLOR_BRAND_LIGHT)
+              lbl.set_style_attribute(:color, COLOR_BRAND_DARK, :hover)
+              lbl.set_style_attribute(:color, Kuix::COLOR_WHITE, :selected)
+              actions_btn.data = data
+              actions_btn.on(:click) { |button|
+                set_root_action(fetch_action_family_last_action(action))
+              }
+              actions_btn.on(:enter) { |button|
+                show_message(get_action_status(fetch_action_family_last_action(action)))
+              }
+              actions_btn.on(:leave) { |button|
+                hide_message
+              }
+              actions_btns_panel.append(actions_btn)
+              @action_buttons.push(actions_btn)
+
+              # One variant button per action of the family : the root action and its variants
+
+              unless variant_actions.empty?
+
+                variants_panel = Kuix::Panel.new
+                variants_panel.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::EAST)
+                variants_panel.layout = Kuix::InlineLayout.new(true, unit * 0.5, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+                variants_panel.padding.set!(0, unit * 2, 0, 0)
+                actions_btn.append(variants_panel)
+
+                ([ action ] + variant_actions).each do |variant_action|
+
+                  variant_btn = Kuix::Button.new
+                  variant_btn.layout = Kuix::GridLayout.new
+                  variant_btn.min_size.set_all!(unit * 6)
+                  variant_btn.set_style_attribute(:background_color, ColorUtils.color_lighten(COLOR_BRAND_DARK, 0.1))
+                  variant_btn.set_style_attribute(:background_color, COLOR_BRAND_LIGHT, :hover)
+                  variant_btn.set_style_attribute(:background_color, Kuix::COLOR_WHITE, :selected)
+                  variant_btn.data = { :action => variant_action }
+                  variant_btn.on(:click) { |button|
+                    set_root_action(variant_action)
+                  }
+                  variant_btn.on(:enter) { |button|
+                    show_message(get_action_status(variant_action))
+                  }
+                  variant_btn.on(:leave) { |button|
+                    hide_message
+                  }
+                  variants_panel.append(variant_btn)
+                  @action_variant_buttons.push(variant_btn)
+
+                    if (child = get_action_variant_btn_child(action, variant_action))
+                      if child.is_a?(Kuix::Label)
+                        child.text_size = unit * 3 * get_text_unit_factor if child.respond_to?(:text_size=)
+                        child.padding.set!(0, unit * 1.5, 0, unit * 1.5)
+                      elsif child.is_a?(Kuix::Motif2d)
+                        child.margin.set_all!(unit * 1.5)
+                        child.min_size.set_all!(unit * 3)
+                        child.line_width = unit * 0.4
+                      end
+                      child.set_style_attribute(:color, COLOR_BRAND_LIGHT)
+                      child.set_style_attribute(:color, COLOR_BRAND_DARK, :hover)
+                      child.set_style_attribute(:color, get_action_variant_color(variant_action), :selected)
+                      variant_btn.append(child)
+                    end
+
+                end
+
+              end
+
+            end
 
             # Options Panels
 
@@ -248,11 +334,14 @@ module Ladb::OpenCutList
 
               options.each do |option_group, options|
 
+                group_title = get_action_option_group_title(action, option_group)
+                group_titled = get_action_option_group_titled?(action, option_group)
+
                 lbl = Kuix::Label.new
-                lbl.text = PLUGIN.get_i18n_string("tool.smart_#{get_stripped_name}.action_option_group_#{option_group}")
+                lbl.text = group_titled ? group_title : ""
                 lbl.text_bold = true
                 lbl.text_size = unit * 3 * get_text_unit_factor
-                if actions_options_panel.child
+                unless actions_options_panel.empty?
                   lbl.margin.left = unit * 3
                   lbl.border.left = unit * 0.2
                   lbl.padding.left = unit * 3
@@ -262,60 +351,89 @@ module Ladb::OpenCutList
 
                 options.each do |option|
 
+                  if (prefix = get_action_option_btn_prefix(action, option_group, option))
+                    if prefix.is_a?(Kuix::Label)
+                      prefix.text_size = unit * 3 * get_text_unit_factor if prefix.respond_to?(:text_size=)
+                      prefix.padding.set!(unit * 1.5, 0, unit, unit)
+                      prefix.min_size.height = unit * 5
+                    elsif prefix.is_a?(Kuix::Motif2d)
+                      prefix.margin.set!(unit, 0, unit, unit)
+                      prefix.min_size.set_all!(unit * 5)
+                      prefix.line_width = unit * 0.25
+                    end
+                    prefix.set_style_attribute(:color, Kuix::COLOR_DARK_GREY)
+                    actions_options_panel.append(prefix)
+                  end
+
                   btn = Kuix::Button.new
                   btn.layout = Kuix::GridLayout.new
                   btn.set_style_attribute(:background_color, Sketchup::Color.new(240, 240, 240))
                   btn.set_style_attribute(:background_color, Kuix::COLOR_WHITE, :selected)
                   btn.set_style_attribute(:background_color, COLOR_BRAND_LIGHT, :hover)
                   btn.set_style_attribute(:background_color, COLOR_BRAND, :active)
+                  btn.set_style_attribute(:background_color, Sketchup::Color.new(245, 245, 245), :disabled)
                   btn.set_style_attribute(:border_color, COLOR_BRAND, :selected)
+                  btn.set_style_attribute(:border_color, nil, :disabled)
                   btn.border.set_all!(unit * 0.5)
                   btn.data = { :option_group => option_group, :option => option }
-                  btn.selected = fetch_action_option_boolean(action, option_group, option)
+                  btn.selected = get_action_option_btn_selected?(action, option_group, option)
+                  btn.disabled = get_action_option_btn_disabled?(action, option_group, option)
                   btn.on(:click) { |button|
                     if get_action_option_toggle?(action, option_group, option)
                       if get_action_option_group_unique?(action, option_group)
-                        b = button.parent.child
-                        until b.nil? do
+                        button.parent.children.each do |b|
                           if b.is_a?(Kuix::Button) && !b.data.nil? && b.data[:option_group] == option_group
                             b.selected = false
                           end
-                          b = b.next
                         end
                         button.selected = true
-                        store_action_option_value(action, option_group, option)
+                        store_action_option_value(action, option_group, option, fire_event: true)
                         refresh
-                        # set_root_action(fetch_action) # TODO find a beter solution to update current Axes Tool
                       else
                         button.selected = !button.selected?
-                        store_action_option_value(action, option_group, option, button.selected?)
+                        store_action_option_value(action, option_group, option, button.selected?, fire_event: true)
                       end
                     else
-                      PLUGIN.show_modal_dialog("smart_#{get_stripped_name}_tool_action_#{action}", { :action => action, :focused_field => { :option_group => option_group, :option => option } })
+                      PLUGIN.show_modal_dialog("smart_#{get_stripped_name}_tool_action_#{action}", { :action => action, :toolbar_option_keys => get_action_toolbar_option_keys(action), :focused_field => { :option_group => option_group, :option => option } })
                     end
                   }
                   btn.on(:enter) { |button|
-                    show_message(get_action_option_status(action, option_group, option))
+                    show_message("#{"#{group_title}: " unless group_titled}#{get_action_option_status(action, option_group, option)}")
                   }
                   btn.on(:leave) { |button|
                     hide_message
                   }
                   actions_options_panel.append(btn)
 
-                    child = get_action_option_btn_child(action, option_group, option)
-                    if child
+                    if (child = get_action_option_btn_child(action, option_group, option))
                       if child.is_a?(Kuix::Label)
                         child.text_size = unit * 3 * get_text_unit_factor if child.respond_to?(:text_size=)
-                        child.padding.set!(unit, unit * 2, unit, unit * 2)
+                        child.padding.set!(unit * 1.2, unit * 2, unit * 0.8, unit * 2)
                         child.min_size.height = unit * 4
                       elsif child.is_a?(Kuix::Motif2d)
                         child.margin.set_all!(unit)
                         child.min_size.set_all!(unit * 4)
+                        child.line_width = unit * 0.25
                       end
                       child.set_style_attribute(:color, Kuix::COLOR_BLACK)
                       child.set_style_attribute(:color, Kuix::COLOR_WHITE, :active)
+                      child.set_style_attribute(:color, Kuix::COLOR_LIGHT_GREY, :disabled)
                       btn.append(child)
                     end
+
+                  if (suffix = get_action_option_btn_suffix(action, option_group, option))
+                    if suffix.is_a?(Kuix::Label)
+                      suffix.text_size = unit * 3 * get_text_unit_factor if suffix.respond_to?(:text_size=)
+                      suffix.padding.set!(unit, unit, unit, 0)
+                      suffix.min_size.height = unit * 5
+                    elsif suffix.is_a?(Kuix::Motif2d)
+                      suffix.margin.set!(unit, unit, unit, 0)
+                      suffix.min_size.set_all!(unit * 5)
+                      suffix.line_width = unit * 0.25
+                    end
+                    suffix.set_style_attribute(:color, Kuix::COLOR_DARK_GREY)
+                    actions_options_panel.append(suffix)
+                  end
 
                 end
 
@@ -330,7 +448,7 @@ module Ladb::OpenCutList
                 btn.set_style_attribute(:background_color, COLOR_BRAND, :active)
                 btn.border.set_all!(unit * 0.5)
                 btn.on(:click) { |button|
-                  PLUGIN.show_modal_dialog("smart_#{get_stripped_name}_tool_action_#{action}", { :action => action })
+                  PLUGIN.show_modal_dialog("smart_#{get_stripped_name}_tool_action_#{action}", { :action => action, :toolbar_option_keys => get_action_toolbar_option_keys(action) })
                 }
                 actions_options_panel.append(btn)
 
@@ -374,7 +492,7 @@ module Ladb::OpenCutList
         @top_panel.append(@message_panel)
 
           @message_lbl = Kuix::Label.new
-          @message_lbl.border.set_all!(unit / 4)
+          @message_lbl.border.set_all!(0.5)
           @message_lbl.padding.set!(unit * 1.5, unit * 2, unit, unit * 2)
           @message_lbl.text_size = unit * 3 * get_text_unit_factor
           @message_panel.append(@message_lbl)
@@ -389,25 +507,51 @@ module Ladb::OpenCutList
 
         setup_minitools_btns(view)
 
-      # -- NOTIFICATION
+      # -- BOTTOM
 
-      @notification_panel = Kuix::Panel.new
-      @notification_panel.layout_data = Kuix::StaticLayoutData.new(0.5, 1.0, -1, -1, Kuix::Anchor.new(Kuix::Anchor::BOTTOM))
-      @notification_panel.layout = Kuix::InlineLayout.new(false, unit)
-      @notification_panel.margin.bottom = unit * 2
-      @notification_panel.visible = false
-      @canvas.append(@notification_panel)
+      @bottom_panel = Kuix::Panel.new
+      @bottom_panel.layout_data = Kuix::StaticLayoutData.new(0.0, 1.0, 1.0, -1, Kuix::Anchor.new(Kuix::Anchor::BOTTOM_LEFT))
+      @bottom_panel.layout = Kuix::InlineLayout.new(false, 0, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+      @canvas.append(@bottom_panel)
+
+        # -- NOTIFICATION
+
+        @notification_panel = Kuix::Panel.new
+        @notification_panel.layout = Kuix::InlineLayout.new(false, unit, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+        @notification_panel.margin.bottom = unit * 2
+        @notification_panel.visible = false
+        @bottom_panel.append(@notification_panel)
+
+        # -- STEPS
+
+        @steps_panel = Kuix::Panel.new
+        @steps_panel.layout = Kuix::InlineLayout.new(false, unit, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+        @steps_panel.margin.bottom = unit * 2
+        @steps_panel.hittable = false
+        @steps_panel.visible = false
+        @bottom_panel.append(@steps_panel)
+        @steps_bar_key = nil  # What the bar shows, to rebuild it only once changed
+
+        # -- VALIDATION
+
+        @validation_panel = Kuix::Panel.new
+        @validation_panel.layout = Kuix::InlineLayout.new(true, unit * 4, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+        @validation_panel.padding.set_all!(unit * 4)
+        @validation_panel.visible = false
+        @bottom_panel.append(@validation_panel)
 
     end
 
     def setup_highlighted_part_helper(part, instance_paths = nil)
 
       definition = part.def.get_one_instance_info.definition
-      triangles = _compute_children_faces_triangles(definition.entities)
-      bounds = Geom::BoundingBox.new.add(triangles)
+      material_attributes = _get_material_attributes(part.def.material_name)
+      triangles = _compute_children_faces_triangles(definition.entities, grab_sub_components: material_attributes.type == MaterialAttributes::TYPE_HARDWARE)
+      bounds = Geom::BoundingBox.new
+      bounds.add(triangles) if triangles.any?
 
       if instance_paths.nil?
-        instance_paths = part.def.instance_infos.values.map { |instance_info| instance_info.path }
+        instance_paths = part.def.instance_infos.values.map(&:path)
         update_only = false
       else
         update_only = true
@@ -438,24 +582,44 @@ module Ladb::OpenCutList
           if part.group.material_type != MaterialAttributes::TYPE_HARDWARE
 
             # Back arrow
-            arrow = Kuix::ArrowMotif3d.new
-            arrow.patterns_transformation = size.oriented_transformation
-            arrow.bounds.origin.copy!(bounds.min)
-            arrow.bounds.size.copy!(bounds)
-            arrow.color = arrow_color
-            arrow.line_width = arrow_line_width
-            arrow.line_stipple = Kuix::LINE_STIPPLE_SHORT_DASHES
-            part_helper.append(arrow)
+            k_arrow = Kuix::ArrowMotif3d.new
+            k_arrow.patterns_transformation = size.oriented_transformation
+            k_arrow.bounds.copy!(bounds)
+            k_arrow.color = arrow_color
+            k_arrow.line_width = arrow_line_width
+            k_arrow.line_stipple = Kuix::LINE_STIPPLE_SHORT_DASHES
+            part_helper.append(k_arrow)
 
             # Front arrow
-            arrow = Kuix::ArrowMotif3d.new
-            arrow.patterns_transformation = size.oriented_transformation
-            arrow.patterns_transformation *= Geom::Transformation.translation(Z_AXIS)
-            arrow.bounds.origin.copy!(bounds.min)
-            arrow.bounds.size.copy!(bounds)
-            arrow.color = arrow_color
-            arrow.line_width = arrow_line_width
-            part_helper.append(arrow)
+            k_arrow = Kuix::ArrowMotif3d.new
+            k_arrow.patterns_transformation = size.oriented_transformation
+            k_arrow.patterns_transformation *= Geom::Transformation.translation(Z_AXIS)
+            k_arrow.bounds.copy!(bounds)
+            k_arrow.color = arrow_color
+            k_arrow.line_width = arrow_line_width
+            part_helper.append(k_arrow)
+
+            if part.follow_grain_direction
+
+              # Back chevron
+              k_chevron = Kuix::ChevronMotif3d.new
+              k_chevron.patterns_transformation = size.oriented_transformation
+              k_chevron.bounds.copy!(bounds)
+              k_chevron.color = arrow_color
+              k_chevron.line_width = arrow_line_width
+              k_chevron.line_stipple = Kuix::LINE_STIPPLE_SHORT_DASHES
+              part_helper.append(k_chevron)
+
+              # Front chevron
+              k_chevron = Kuix::ChevronMotif3d.new
+              k_chevron.patterns_transformation = size.oriented_transformation
+              k_chevron.patterns_transformation *= Geom::Transformation.translation(Z_AXIS)
+              k_chevron.bounds.copy!(bounds)
+              k_chevron.color = arrow_color
+              k_chevron.line_width = arrow_line_width
+              part_helper.append(k_chevron)
+
+            end
 
           end
 
@@ -469,19 +633,19 @@ module Ladb::OpenCutList
     def setup_minitools_btns(view)
 
       # Transparency
-      @transparency_minitool_btn = append_minitool_btn('M0,0.2L0.6,0L1,0.2L0.4,0.4L0,0.2 M0.5,0.6333L0.6,0.6 M0.6,0.6L0.7,0.65 M0.6,0.1L0.6,0.2 M0.6,0.3L0.6,0.4 M0.6,0.5L0.6,0.6 M0.8,0.7L0.9,0.75 M0.4,0.6667L0.3,0.7 M0.2,0.7333L0.1,0.7667 M0.4,0.4L0.4,1 M0,0.2L0,0.8L0.4,1L1,0.8L1,0.2') do |button|
+      @transparency_minitool_btn = append_minitool_btn('M0,0.2L0.6,0L1,0.2L0.4,0.4L0,0.2 M0.5,0.6333L0.6,0.6 M0.6,0.6L0.7,0.65 M0.6,0.1L0.6,0.2 M0.6,0.3L0.6,0.4 M0.6,0.5L0.6,0.6 M0.8,0.7L0.9,0.75 M0.4,0.6667L0.3,0.7 M0.2,0.7333L0.1,0.7667 M0.4,0.4L0.4,1 M0,0.2L0,0.8L0.4,1L1,0.8L1,0.2', PLUGIN.get_i18n_string('tool.default.transparency')) { |button|
         view.model.rendering_options["ModelTransparency"] = !view.model.rendering_options["ModelTransparency"]
-      end
+      }
       @transparency_minitool_btn.selected = view.model.rendering_options['ModelTransparency']
 
       # Zoom extends
-      append_minitool_btn('M0,0.3L0,0L0.3,0 M0.7,0L1,0L1,0.3 M1,0.7L1,1L0.7,1 M0.3,1L0,1L0,0.7 M0.2,0.3L0.5,0.2L0.8,0.3L0.5,0.4L0.2,0.3 M0.2,0.3L0.2,0.7L0.5,0.8L0.8,0.7L0.8,0.3 M0.5,0.4L0.5,0.8') do |button|
+      append_minitool_btn('M0,0.3L0,0L0.3,0 M0.7,0L1,0L1,0.3 M1,0.7L1,1L0.7,1 M0.3,1L0,1L0,0.7 M0.2,0.3L0.5,0.2L0.8,0.3L0.5,0.4L0.2,0.3 M0.2,0.3L0.2,0.7L0.5,0.8L0.8,0.7L0.8,0.3 M0.5,0.4L0.5,0.8', PLUGIN.get_i18n_string('tool.default.zoom_extents')) { |button|
         ViewUtils.zoom_active_entities(view)
-      end
+      }
 
     end
 
-    def append_minitool_btn(icon, &block)
+    def append_minitool_btn(icon, tooltip = nil, &block)
 
       k_btn = Kuix::Button.new
       k_btn.layout = Kuix::GridLayout.new
@@ -496,6 +660,18 @@ module Ladb::OpenCutList
       k_btn.set_style_attribute(:border_color, COLOR_BRAND_LIGHT, :active)
       k_btn.set_style_attribute(:border_color, COLOR_BRAND, :selected)
       k_btn.on([ :click, :doubleclick ], &block)
+      unless tooltip.nil?
+        tooltip_box = nil
+        k_btn.on(:enter) {
+          pop_tooltip(tooltip_box)
+          anchor_point = k_btn.absolute_bounds.corner(Kuix::Bounds2d::CENTER_RIGHT)
+          tooltip_box = push_tooltip(tooltip, position: Kuix::Point2d.new(anchor_point.x + @unit, anchor_point.y), anchor: Kuix::Anchor::LEFT)
+        }
+        k_btn.on(:leave) {
+          pop_tooltip(tooltip_box)
+          tooltip_box = nil
+        }
+      end
       @minitool_panel.append(k_btn)
 
         motif = Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path(icon))
@@ -505,66 +681,77 @@ module Ladb::OpenCutList
       k_btn
     end
 
-    def append_2d(entity, layer = 0)
-      raise "layer can't be nil" if layer.nil?
-      k_layer = @layers_2d[layer]
-      if k_layer.nil?
+    def create_2d(layer = 0, location = :canvas)
+      @layers_2d[layer] ||= begin
         k_layer = @layers_2d[layer] = Kuix::Panel.new
         k_layer.layout_data = Kuix::StaticLayoutData.new(0, 0, 1.0, 1.0)
         k_layer.layout = Kuix::StaticLayout.new
         k_layer.hittable = false
-        @canvas.append(k_layer)
+        case location
+        when :bottom
+          @bottom_panel.append(k_layer)
+        else
+          @canvas.append(k_layer)
+        end
+        k_layer
       end
+    end
+
+    def append_2d(entity, layer = 0)
+      raise "layer can't be nil" if layer.nil?
+      k_layer = create_2d(layer)
       k_layer.append(entity)
     end
 
-    def remove_2d(layers = 0)
-      layers = [ layers ] if layers.is_a?(Integer)
-      return unless layers.is_a?(Array)
+    def clear_2d(layers = 0)
+      layers = Array(layers)
       layers.each do |layer|
         k_layer = @layers_2d[layer]
-        k_layer.remove_all unless k_layer.nil?
+        k_layer.clear unless k_layer.nil?
       end
     end
 
-    def remove_all_2d
-      @layers_2d.each { |layer, k_layer| k_layer.remove_all }
+    def clear_all_2d
+      @layers_2d.each { |layer, k_layer| k_layer.clear }
     end
 
     def set_2d_visibility(visible, layers = 0)
-      layers = [ layers ] if layers.is_a?(Integer)
+      layers = Array(layers)
       return unless layers.is_a?(Array)
       layers.each do |layer|
         k_layer = @layers_2d[layer]
         k_layer.visible = visible unless k_layer.nil?
+      end
+    end
+
+    def create_3d(layer = 0)
+      @layers_3d[layer] ||= begin
+        k_layer = Kuix::Group.new
+        @overlay_layer.append(k_layer)
+        k_layer
       end
     end
 
     def append_3d(entity, layer = 0)
       raise "layer can't be nil" if layer.nil?
-      k_layer = @layers_3d[layer]
-      if k_layer.nil?
-        k_layer = @layers_3d[layer] = Kuix::Group.new
-        @space.append(k_layer)
-      end
+      k_layer = create_3d(layer)
       k_layer.append(entity)
     end
 
-    def remove_3d(layers = 0)
-      layers = [ layers ] if layers.is_a?(Integer)
-      return unless layers.is_a?(Array)
+    def clear_3d(layers = 0)
+      layers = Array(layers)
       layers.each do |layer|
         k_layer = @layers_3d[layer]
-        k_layer.remove_all unless k_layer.nil?
+        k_layer.clear unless k_layer.nil?
       end
     end
 
-    def remove_all_3d
-      @layers_3d.each { |layer, k_layer| k_layer.remove_all }
+    def clear_all_3d
+      @layers_3d.each { |layer, k_layer| k_layer.clear }
     end
 
     def set_3d_visibility(visible, layers = 0)
-      layers = [ layers ] if layers.is_a?(Integer)
+      layers = Array(layers)
       return unless layers.is_a?(Array)
       layers.each do |layer|
         k_layer = @layers_3d[layer]
@@ -572,7 +759,7 @@ module Ladb::OpenCutList
       end
     end
 
-    # -- Show --
+    # -- Message --
 
     def show_message(text, type = MESSAGE_TYPE_DEFAULT)
       return unless @message_panel && text.is_a?(String)
@@ -608,9 +795,243 @@ module Ladb::OpenCutList
       @message_panel.visible = false
     end
 
-    def show_tooltip(items, type = MESSAGE_TYPE_DEFAULT)
+    # -- Steps bar --
 
-      remove_tooltip
+    # Shows the steps the action goes through, at the bottom of the view : their
+    # numbers, the current one - +index+, 0 based - highlighted, then its +text+.
+    # With a +count+ of 0, the text alone. Rebuilt only once changed.
+    def set_steps_bar(count, index, text)
+      return unless @steps_panel
+      key = [ count, index, text ]
+      return if key == @steps_bar_key
+      @steps_bar_key = key
+
+      @steps_panel.clear
+      @steps_panel.visible = true
+
+      unit = get_unit
+
+      # The stepper above the text, both centered : the numbers stay in place
+      # whatever the text width. The text only is framed.
+      fn_create_box = lambda do |framed|
+        k_row = Kuix::Panel.new  # Stretched to the widest box, the box centered in it keeps its own width
+        k_row.layout = Kuix::InlineLayout.new(true, 0, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+        k_row.hittable = false
+        @steps_panel.append(k_row)
+
+        k_box = Kuix::Panel.new
+        k_box.hittable = false
+        if framed
+          k_box.padding.set!(unit * 1.5, unit * 2, unit, unit * 2)
+          k_box.set_style_attribute(:background_color, ColorUtils.color_translucent(COLOR_MESSAGE_BACKGROUND, 0.6))
+          k_box.set_style_attribute(:border_color, COLOR_MESSAGE_TEXT)
+        end
+        k_row.append(k_box)
+
+        k_box
+      end
+
+      # The stepper : none with no steps, the text alone
+      if count > 0
+
+        k_stepper = fn_create_box.call(false)
+        k_stepper.layout = Kuix::InlineLayout.new(true, 0, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+
+          count.times do |i|
+
+            # The link from the previous step, dark once reached
+            if i > 0
+              k_link = Kuix::Panel.new  # Stretched to the numbers height, the line centered in it
+              k_link.layout = Kuix::InlineLayout.new(true, 0, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+              k_link.hittable = false
+              k_stepper.append(k_link)
+
+                k_line = Kuix::Panel.new
+                k_line.border.top = unit / 4
+                k_line.min_size.width = unit * 4
+                k_line.hittable = false
+                k_line.set_style_attribute(:border_color, i <= index ? COLOR_MESSAGE_TEXT : Kuix::COLOR_MEDIUM_GREY)
+                k_link.append(k_line)
+
+            end
+
+            k_lbl = Kuix::Label.new
+            k_lbl.text = (i + 1).to_s
+            k_lbl.text_size = unit * 2.5 * get_text_unit_factor
+            k_lbl.padding.set!(unit / 2.0, unit, 0, unit)
+            k_lbl.border.set_all!(unit / 4)
+            k_lbl.hittable = false
+            if i == index
+              k_lbl.text_bold = true
+              k_lbl.set_style_attribute(:background_color, COLOR_MESSAGE_TEXT)
+              k_lbl.set_style_attribute(:border_color, COLOR_MESSAGE_TEXT)
+              k_lbl.set_style_attribute(:color, COLOR_MESSAGE_BACKGROUND)
+            else
+              color = i < index ? COLOR_MESSAGE_TEXT : Kuix::COLOR_MEDIUM_GREY  # The next ones dimmed
+              k_lbl.set_style_attribute(:background_color, COLOR_MESSAGE_BACKGROUND)  # Readable over the model
+              k_lbl.set_style_attribute(:border_color, color)
+              k_lbl.set_style_attribute(:color, color)
+            end
+            k_stepper.append(k_lbl)
+
+          end
+
+      end
+
+      k_text_box = fn_create_box.call(true)
+      k_text_box.layout = Kuix::InlineLayout.new(true, 0, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+
+        k_lbl = Kuix::Label.new
+        k_lbl.text = text
+        k_lbl.text_size = unit * 3 * get_text_unit_factor
+        k_lbl.hittable = false
+        k_lbl.set_style_attribute(:color, COLOR_MESSAGE_TEXT)
+        k_text_box.append(k_lbl)
+
+    end
+
+    def remove_steps_bar
+      return unless @steps_panel
+      @steps_bar_key = nil
+      @steps_panel.clear
+      @steps_panel.visible = false
+    end
+
+    # -- Status --
+
+    def set_status_prompt(text)
+      Sketchup.set_status_text(text.to_s, SB_PROMPT)
+    end
+
+    def set_status_vcb_label(text)
+      Sketchup.set_status_text(text.to_s, SB_VCB_LABEL)
+    end
+
+    # Writes the VCB value. A live write (value updated on each mouse move) is
+    # delayed until no other one came for STATUS_VCB_VALUE_DELAY seconds : since
+    # SU 2027, every change of a status text costs a slow frame, so a value
+    # rewritten on each move halves the frame rate. An immediate write drops the
+    # pending one.
+    def set_status_vcb_value(text, live = false)
+      if live
+        @status_vcb_value_pending = text.to_s
+        @status_vcb_value_pending_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        @status_vcb_value_timer_id = UI.start_timer(STATUS_VCB_VALUE_DELAY, false) { _flush_status_vcb_value } if @status_vcb_value_timer_id.nil?
+      else
+        _cancel_status_vcb_value
+        Sketchup.set_status_text(text.to_s, SB_VCB_VALUE)
+      end
+    end
+
+    def _flush_status_vcb_value
+      @status_vcb_value_timer_id = nil
+      return if @status_vcb_value_pending.nil?
+      idle = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @status_vcb_value_pending_time
+      if idle < STATUS_VCB_VALUE_DELAY
+        @status_vcb_value_timer_id = UI.start_timer(STATUS_VCB_VALUE_DELAY - idle, false) { _flush_status_vcb_value }  # Still moving
+      else
+        Sketchup.set_status_text(@status_vcb_value_pending, SB_VCB_VALUE)
+        @status_vcb_value_pending = nil
+      end
+    end
+    private :_flush_status_vcb_value
+
+    def _cancel_status_vcb_value
+      UI.stop_timer(@status_vcb_value_timer_id) unless @status_vcb_value_timer_id.nil?
+      @status_vcb_value_timer_id = nil
+      @status_vcb_value_pending = nil
+    end
+    private :_cancel_status_vcb_value
+
+    # -- Tooltips --
+
+    def set_root_tooltip(items, type = MESSAGE_TYPE_DEFAULT)
+
+      remove_root_tooltip
+
+      k_box = _create_tooltip_box(items, type)
+      @tooltip_boxes[0] = k_box
+      @canvas.append(k_box)
+
+      if @tooltip_boxes.length > 1
+        k_box.visible = false  # Under a pushed one
+      else
+        move_tooltip(@last_mouse_x, @last_mouse_y)
+      end
+
+      k_box
+    end
+
+    def remove_root_tooltip
+      return if @tooltip_boxes[0].nil?
+      @tooltip_boxes[0].remove
+      @tooltip_boxes[0] = nil
+    end
+
+    def hide_root_tooltip
+      return if @tooltip_boxes[0].nil?
+      @tooltip_boxes[0].visible = false
+    end
+
+    def reveal_root_tooltip
+      return if @tooltip_boxes[0].nil? || @tooltip_boxes.length > 1
+      @tooltip_boxes[0].visible = true
+    end
+
+    def move_tooltip(x, y)
+      unless (k_box = @tooltip_boxes.last).nil? || !k_box.data.nil?  # A positioned one stays where it is
+        # Just below the cursor image, not its hot spot
+        @tooltip_cursor_id = @cursors.last.to_i
+        hot_x, hot_y = SmartCursorManager.hot_spot(@tooltip_cursor_id)
+        k_box.visible = true
+        k_box.layout_data.x = x + (10 - hot_x) * UI.scale_factor
+        k_box.layout_data.y = y + (SmartCursorManager::CURSOR_SIZE + 10 - hot_y) * UI.scale_factor
+        k_box.invalidate
+      end
+    end
+
+    # Shows a tooltip over the others, until #pop_tooltip. Returns its box.
+    # Without position, it follows the cursor. With a position (canvas coords),
+    # it stays there, its anchor point on it - eg. Kuix::Anchor::LEFT to show it
+    # on the right of a point.
+    def push_tooltip(items, type = MESSAGE_TYPE_DEFAULT, position: nil, anchor: Kuix::Anchor::TOP_LEFT)
+
+      @tooltip_boxes.last.visible = false unless @tooltip_boxes.last.nil?
+
+      k_box = _create_tooltip_box(items, type)
+      k_box.layout_data.anchor.set!(anchor)
+      k_box.data = position  # nil = follows the cursor
+      @tooltip_boxes.push(k_box)
+      @canvas.append(k_box)
+
+      if position.nil?
+        move_tooltip(@last_mouse_x, @last_mouse_y)
+      else
+        k_box.layout_data.x = position.x
+        k_box.layout_data.y = position.y
+      end
+
+      k_box
+    end
+
+    def pop_tooltip(box)
+      return if box.nil? || (index = @tooltip_boxes.index { |b| b.equal?(box) }).nil? || index == 0
+      box.remove
+      @tooltip_boxes.delete_at(index)
+      @tooltip_boxes.last.visible = true if @tooltip_boxes.length > 1  # The root one waits for the cursor back in the 3D view
+    end
+
+    def pop_to_root_tooltip
+      @tooltip_boxes.pop.remove while @tooltip_boxes.length > 1
+    end
+
+    # Whether the given tooltip box - what #set_root_tooltip returned - is still
+    # the root one : another tooltip may have replaced it, or removed it.
+    def current_root_tooltip?(box)
+      !box.nil? && @tooltip_boxes[0].equal?(box)
+    end
+
+    def _create_tooltip_box(items, type)
 
       unit = get_unit
       case type
@@ -634,30 +1055,41 @@ module Ladb::OpenCutList
 
       k_box = Kuix::Panel.new
       k_box.layout_data = Kuix::StaticLayoutData.new(0, 0, -1, -1, Kuix::Anchor.new(Kuix::Anchor::TOP_LEFT))
+      k_box.layout_data.keep_inside = true
       k_box.layout = Kuix::InlineLayout.new(false, unit)
-      k_box.border.set_all!(unit / 4)
+      k_box.border.set_all!(0.5)
       k_box.padding.set_all!(unit * 1.5)
+      k_box.padding.bottom = unit * 1 if items.is_a?(String)  # Improvce vertical align of single label tooltip
       k_box.hittable = false
       k_box.set_style_attribute(:background_color, background_color)
       k_box.set_style_attribute(:border_color, border_color)
 
-        fn_create_lbl = lambda do |item|
+        fn_create_lbl = lambda do |item, row_index|
 
           is_title = item.start_with?('#')
           item = item[1..-1] if is_title
+          is_inverted = item.start_with?('!')
+          item = item[1..-1] if is_inverted
 
           k_lbl = Kuix::Label.new
           k_lbl.text = item
           k_lbl.text_bold = true if is_title
           k_lbl.text_size = unit * (is_title || items.one? ? 3 : 2.5) * get_text_unit_factor
+          k_lbl.text_size = unit * (row_index == 0 ? 3 : 2.5) * get_text_unit_factor
           k_lbl.text_align = TextAlignLeft
-          k_lbl.set_style_attribute(:color, text_color)
+          if is_inverted
+            k_lbl.padding.set!(unit / 2.0, unit / 2.0, 0, unit / 2.0)
+            k_lbl.set_style_attribute(:background_color, text_color)
+            k_lbl.set_style_attribute(:color, background_color)
+          else
+            k_lbl.set_style_attribute(:color, text_color)
+          end
 
           return k_lbl
         end
 
         items = [ items ] if items.is_a?(String)
-        items.each do |item|
+        items.each_with_index do |item, index|
           next if item.nil?
 
           if item.is_a?(String)
@@ -673,17 +1105,17 @@ module Ladb::OpenCutList
               next
             end
 
-            k_box.append(fn_create_lbl.call(item))
+            k_box.append(fn_create_lbl.call(item, index))
 
           elsif item.is_a?(Array)
 
             k_panel = Kuix::Panel.new
-            k_panel.layout = Kuix::InlineLayout.new(true, @unit * 1.5)
+            k_panel.layout = Kuix::InlineLayout.new(true, @unit * 1.5, Kuix::Anchor.new(Kuix::Anchor::LEFT))
 
             item.each do |sub_item|
 
               if sub_item.is_a?(String)
-                k_panel.append(fn_create_lbl.call(sub_item))
+                k_panel.append(fn_create_lbl.call(sub_item, index))
               elsif sub_item.is_a?(Kuix::Motif2d)
                 sub_item.padding.set_all!(@unit)
                 sub_item.min_size.set_all!(@unit * get_text_unit_factor * 3)
@@ -708,38 +1140,11 @@ module Ladb::OpenCutList
 
         end
 
-      @tooltip_box = k_box
-
-      move_tooltip(@last_mouse_x, @last_mouse_y)
-
-      @canvas.append(k_box)
-
+      k_box
     end
+    private :_create_tooltip_box
 
-    def remove_tooltip
-      return if @tooltip_box.nil?
-      @tooltip_box.remove
-      @tooltip_box = nil
-    end
-
-    def hide_tooltip
-      return if @tooltip_box.nil?
-      @tooltip_box.visible = false
-    end
-
-    def reveal_tooltip
-      return if @tooltip_box.nil?
-      @tooltip_box.visible = true
-    end
-
-    def move_tooltip(x, y)
-      unless @tooltip_box.nil?
-        @tooltip_box.visible = true
-        @tooltip_box.layout_data.x = x + 10 * UI.scale_factor
-        @tooltip_box.layout_data.y = y + (32 + 10) * UI.scale_factor
-        @tooltip_box.invalidate
-      end
-    end
+    # -- Notification --
 
     def notify(text, type = MESSAGE_TYPE_DEFAULT, button_defs = [], timeout = 5) # buttons = [ { :label => BTN_TEXT, :block => BTN_BLOCK } ]
       return unless @notification_panel && text.is_a?(String)
@@ -809,7 +1214,7 @@ module Ladb::OpenCutList
         box.remove
 
         # Hide notification panel if no more child
-        @notification_panel.visible = false if @notification_panel.last_child.nil?
+        @notification_panel.visible = @notification_panel.children.any?
 
       }
       advance_lambda = lambda {
@@ -872,8 +1277,12 @@ module Ladb::OpenCutList
 
       end
 
+      # Close the oldest notifications to keep at most NOTIFICATION_MAX_COUNT boxes
+      overflow_count = @notification_panel.children.size - (NOTIFICATION_MAX_COUNT - 1)
+      @notification_panel.children.first(overflow_count).each { |child| child.fire(:click) } if overflow_count > 0
+
       @notification_panel.append(box)
-      @notification_panel.visible = !@notification_panel.last_child.nil?
+      @notification_panel.visible = @notification_panel.children.any?
 
       start_lambda.call
 
@@ -909,10 +1318,99 @@ module Ladb::OpenCutList
       end
     end
 
+    def clear_notifications
+      return unless @notification_panel
+      @notification_panel.children.dup.each { |child| child.fire(:click) }
+    end
+
+    # -- Validation --
+
+    def show_validation
+      return if @validation_panel.visible?
+
+      @validation_panel.clear
+      @validation_panel.visible = true
+
+      unit = get_unit
+
+      btn = Kuix::Button.new
+      btn.layout = Kuix::GridLayout.new
+      btn.border.set_all!(unit * 0.5)
+      btn.padding.set_all!(unit * 3)
+      btn.min_size.set_all!(unit * 5)
+      btn.set_style_attribute(:background_color, COLOR_MESSAGE_BACKGROUND_ERROR)
+      btn.set_style_attribute(:background_color, COLOR_MESSAGE_BACKGROUND_ERROR, :active)
+      btn.set_style_attribute(:background_color, COLOR_MESSAGE_TEXT_ERROR, :hover)
+      btn.set_style_attribute(:border_color, COLOR_MESSAGE_TEXT_ERROR)
+      btn.on(:click) do |button|
+        onCancel(0, Sketchup.active_model.active_view)
+      end
+      @validation_panel.append(btn)
+
+        motif = Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path("M0,0L1,1 M0,1L1,0"))
+        motif.hittable = false
+        motif.line_width = unit * 0.5
+        motif.set_style_attribute(:color, COLOR_MESSAGE_TEXT_ERROR)
+        motif.set_style_attribute(:color, COLOR_MESSAGE_TEXT_ERROR, :active)
+        motif.set_style_attribute(:color, COLOR_MESSAGE_BACKGROUND_ERROR, :hover)
+        btn.append(motif)
+
+      btn = Kuix::Button.new
+      btn.layout = Kuix::GridLayout.new
+      btn.border.set_all!(unit * 0.5)
+      btn.padding.set_all!(unit * 3)
+      btn.min_size.set_all!(unit * 5)
+      btn.set_style_attribute(:background_color, COLOR_MESSAGE_BACKGROUND_SUCCESS)
+      btn.set_style_attribute(:background_color, COLOR_MESSAGE_BACKGROUND_SUCCESS, :active)
+      btn.set_style_attribute(:background_color, COLOR_MESSAGE_TEXT_SUCCESS, :hover)
+      btn.set_style_attribute(:border_color, COLOR_MESSAGE_TEXT_SUCCESS)
+      btn.on(:click) do |button|
+        onValidate(Sketchup.active_model.active_view)
+      end
+      @validation_panel.append(btn)
+
+        motif = Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path("M0,0.5L0.375,1L1,0"))
+        motif.hittable = false
+        motif.line_width = unit * 0.5
+        motif.set_style_attribute(:color, COLOR_MESSAGE_TEXT_SUCCESS)
+        motif.set_style_attribute(:color, COLOR_MESSAGE_TEXT_SUCCESS, :active)
+        motif.set_style_attribute(:color, COLOR_MESSAGE_BACKGROUND_SUCCESS, :hover)
+        btn.append(motif)
+
+    end
+
+    def hide_validation
+      return unless @validation_panel.visible?
+
+      @validation_panel.clear
+      @validation_panel.visible = false
+
+    end
+
     # -- Actions --
 
-    def get_action_defs  # Array<{ :action => THE_ACTION, :options => { OPTION_GROUP_1 => [ OPTION_1, OPTION_2 ] } }>
+    def get_action_defs  # Array<{ :action => THE_ACTION, :variant_of => ROOT_ACTION (optional), :options => { OPTION_GROUP_1 => [ OPTION_1, OPTION_2 ] } }>
       []
+    end
+
+    # The actions declared as :variant_of the given one
+    def get_action_variants(action)
+      get_action_defs.select { |action_def| action_def[:variant_of] == action }.map { |action_def| action_def[:action] }
+    end
+
+    # The action whose button shows the given one
+    def get_action_root(action)
+      action_def = get_action_defs.find { |action_def| action_def[:action] == action }
+      action_def.nil? || action_def[:variant_of].nil? ? action : action_def[:variant_of]
+    end
+
+    def get_action_variant_btn_child(root_action, action)
+      Kuix::Label.new(PLUGIN.get_i18n_string("tool.smart_#{get_stripped_name}.action_#{action}_variant"))
+    end
+
+    # The selected color of the action's variant button, and of its root button while it is the current action
+    def get_action_variant_color(action)
+      COLOR_BRAND
     end
 
     def get_action_status(action)
@@ -925,12 +1423,13 @@ module Ladb::OpenCutList
       PLUGIN.get_i18n_string("tool.smart_#{get_stripped_name}.action_option_#{option_group}_#{option}_status")
     end
 
-    def get_action_cursor(action)
-      @cursor_select_error
+    def get_action_option_group_title(action, option_group)
+      return '' if option_group.nil?
+      PLUGIN.get_i18n_string("tool.smart_#{get_stripped_name}.action_option_group_#{option_group}")
     end
 
-    def get_action_picker(action)
-      nil
+    def get_action_cursor(action)
+      SmartCursorManager.cursor_select_error
     end
 
     def get_action_options_dictionary_and_section(action)
@@ -941,15 +1440,56 @@ module Ladb::OpenCutList
       false
     end
 
+    # The preset keys the toolbar edits for the given action - what the
+    # action's modal marks its other fields against. A unique group is stored
+    # under its own name, the options of any other group under theirs.
+    def get_action_toolbar_option_keys(action)
+      action_def = get_action_defs.find { |action_def| action_def[:action] == action }
+      return [] if action_def.nil? || !action_def[:options].is_a?(Hash)
+      action_def[:options].flat_map { |option_group, options| get_action_option_group_unique?(action, option_group) ? [ option_group ] : options }.map(&:to_s).uniq
+    end
+
+    def get_action_option_group_titled?(action, option_group)
+      true
+    end
+
     def get_action_option_group_unique?(action, option_group)
       false
+    end
+
+    def get_action_option_sync_actions(action, option_group, option)
+      []
     end
 
     def get_action_option_toggle?(action, option_group, option)
       true
     end
 
+    # The button of an action option in the options panel, to restyle it
+    # after it was built. nil when the panel does not show it.
+    def get_action_option_btn(action, option_group, option)
+      return nil if @actions_options_panels.nil?
+      return nil unless (actions_options_panel = @actions_options_panels.find { |panel| panel.data[:action] == action })
+      actions_options_panel.children.find { |child| child.is_a?(Kuix::Button) && child.data.is_a?(Hash) && child.data[:option_group] == option_group && child.data[:option] == option }
+    end
+
     def get_action_option_btn_child(action, option_group, option)
+      nil
+    end
+
+    def get_action_option_btn_disabled?(action, option_group, option)
+      false
+    end
+
+    def get_action_option_btn_selected?(action, option_group, option)
+      fetch_action_option_boolean(action, option_group, option)
+    end
+
+    def get_action_option_btn_prefix(action, option_group, option)
+      nil
+    end
+
+    def get_action_option_btn_suffix(action, option_group, option)
       nil
     end
 
@@ -959,13 +1499,14 @@ module Ladb::OpenCutList
     end
 
     def fetch_action
-      return @current_action unless @current_action.nil?
-      @current_action = PLUGIN.read_default("settings.smart_#{get_stripped_name}_last_action")
-      @current_action = get_action_defs.first[:action] if get_action_defs.find { |action_def| action_def[:action] == @current_action }.nil?
-      @current_action
+      @current_action ||= begin
+                            @current_action = PLUGIN.read_default("settings.smart_#{get_stripped_name}_last_action")
+                            @current_action = get_action_defs.first[:action] if get_action_defs.find { |action_def| action_def[:action] == @current_action }.nil?
+                            @current_action
+                          end
     end
 
-    def store_action_option_value(action, option_group, option, value = nil, fire_event = false)
+    def store_action_option_value(action, option_group, option, value = nil, fire_event: false, synchronize: true)
       dictionary, section = get_action_options_dictionary_and_section(action)
       preset = PLUGIN.get_global_preset(dictionary, nil, section)
       if get_action_option_group_unique?(action, option_group)
@@ -978,6 +1519,11 @@ module Ladb::OpenCutList
       if changed
         PLUGIN.set_global_preset(dictionary, preset, nil, section, fire_event)
         onActionOptionStored(action, option_group, option)
+      end
+      if synchronize
+        (get_action_option_sync_actions(action, option_group, option).to_a - [ action ]).each do |sync_action|
+          store_action_option_value(sync_action, option_group, option, value, fire_event: fire_event, synchronize: false)
+        end
       end
     end
 
@@ -1001,18 +1547,34 @@ module Ladb::OpenCutList
 
     def fetch_action_option_integer(action, option_group, option)
       fetch_action_option_value(action, option_group, option).to_i
+    rescue
+      0
     end
 
     def fetch_action_option_float(action, option_group, option)
       fetch_action_option_value(action, option_group, option).to_f
+    rescue
+      0.0
     end
 
     def fetch_action_option_string(action, option_group, option)
       fetch_action_option_value(action, option_group, option).to_s
+    rescue
+      ''
     end
 
     def fetch_action_option_length(action, option_group, option)
       DimensionUtils.str_to_ifloat(fetch_action_option_value(action, option_group, option).to_s, true).to_l
+    end
+
+    def fetch_action_option_factor_or_length(action, option_group, option)
+      value = fetch_action_option_value(action, option_group, option).to_s
+      if value.start_with?('/') && (divider = value[1..-1].gsub(',', '.').to_f) != 0
+        return 1 / divider
+      elsif value.start_with?('*')
+        return value[1..-1].gsub(',', '.').to_f
+      end
+      DimensionUtils.str_to_ifloat(value, true).to_l
     end
 
     def get_startup_action
@@ -1021,15 +1583,22 @@ module Ladb::OpenCutList
 
     def set_action(action)
 
-      # Hide possible modal
-      PLUGIN.hide_modal_dialog
+      # Hide possible modal of the tool
+      PLUGIN.hide_modal_dialog(/\Asmart_/)
 
       # Store settings in class variable
       store_action(action)
 
       # Update buttons
       if @action_buttons
+        root_action = get_action_root(action)
         @action_buttons.each do |button|
+          button.selected = button.data[:action] == root_action
+          if button.selected? && !get_action_variants(root_action).empty?
+            button.set_style_attribute(:background_color, get_action_variant_color(action), :selected)
+          end
+        end
+        @action_variant_buttons.each do |button|
           button.selected = button.data[:action] == action
         end
       end
@@ -1043,18 +1612,12 @@ module Ladb::OpenCutList
         end
       end
 
-      # Update status text and root cursor
-      Sketchup.set_status_text(get_action_status(action), SB_PROMPT)
+      # Update status text
+      set_status_prompt(get_action_status(action))
+
+      # Update root cursor
       set_root_cursor(get_action_cursor(action))
       pop_to_root_cursor
-
-      # Update picker
-      previous_picker = @picker
-      @picker = get_action_picker(action)
-      unless @picker.nil? || previous_picker.nil?
-        @picker.pick_position.x = previous_picker.pick_position.x
-        @picker.pick_position.y = previous_picker.pick_position.y
-      end
 
       # Fire event
       onActionChanged(action)
@@ -1066,6 +1629,9 @@ module Ladb::OpenCutList
 
       # Select a default action
       action = get_action_defs.first[:action] if action.nil?
+
+      # Keep the family's last action : its button selects it back
+      (@action_family_last_actions ||= {})[get_action_root(action)] = action
 
       push_action(action)
     end
@@ -1080,18 +1646,31 @@ module Ladb::OpenCutList
       set_action(@action_stack.last[:action])
     end
 
-    def is_action_none?
-      fetch_action == ACTION_NONE
-    end
-
     def set_action_handler(action_handler)
       @action_handler.stop if @action_handler.is_a?(SmartActionHandler)
       @action_handler = action_handler
-      @action_handler.start if @action_handler.is_a?(SmartActionHandler)
+      if @action_handler.is_a?(SmartActionHandler)
+        DoorDef.close_all(Sketchup.active_model) if @action_handler.close_doors_on_start?
+        @action_handler.start
+      end
     end
 
     def fetch_action_handler
       @action_handler
+    end
+
+    def fetch_action_family_last_action(root_action)
+      (@action_family_last_actions ||= {})[root_action] || root_action
+    end
+
+    # -- VCB --
+
+    # True while the user is typing a value in the VCB, from its first printable
+    # key not consumed as a shortcut until ENTER or ESC : a shortcut on a key the
+    # VCB also accepts ("+", "-", ...) must then let the key go to the VCB.
+    # BACKSPACE doesn't reach the tool : erasing the whole text keeps it true.
+    def is_vcb_typing?
+      @vcb_typing == true
     end
 
     # -- Menu --
@@ -1103,84 +1682,9 @@ module Ladb::OpenCutList
     end
 
     def populate_menu(menu)
-      if @active_part
-        active_part_id = @active_part.id
-        active_part_material_type = @active_part.group.material_type
-        item = menu.add_item(_get_active_part_name) {}
-        menu.set_validation_proc(item) { MF_GRAYED }
-        menu.add_separator
-        menu.add_item(PLUGIN.get_i18n_string('core.menu.item.edit_part_properties')) {
-          _select_active_part_entity
-          PLUGIN.execute_tabs_dialog_command_on_tab('cutlist', 'edit_part', "{ part_id: '#{active_part_id}', tab: 'general', dontGenerate: false }")
-        }
-        menu.add_item(PLUGIN.get_i18n_string('core.menu.item.edit_part_axes_properties')) {
-          _select_active_part_entity
-          PLUGIN.execute_tabs_dialog_command_on_tab('cutlist', 'edit_part', "{ part_id: '#{active_part_id}', tab: 'axes', dontGenerate: false }")
-        }
-        menu.set_validation_proc(item) {
-          if active_part_material_type == MaterialAttributes::TYPE_SOLID_WOOD ||
-            active_part_material_type == MaterialAttributes::TYPE_SHEET_GOOD ||
-            active_part_material_type == MaterialAttributes::TYPE_DIMENSIONAL
-            MF_ENABLED
-          else
-            MF_GRAYED
-          end
-        }
-        item = menu.add_item(PLUGIN.get_i18n_string('core.menu.item.edit_part_edges_properties')) {
-          _select_active_part_entity
-          PLUGIN.execute_tabs_dialog_command_on_tab('cutlist', 'edit_part', "{ part_id: '#{active_part_id}', tab: 'edges', dontGenerate: false }")
-        }
-        menu.set_validation_proc(item) {
-          if active_part_material_type == MaterialAttributes::TYPE_SHEET_GOOD
-            MF_ENABLED
-          else
-            MF_GRAYED
-          end
-        }
-        item = menu.add_item(PLUGIN.get_i18n_string('core.menu.item.edit_part_faces_properties')) {
-          _select_active_part_entity
-          PLUGIN.execute_tabs_dialog_command_on_tab('cutlist', 'edit_part', "{ part_id: '#{active_part_id}', tab: 'faces', dontGenerate: false }")
-        }
-        menu.set_validation_proc(item) {
-          if active_part_material_type == MaterialAttributes::TYPE_SHEET_GOOD
-            MF_ENABLED
-          else
-            MF_GRAYED
-          end
-        }
-        menu.add_separator
-        locked_validation_proc = Proc.new {
-          if @active_part_entity_path && @active_part_entity_path.find { |entity| entity.locked? }.nil?
-            MF_ENABLED
-          else
-            MF_GRAYED
-          end
-        }
-        item = menu.add_item(PLUGIN.get_i18n_string('core.menu.item.edit_part_instance_properties')) {
-          require_relative '../model/outliner/outliner_node_def'
-          _select_active_part_entity
-          PLUGIN.execute_tabs_dialog_command_on_tab('outliner', 'edit_node', "{ node_id: '#{OutlinerNodePartDef.generate_node_id(@active_part_entity_path)}', tab: 'general' }")
-        }
-        menu.set_validation_proc(item, &locked_validation_proc)
-        unless Sketchup.version_number < 2000000000
-          item = menu.add_item(PLUGIN.get_i18n_string('core.menu.item.edit_part_instance')) {
-            Sketchup.active_model.active_path = @active_part_entity_path
-          }
-          menu.set_validation_proc(item, &locked_validation_proc)
-          item = menu.add_item(PLUGIN.get_i18n_string('core.menu.item.edit_parent_part_instance')) {
-            Sketchup.active_model.active_path = @active_part_entity_path[0...-1]
-          }
-          menu.set_validation_proc(item, &locked_validation_proc)
-        end
-        item = menu.add_item(PLUGIN.get_i18n_string("core.menu.item.#{@active_part_entity_path.last.visible? ? "hide" : "unhide"}_part_instance")) {
-          @active_part_entity_path.last.visible = !@active_part_entity_path.last.visible?
-        }
-        menu.set_validation_proc(item, &locked_validation_proc)
-      else
-        menu.add_item(PLUGIN.get_i18n_string('default.close')) {
-          quit
-        }
-      end
+      menu.add_item(PLUGIN.get_i18n_string('default.close')) {
+        quit
+      }
     end
 
     # -- Tool stuff --
@@ -1199,7 +1703,6 @@ module Ladb::OpenCutList
 
     def draw(view)
       super
-      @picker.draw(view) unless @picker.nil?
       @action_handler.draw(view) if !@action_handler.nil? && @action_handler.respond_to?(:draw)
     end
 
@@ -1222,8 +1725,7 @@ module Ladb::OpenCutList
       # Store tool ID
       self.class.tool_id = view.model.tools.active_tool_id
 
-      # Create pick helpers
-      @pick_helper = view.pick_helper
+      @vcb_typing = false
 
       # Set startup cursor
       set_root_action(get_startup_action)
@@ -1236,26 +1738,10 @@ module Ladb::OpenCutList
 
       # Add event callbacks
       @event_callback = PLUGIN.add_event_callback(PluginObserver::ON_GLOBAL_PRESET_CHANGED) do |params|
-        dictionary, section = get_action_options_dictionary_and_section(fetch_action)
-        if params[:dictionary] == dictionary && params[:section] == section
-          @actions_options_panels.each do |actions_options_panel|
-
-            action = actions_options_panel.data[:action]
-            next unless action == fetch_action
-
-            b = actions_options_panel.child
-            until b.nil? do
-              unless b.data.nil?
-                option_group = b.data[:option_group]
-                option = b.data[:option]
-                if b.is_a?(Kuix::Button)
-                  b.child.text = fetch_action_option_string(action, option_group, option) if !get_action_option_toggle?(action, option_group, option) && b.child.is_a?(Kuix::Label)
-                  b.selected = fetch_action_option_boolean(action, option_group, option)
-                end
-              end
-              b = b.next
-            end
-
+        get_action_defs.each do |action_def|
+          dictionary, section = get_action_options_dictionary_and_section(action_def[:action])
+          if params[:dictionary] == dictionary && params[:section] == section
+            onGlobalPresetChanged(dictionary, section)
           end
         end
       end
@@ -1277,14 +1763,17 @@ module Ladb::OpenCutList
       # Stop observing rendering options events
       view.model.rendering_options.remove_observer(self)
 
+      # Drop a pending VCB value
+      _cancel_status_vcb_value
+
       # Reset tooltip
       view.tooltip = ''
 
       # Unlock inférence
       view.lock_inference if view.inference_locked?
 
-      # Hide possible modal
-      PLUGIN.hide_modal_dialog
+      # Hide possible modal of the tool
+      PLUGIN.hide_modal_dialog(/\Asmart_/)
 
       # Remove event callbacks
       PLUGIN.remove_event_callback(PluginObserver::ON_GLOBAL_PRESET_CHANGED, @event_callback)
@@ -1296,7 +1785,7 @@ module Ladb::OpenCutList
 
     def onSuspend(view)
       super
-      return @action_handler.onToolSuspend(self, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolSuspend)
+      @action_handler.onToolSuspend(self, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolSuspend)
     end
 
     def onResume(view)
@@ -1311,17 +1800,33 @@ module Ladb::OpenCutList
       super
     end
 
+    def onValidate(view)
+      @action_handler.onToolValidate(self, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolValidate)
+    end
+
+    def onReturn(view)
+      @action_handler.onToolReturn(self, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolReturn)
+    end
+
     def onKeyDown(key, repeat, flags, view)
+      @key_downs_consumed = {} if @key_downs_consumed.nil?
+      @key_downs_consumed[key] = true  # Until proven otherwise below
       return true if super
-      @action_handler.onToolKeyDown(self, key, repeat, flags, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolKeyDown)
+      @vcb_typing = false if key == Kuix::VK_ESCAPE  # ESC clears the VCB, without "onCancel" on SU 2027 if it wasn't empty
+      return true if !@action_handler.nil? && @action_handler.respond_to?(:onToolKeyDown) && @action_handler.onToolKeyDown(self, key, repeat, flags, view)
+      @key_downs_consumed[key] = false
+      # Not consumed : a printable key goes to the VCB (CTRL + ALT = ALTGR on Windows)
+      @vcb_typing = true if is_key_printable?(key) && is_key_ctrl_or_option_down?(flags) == is_key_alt_or_command_down?(flags)
+      false
     end
 
     def onKeyUp(key, repeat, flags, view)
       return true if super
-      @picker.onToolKeyUp(self, key, repeat, flags, view) unless @picker.nil?
+      @action_handler.onToolKeyUp(self, key, repeat, flags, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolKeyUp)
     end
 
     def onKeyUpExtended(key, repeat, flags, view, after_down, is_quick)
+      key_down_consumed = @key_downs_consumed.nil? ? false : @key_downs_consumed.delete(key)
       return true if super
       if key == 9 || key == 25  # TAB key doesn't generate "onKeyDown" event and SHIFT + TAB = 25 on Mac
 
@@ -1336,30 +1841,29 @@ module Ladb::OpenCutList
 
             unless action_defs[action_index][:options].nil? || action_defs[action_index][:options].empty?
 
-              modifier_option_group = action_defs[action_index][:options].keys.first
-              modifier_options = action_defs[action_index][:options][modifier_option_group]
+              # The "modifier" is the first UNIQUE option group of the action :
+              # only a group where exactly one option is on at a time has a
+              # "next" option to cycle to.
+              modifier_option_group = action_defs[action_index][:options].keys.detect { |option_group| get_action_option_group_unique?(action, option_group) }
 
-              if get_action_option_group_unique?(action, modifier_option_group)
+              unless modifier_option_group.nil?
 
-                modifier_option = modifier_options.detect { |option| fetch_action_option_boolean(action, modifier_option_group, option) }
+                modifier_options = action_defs[action_index][:options][modifier_option_group]
+
+                # The option the buttons SHOW as on - which may stand in for a
+                # stored one its button currently disables
+                modifier_option = modifier_options.detect { |option| get_action_option_btn_selected?(action, modifier_option_group, option) }
+                modifier_option = modifier_options.detect { |option| fetch_action_option_boolean(action, modifier_option_group, option) } if modifier_option.nil?
                 modifier_option_index = modifier_options.index(modifier_option)
                 unless modifier_option_index.nil?
 
-                  next_modifier_option_index = (modifier_option_index + (is_key_shift_down? ? -1 : 1)) % modifier_options.length
-                  next_modifier_option = modifier_options[next_modifier_option_index]
+                  # Cycle on to the next option whose button is enabled
+                  step = is_key_shift_down? ? -1 : 1
+                  next_modifier_option = (1...modifier_options.length).map { |offset| modifier_options[(modifier_option_index + offset * step) % modifier_options.length] }
+                                                                     .detect { |option| !get_action_option_btn_disabled?(action, modifier_option_group, option) }
 
-                  @actions_options_panels.each do |actions_options_panel|
-                    next unless actions_options_panel.data[:action] == action
-
-                    b = actions_options_panel.child
-                    until b.nil? do
-                      if b.is_a?(Kuix::Button) && b.data[:option_group] == modifier_option_group && b.data[:option] == next_modifier_option
-                        b.fire(:click, flags)
-                        break
-                      end
-                      b = b.next
-                    end
-
+                  if !next_modifier_option.nil? && (btn = get_action_option_btn(action, modifier_option_group, next_modifier_option)).is_a?(Kuix::Button)
+                    btn.fire(:click, flags)
                   end
 
                   return true
@@ -1371,24 +1875,24 @@ module Ladb::OpenCutList
 
           else
 
-            # Select next action
+            # Select next action button, on its family's last action
 
-            next_action_index = (action_index + (is_key_shift_down? ? -1 : 1)) % action_defs.length
-            next_action = action_defs[next_action_index][:action]
-            set_root_action(next_action)
+            root_actions = action_defs.select { |action_def| action_def[:variant_of].nil? }.map { |action_def| action_def[:action] }
+            root_action_index = root_actions.index(get_action_root(action))
+            next_root_action = root_actions[(root_action_index + (is_key_shift_down? ? -1 : 1)) % root_actions.length]
+            set_root_action(fetch_action_family_last_action(next_root_action))
 
             return true
           end
 
         end
 
-      elsif key == VK_UP || key == VK_DOWN
-        if @active_part_entity_path
-          _pick_deeper(key == VK_UP ? 1 : -1)
-        end
-        return true
       end
-      @action_handler.onToolKeyUpExtended(self, key, repeat, flags, view, after_down, is_quick) if !@action_handler.nil? && @action_handler.respond_to?(:onToolKeyUpExtended)
+      return true if !@action_handler.nil? && @action_handler.respond_to?(:onToolKeyUpExtended) && @action_handler.onToolKeyUpExtended(self, key, repeat, flags, view, after_down, is_quick)
+      # Not consumed : UP / DOWN cycle the picked face through the depth - unless
+      # the handler already used the press (axis locks)
+      return true if (key == VK_UP || key == VK_DOWN) && !key_down_consumed && !@action_handler.nil? && @action_handler.pick_deeper(key == VK_UP ? 1 : -1)
+      false
     end
 
     def onMouseMove(flags, x, y, view)
@@ -1397,28 +1901,26 @@ module Ladb::OpenCutList
       @last_mouse_y = y
 
       if super
-        hide_tooltip
+        hide_root_tooltip                                  # It tells about the 3D view, not the UI
+        move_tooltip(x, y) if @tooltip_boxes.length > 1   # A pushed one follows the cursor
         return true
       end
 
       # Tooltip
+      pop_to_root_tooltip  # A UI tooltip whose :leave was missed
       move_tooltip(x, y)
-
-      # Action
-      @picker.onToolMouseMove(self, flags, x, y, view) unless is_action_none? || @picker.nil?
 
       @action_handler.onToolMouseMove(self, flags, x, y, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolMouseMove)
     end
 
     def onMouseLeave(view)
+      hide_root_tooltip  # Out of the window, a kept one (eg. hidden over the UI) too. The next move reveals it.
       return true if super
-      @picker.onToolMouseLeave(self, view) unless is_action_none? || @picker.nil?
       @action_handler.onToolMouseLeave(self, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolMouseLeave)
     end
 
     def onMouseLeaveSpace(view)
       return true if super
-      @picker.onToolMouseLeave(self, view) unless is_action_none? || @picker.nil?
       @action_handler.onToolMouseLeave(self, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolMouseLeave)
     end
 
@@ -1443,14 +1945,21 @@ module Ladb::OpenCutList
 
     def onMouseWheel(flags, delta, x, y, view)
       return true if super
-      if flags & COPY_MODIFIER_MASK == COPY_MODIFIER_MASK
-        _pick_deeper(delta) if @active_part_entity_path
-        return true
-      end
+      return true if !@action_handler.nil? && @action_handler.respond_to?(:onToolMouseWheel) && @action_handler.onToolMouseWheel(self, flags, delta, x, y, view)
+      # Not consumed : COPY modifier + wheel cycles the picked face through the depth
+      return true if flags & COPY_MODIFIER_MASK == COPY_MODIFIER_MASK && !@action_handler.nil? && @action_handler.pick_deeper(delta > 0 ? 1 : -1)
       false
     end
 
+    def onSetCursor
+      if super
+        move_tooltip(@last_mouse_x, @last_mouse_y) if !(k_box = @tooltip_boxes.last).nil? && k_box.visible? && k_box.data.nil? && @cursors.last.to_i != @tooltip_cursor_id
+        true
+      end
+    end
+
     def onUserText(text, view)
+      @vcb_typing = false
       @action_handler.onToolUserText(self, text, view) if !@action_handler.nil? && @action_handler.respond_to?(:onToolUserText)
     end
 
@@ -1466,175 +1975,52 @@ module Ladb::OpenCutList
     end
 
     def onActionChanged(action)
-      @picker.do_pick unless @picker.nil?
+      refresh
     end
 
     def onActionOptionStored(action, option_group, option)
       @action_handler.onToolActionOptionStored(self, action, option_group, option) if !@action_handler.nil? && @action_handler.respond_to?(:onToolActionOptionStored)
     end
 
-    def onPickerChanged(picker, view)
-      # Implement in subclasses
-    end
+    def onGlobalPresetChanged(dictionary, section)
+      @actions_options_panels.each do |actions_options_panel|
 
-    # -----
+        action = actions_options_panel.data[:action]
 
-    #protected # TODO
-
-    def _refresh_active_context(highlighted = false)
-      _set_active_context(@active_context_path, highlighted)
-    end
-
-    def _reset_active_context
-      _set_active_context(nil)
-    end
-
-    def _set_active_context(context_path, highlighted = false)
-
-      @active_context_path = context_path
-
-      _reset_ui
-
-    end
-
-    def _refresh_active_face(highlighted = false)
-      _set_active_face(@active_face_path, @active_face, highlighted)
-    end
-
-    def _reset_active_face
-      _set_active_face(nil, nil)
-    end
-
-    def _set_active_face(face_path, face, highlighted = false)
-
-      @active_face_path = face_path
-      @active_face = face
-
-      _reset_ui
-
-    end
-
-    def _refresh_active_part(highlighted = false)
-      _set_active_part(@active_part_entity_path, _generate_part_from_path(@active_part_entity_path), highlighted)
-    end
-
-    def _reset_active_part
-      _set_active_part(nil, nil)
-    end
-
-    def _set_active_part(part_entity_path, part, highlighted = false)
-
-      @active_part_entity_path = part_entity_path
-      @active_part = part
-
-      _reset_ui
-
-    end
-
-    def _get_active_part_name(sanitize_for_filename = false)
-      return nil unless @active_part.is_a?(Part)
-      "#{@active_part.saved_number && @active_part.number == @active_part.saved_number ? "#{@active_part.number} - " : ''}#{sanitize_for_filename ? _sanitize_filename(@active_part.name) : @active_part.name}"
-    end
-
-    def _get_active_part_size
-      return nil unless @active_part.is_a?(Part)
-      "#{@active_part.length} x #{@active_part.width} x #{@active_part.thickness}"
-    end
-
-    def _get_active_part_material_name
-      return nil unless @active_part.is_a?(Part) && !@active_part.material_name.empty?
-      "#{@active_part.material_name.strip} (#{PLUGIN.get_i18n_string("tab.materials.type_#{@active_part.group.material_type}")})"
-    end
-
-    def _get_active_part_icons
-      return nil unless @active_part.is_a?(Part)
-      if @active_part.flipped || @active_part.resized || @active_part.auto_oriented
-        icons = []
-        icons << Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.5,0L0.5,0.2 M0.5,0.4L0.5,0.6 M0.5,0.8L0.5,1 M0,0.2L0.3,0.5L0,0.8L0,0.2 M1,0.2L0.7,0.5L1,0.8L1,0.2')) if @active_part.flipped
-        icons << Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.6,0L0.4,0 M0.6,0.4L0.8,0.2L0.5,0.2 M0.8,0.2L0.8,0.5 M0.8,0L1,0L1,0.2 M1,0.4L1,0.6 M1,0.8L1,1L0.8,1 M0.2,0L0,0L0,0.2 M0,1L0,0.4L0.6,0.4L0.6,1L0,1')) if @active_part.resized
-        icons << Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.642,0.349L0.642,0.752 M0.541,0.45L0.642,0.349L0.743,0.45 M0.292,0.954L0.642,0.752 M0.43,0.991L0.292,0.954L0.329,0.816 M0.991,0.954L0.642,0.752 M0.853,0.991L0.991,0.954L0.954,0.816 M0.477,0.001L0.584,0.091L0.494,0.198 M0.001,0.477L0.091,0.584L0.198,0.494 M0.091,0.584L0.108,0.456L0.157,0.338L0.235,0.235L0.338,0.157L0.456,0.108L0.584,0.091')) if @active_part.auto_oriented
-        return icons
-      end
-      nil
-    end
-
-    def _select_active_part_entity
-      model = Sketchup.active_model
-      if model && @active_part_entity_path.is_a?(Array) && !@active_part_entity_path.empty?
-        selection = model.selection
-        selection.clear
-        selection.add(@active_part_entity_path.last)
-      end
-    end
-
-    def _can_pick_deeper?
-      !@pick_helper.nil? && !@active_part_entity_path.nil?
-    end
-
-    def _pick_deeper(delta = 1)
-      if _can_pick_deeper?
-
-        picked_paths = []
-        picked_part_entity_paths = []
-        @pick_helper.count.times do |index|
-          path = @pick_helper.path_at(index)
-          part_entity_path = _get_part_entity_path_from_path(path.clone)
-          unless part_entity_path.nil? || picked_part_entity_paths.include?(part_entity_path)
-            picked_paths << path
-            picked_part_entity_paths << part_entity_path
-          end
-        end
-
-        # Try to retrieve current index
-        active_index = picked_part_entity_paths.map { |path| path.last }.index(@active_part_entity_path.last)
-        if active_index
-
-          # Compute the new index
-          new_index = (active_index + delta) % picked_part_entity_paths.length
-
-          # Compute the new part
-          picked_part_entity_path = picked_part_entity_paths[new_index]
-          part = _generate_part_from_path(picked_part_entity_path)
-          if part
-            _set_active_part(picked_part_entity_path, part)
-          end
-
-        end
-
-      end
-    end
-
-    def _reset_ui
-
-      # Clear Overlay layer
-      @overlay_layer.remove_all
-
-      # Reset cursor
-      pop_to_root_cursor
-
-      # Hide previous overlays
-      hide_message
-      remove_tooltip
-
-    end
-
-    def _instances_to_paths(instances, instance_paths, entities, path = [])
-      entities.each do |entity|
-        next if entity.is_a?(Sketchup::Edge) || entity.is_a?(Sketchup::Face)   # Minor Speed improvement
-        if entity.visible? && _layer_visible?(entity.layer, path.empty?)
-          if entity.is_a?(Sketchup::ComponentInstance)
-            if instances.include?(entity)
-              instance_paths << path + [ entity ]
-            else
-              _instances_to_paths(instances, instance_paths, entity.definition.entities, path + [ entity ])
+        actions_options_panel.children.each do |b|
+          unless b.data.nil?
+            option_group = b.data[:option_group]
+            option = b.data[:option]
+            if b.is_a?(Kuix::Button)
+              b.children.first.text = fetch_action_option_string(action, option_group, option) if !get_action_option_toggle?(action, option_group, option) && b.children.first.is_a?(Kuix::Label)
+              b.selected = get_action_option_btn_selected?(action, option_group, option)
+              b.disabled = get_action_option_btn_disabled?(action, option_group, option)
             end
-          elsif entity.is_a?(Sketchup::Group)
-            _instances_to_paths(instances, instance_paths, entity.entities, path + [ entity ])
           end
         end
-      end
+
+      end if @actions_options_panels
+      @action_handler.onToolGlobalPresetChanged(self, dictionary, section) if !@action_handler.nil? && @action_handler.respond_to?(:onToolGlobalPresetChanged)
     end
 
+    def onValidationCancel
+      @action_handler.onToolValidationCancel(self) if !@action_handler.nil? && @action_handler.respond_to?(:onToolValidationCancel)
+    end
+
+    def onValidationOk
+      @action_handler.onToolValidationOk(self) if !@action_handler.nil? && @action_handler.respond_to?(:onToolValidationOk)
+    end
+
+    def onTransactionUndo(model)
+      @action_handler.onToolTransactionUndo(self, model) if !@action_handler.nil? && @action_handler.respond_to?(:onToolTransactionUndo)
+      super
+    end
+
+    def onTransactionRedo(model)
+      @action_handler.onToolTransactionRedo(self, model) if !@action_handler.nil? && @action_handler.respond_to?(:onToolTransactionRedo)
+      super
+    end
+    
   end
 
   # -----
@@ -1660,6 +2046,15 @@ module Ladb::OpenCutList
 
     # -----
 
+    # Whether the doors standing open in the model are closed back before the
+    # handler starts (see DoorDef) : an action that reshapes, joins or builds
+    # parts works on closed doors only.
+    def close_doors_on_start?
+      false
+    end
+
+    # -----
+
     def start
 
       # Cache model useful transformations
@@ -1671,8 +2066,12 @@ module Ladb::OpenCutList
 
       # ---------
 
+      # Set the startup state
       set_state(get_startup_state)
-      onToolMouseMove(@tool, 0, @tool.last_mouse_x, @tool.last_mouse_y, Sketchup.active_model.active_view)
+
+      # Simulate mouse move if the tool has already moved
+      onToolMouseMove(@tool, 0, @tool.last_mouse_x, @tool.last_mouse_y, Sketchup.active_model.active_view) unless @tool.last_mouse_x < 0 || @tool.last_mouse_y < 0
+
     end
 
     def stop
@@ -1687,8 +2086,7 @@ module Ladb::OpenCutList
     # -- STATE --
 
     def set_state(state)
-      @state = state
-      onStateChanged(state)
+      onStateChanged(@state, @state = state)
     end
 
     def fetch_state
@@ -1719,9 +2117,9 @@ module Ladb::OpenCutList
 
     def onToolResume(tool, view)
       @tool.set_root_cursor(get_state_cursor(@state))
-      Sketchup.set_status_text(get_state_status(@state), SB_PROMPT)
-      Sketchup.set_status_text(get_state_vcb_label(@state), SB_VCB_LABEL)
-      Sketchup.set_status_text('', SB_VCB_VALUE)
+      @tool.set_status_prompt(get_state_status(@state))
+      @tool.set_status_vcb_label(get_state_vcb_label(@state))
+      @tool.set_status_vcb_value('')
       _refresh
       true
     end
@@ -1756,16 +2154,24 @@ module Ladb::OpenCutList
 
     # -----
 
-    def onStateChanged(state)
-      @tool.set_root_cursor(get_state_cursor(state))
-      @picker = get_state_picker(state)
-      Sketchup.set_status_text(get_state_status(state), SB_PROMPT)
-      Sketchup.set_status_text(get_state_vcb_label(state), SB_VCB_LABEL)
-      Sketchup.set_status_text('', SB_VCB_VALUE)
+    def onStateChanged(old_state, new_state)
+      @tool.set_root_cursor(get_state_cursor(new_state))
+      @picker = get_state_picker(new_state)
+      @tool.set_status_prompt(get_state_status(new_state))
+      @tool.set_status_vcb_label(get_state_vcb_label(new_state))
+      @tool.set_status_vcb_value('')
     end
 
     def onPickerChanged(picker, view)
       view.invalidate
+    end
+
+    # -----
+
+    # Cycles the picker through the faces stacked under the cursor, front to
+    # back. Returns true if the picked face changed.
+    def pick_deeper(step)
+      !@picker.nil? && _can_pick_deeper? && @picker.pick_deeper(step)
     end
 
     # -----
@@ -1782,21 +2188,25 @@ module Ladb::OpenCutList
 
     protected
 
+    def _can_pick_deeper?
+      true
+    end
+
     def _refresh
       @tool.refresh
     end
 
     def _reset
       @previous_action_handler = nil
-      @tool.remove_all_2d
-      @tool.remove_all_3d
+      @tool.clear_all_2d
+      @tool.clear_all_3d
       Sketchup.active_model.active_view.lock_inference unless Sketchup.active_model.nil?
     end
 
     def _restart
 
-      @tool.remove_all_2d
-      @tool.remove_all_3d
+      @tool.clear_all_2d
+      @tool.clear_all_3d
       Sketchup.active_model.active_view.lock_inference unless Sketchup.active_model.nil?
       @previous_action_handler = nil
 
@@ -1835,8 +2245,10 @@ module Ladb::OpenCutList
 
     def _create_floating_label(
       snap_point:,
+      anchor_position: Kuix::Anchor::CENTER,
       text:,
       text_color: Kuix::COLOR_BLACK,
+      background_color: Kuix::COLOR_WHITE,
       border_color: Kuix::COLOR_BLACK
     )
 
@@ -1844,9 +2256,9 @@ module Ladb::OpenCutList
 
       k_label = Kuix::Label.new
       k_label.text = text.to_s
-      k_label.layout_data = Kuix::StaticLayoutDataWithSnap.new(snap_point, -1, -1, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+      k_label.layout_data = Kuix::StaticLayoutDataWithSnap.new(snap_point, -1, -1, Kuix::Anchor.new(anchor_position))
       k_label.set_style_attribute(:color, text_color)
-      k_label.set_style_attribute(:background_color, Kuix::COLOR_WHITE)
+      k_label.set_style_attribute(:background_color, background_color)
       k_label.set_style_attribute(:border_color, border_color)
       k_label.border.set_all!(unit * 0.25)
       k_label.padding.set!(unit * 0.5, unit * 0.5, unit * 0.3, unit * 0.5)
@@ -1937,6 +2349,10 @@ module Ladb::OpenCutList
       @active_selection_instances
     end
 
+    def active_selection_locked?
+      has_active_selection? && (@active_selection_instances.any?(&:locked?) || @active_selection_path.any?(&:locked?))
+    end
+
     # -----
 
     protected
@@ -1961,17 +2377,49 @@ module Ladb::OpenCutList
 
     # --
 
+    def _can_activate_locked?
+      true
+    end
+
+    def _can_activate_selection?(path, instances)
+      _can_activate_locked? || (path.nil? || path.none? { |i| i.respond_to?(:locked?) && i.locked? }) && (instances.nil? || instances.none? { |i| i.respond_to?(:locked?) && i.locked? })
+    end
+
+    def _get_cant_activate_selection_error_key(path, instances)
+      'tool.default.error.selection_contains_locked_entities'
+    end
+
+    # --
+
     def _reset_active_selection
       _set_active_selection(nil, nil)
     end
 
-    def _set_active_selection(path, entities)
-      if @active_selection_path != path || @active_selection_instances != entities # Has changed?
+    def _set_active_selection(path, instances, silent = false)
+      if _can_activate_selection?(path, instances)
+
+        if @active_selection_path != path
+          @tool.remove_root_tooltip
+        end
+
+      else
+
+        path = nil
+        instances = nil
+
+        unless silent
+          if (error_key = _get_cant_activate_selection_error_key(path, instances)).is_a?(String)
+            @tool.notify_errors([ error_key ])
+          end
+        end
+
+      end
+      if @active_selection_path != path || @active_selection_instances != instances # Has changed?
 
         @active_selection_path = path
-        @active_selection_instances = entities
+        @active_selection_instances = instances
 
-        onActiveSelectionChanged(path, entities)
+        onActiveSelectionChanged(path, instances)
 
       end
     end
@@ -1982,8 +2430,8 @@ module Ladb::OpenCutList
       return @global_context_transformation unless @global_context_transformation.nil?
       @global_context_transformation = default
       if @active_selection_path.is_a?(Array) &&
-         !(model = Sketchup.active_model).nil? &&
-         (!(active_path = model.active_path).is_a?(Array) || active_path.last != @active_selection_path.last)
+         (model = Sketchup.active_model).is_a?(Sketchup::Model) &&
+         ((active_path = model.active_path.to_a).empty? || active_path.last != @active_selection_path.last)
         @global_context_transformation = PathUtils.get_transformation(@active_selection_path, IDENTITY)
       end
       @global_context_transformation
@@ -1994,8 +2442,8 @@ module Ladb::OpenCutList
       @global_instance_transformation = default
       if @active_selection_instances.is_a?(Array) && @active_selection_instances.one?
         if @active_selection_path.is_a?(Array) &&
-           !(model = Sketchup.active_model).nil? &&
-           (!(active_path = model.active_path).is_a?(Array) || active_path.last != @active_selection_instances.first)
+           (model = Sketchup.active_model).is_a?(Sketchup::Model) &&
+           ((active_path = model.active_path.to_a).empty? || active_path.last != @active_selection_instances.first)
           @global_instance_transformation = PathUtils.get_transformation(@active_selection_path + [ @active_selection_instances.first ], IDENTITY)
         end
       else
@@ -2004,28 +2452,18 @@ module Ladb::OpenCutList
       @global_instance_transformation
     end
 
-    # -- Entities --
-
-    def _get_container
-      return @active_selection_path.last if @active_selection_path.is_a?(Array)
-      nil
-    end
-
-    def _get_instances
-      return @active_selection_instances if @active_selection_instances.is_a?(Array)
-      nil
-    end
+    # -- Instances --
 
     def _hide_instances
-      return if (instances = _get_instances).nil? || @unhide_local_instances_transformations.is_a?(Hash)
+      return if @unhide_local_instances_transformations.is_a?(Hash) || (instances = get_active_selection_instances).nil?
       _get_global_instance_transformation(nil)
       _get_drawing_def
       @unhide_local_instances_transformations = instances.map { |instance| [ instance, Geom::Transformation.new(instance.transformation) ] }.to_h
-      instances.each { |instance| instance.move!(Geom::Transformation.scaling(0, 0, 0)) }
+      instances.each { |instance| instance.move!(Geom::Transformation.scaling(0)) }
     end
 
     def _unhide_instances
-      return if !@unhide_local_instances_transformations.is_a?(Hash) || (instances = _get_instances).nil?
+      return if !@unhide_local_instances_transformations.is_a?(Hash) || (instances = get_active_selection_instances).nil?
       instances.each { |instance| instance.move!(@unhide_local_instances_transformations[instance]) }
       @unhide_local_instances_transformations = nil
     end
@@ -2033,8 +2471,10 @@ module Ladb::OpenCutList
     # --
 
     def _get_drawing_def_ipaths
-      return nil if @active_selection_path.nil? || (instances = _get_instances).nil?
+      return nil if @active_selection_path.nil? || !(instances = get_active_selection_instances).is_a?(Array)
       instances.map { |instance| Sketchup::InstancePath.new(@active_selection_path + [ instance ]) }
+    rescue
+      nil
     end
 
     def _get_drawing_def_parameters
@@ -2057,38 +2497,7 @@ module Ladb::OpenCutList
     def _get_drawing_def_edit_bounds(drawing_def, et)
       @drawing_def_edit_bounds ||= {}
       return @drawing_def_edit_bounds[et] if @drawing_def_edit_bounds.key?(et)
-      if et == drawing_def.transformation
-        eb = drawing_def.bounds
-      else
-        eb = Geom::BoundingBox.new
-        if drawing_def.is_a?(DrawingContainerDef)
-
-          eti = et.inverse
-
-          # TODO Improve the way to compute the edit bounds
-
-          fn = lambda do |drawing_container_def|
-
-            eb.add(drawing_container_def.face_manipulators
-                                        .flat_map { |manipulator| manipulator.outer_loop_manipulator.points
-                                                                             .map { |point| point.transform(eti * drawing_def.transformation)} }
-            ) if drawing_container_def.face_manipulators.any?
-            eb.add(drawing_container_def.cline_manipulators
-                                        .flat_map { |manipulator| manipulator.points
-                                                                             .map { |point| point.transform(eti * drawing_def.transformation) } }
-            ) if drawing_container_def.cline_manipulators.any?
-
-            drawing_container_def.container_defs.each do |child_drawing_container_def|
-              fn.call(child_drawing_container_def)
-            end
-
-          end
-
-          fn.call(drawing_def)
-
-        end
-      end
-      @drawing_def_edit_bounds[et] = eb
+      @drawing_def_edit_bounds[et] = CommonStretchSplitWorker.compute_edit_bounds(drawing_def, et)
     end
 
     # -- UTILS
@@ -2106,11 +2515,45 @@ module Ladb::OpenCutList
       end
     end
 
+    # Separates every instance of +path+ that shares its definition, from the
+    # root down, so that CHANGING what the leaf holds changes it there and
+    # nowhere else. Mutates +path+ in place, re-resolving each child by its
+    # POSITION in its parent - a make_unique clones the definition, and the
+    # entity the caller was holding belongs to the old one. Answers whether
+    # anything was cloned at all.
+    #
+    # Wider than #_make_unique_groups_in_path in what it separates - COMPONENTS
+    # too, not only groups - and narrower in when : only what is REALLY shared,
+    # an instance whose definition has others. That is why the two exist side
+    # by side rather than one : #_pick_part runs on every mouse move and must
+    # never clone a component, a component being shared ON PURPOSE where a
+    # group is shared behind the user's back.
+    def _make_unique_instances_in_path(path)
+      made_unique = false
+      path.each_with_index do |entity, index|
+        next unless entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
+        next if entity.definition.instances.length < 2
+
+        # Read BEFORE the clone : afterwards this entity's definition is no
+        # longer the one the child is in.
+        child_position = index < path.size - 1 ? entity.definition.entities.to_a.index(path[index + 1]) : nil
+
+        new_entity = entity.make_unique
+        next if new_entity == entity
+
+        made_unique = true
+        path[index] = new_entity
+        path[index + 1] = new_entity.definition.entities.to_a[child_position] unless child_position.nil?
+      end
+      made_unique
+    end
+
   end
 
   module SmartActionHandlerPartHelper
 
     include SmartActionHandlerSelectionHelper
+    include InstancePathsHelper
     include FaceTrianglesHelper
     include PartHelper
 
@@ -2120,26 +2563,31 @@ module Ladb::OpenCutList
     COLOR_INSTANCE = Sketchup::Color.new(254, 222, 11, 120).freeze
     COLOR_INSTANCE_HIGHLIGHTED = Sketchup::Color.new(254, 222, 11, 175).freeze
 
+    COLOR_LOCKED_INSTANCE = Sketchup::Color.new(128, 0, 0, 120).freeze
+    COLOR_LOCKED_INSTANCE_HIGHLIGHTED = Sketchup::Color.new(128, 0, 0, 175).freeze
+
     LAYER_3D_PART_PREVIEW = 0
-    LAYER_3D_PART_SIBLING_PREVIEW = 1
+    LAYER_3D_PART_TWINS_PREVIEW = 1
+
+    LAYER_2D_PART_PREVIEW = 0
 
     # -----
 
     def onToolLButtonDown(tool, flags, x, y, view)
-      _preview_part(@active_part_entity_path, @active_part, LAYER_3D_PART_PREVIEW, true) if @active_part_entity_path.is_a?(Array)
-      _preview_part_siblings(LAYER_3D_PART_SIBLING_PREVIEW, true)
+      _preview_part(@active_part_entity_path, @active_part, LAYER_3D_PART_PREVIEW, highlighted: true) if @active_part_entity_path.is_a?(Array)
+      _preview_part_twins(LAYER_3D_PART_TWINS_PREVIEW, true)
       false
     end
 
     def onToolLButtonUp(tool, flags, x, y, view)
-      _preview_part(@active_part_entity_path, @active_part, LAYER_3D_PART_PREVIEW, false) if @active_part_entity_path.is_a?(Array)
-      _preview_part_siblings(LAYER_3D_PART_SIBLING_PREVIEW, false)
+      _preview_part(@active_part_entity_path, @active_part, LAYER_3D_PART_PREVIEW, highlighted: false) if @active_part_entity_path.is_a?(Array)
+      _preview_part_twins(LAYER_3D_PART_TWINS_PREVIEW, false)
       false
     end
 
     def onActivePartChanged(part_entity_path, part, highlighted = false)
-      _preview_part(part_entity_path, part, LAYER_3D_PART_PREVIEW, highlighted)
-      _preview_part_siblings(LAYER_3D_PART_SIBLING_PREVIEW, highlighted)
+      _preview_part(part_entity_path, part, LAYER_3D_PART_PREVIEW, highlighted: highlighted)
+      _preview_part_twins(LAYER_3D_PART_TWINS_PREVIEW, highlighted)
       false
     end
 
@@ -2195,7 +2643,7 @@ module Ladb::OpenCutList
         item = menu.add_item(PLUGIN.get_i18n_string('core.menu.item.edit_part_instance_properties')) {
           require_relative '../model/outliner/outliner_node_def'
           _select_active_part_entity
-          PLUGIN.execute_tabs_dialog_command_on_tab('outliner', 'edit_node', "{ node_id: '#{OutlinerNodePartDef.generate_node_id(@active_part_entity_path)}', tab: 'general' }")
+          PLUGIN.execute_tabs_dialog_command_on_tab('outliner', 'edit_node', "{ node_id: '#{OutlinerNodeDef.generate_node_id(@active_part_entity_path)}', tab: 'general' }")
         }
         menu.set_validation_proc(item) {
           if @active_part_entity_path && @active_part_entity_path.find { |entity| entity.locked? }.nil?
@@ -2217,7 +2665,7 @@ module Ladb::OpenCutList
         }
       else
         menu.add_item(PLUGIN.get_i18n_string('default.close')) {
-          quit
+          # Nothing
         }
       end
     end
@@ -2236,16 +2684,16 @@ module Ladb::OpenCutList
       @active_part_entity_path
     end
 
-    def has_active_part_siblings?
-      @active_part_siblings.is_a?(Array) && @active_part_siblings.any?
+    def has_active_part_twins?
+      @active_part_twins.is_a?(Array) && @active_part_twins.any?
     end
 
-    def get_active_part_sibling_entity_paths
-      @active_part_sibling_entity_paths
+    def get_active_part_twin_entity_paths
+      @active_part_twins_entity_paths
     end
 
-    def get_active_part_siblings
-      @active_part_siblings
+    def get_active_part_twins
+      @active_part_twins
     end
 
     protected
@@ -2255,8 +2703,8 @@ module Ladb::OpenCutList
     def _reset
       @active_part_entity_path = nil
       @active_part = nil
-      @active_part_sibling_entity_paths = nil
-      @active_part_siblings = nil
+      @active_part_twins_entity_paths = nil
+      @active_part_twins = nil
       super
     end
 
@@ -2267,7 +2715,17 @@ module Ladb::OpenCutList
         if (picked_part_entity_path = _get_part_entity_path_from_path(picker.picked_face_path)).is_a?(Array)
           _make_unique_groups_in_path(picked_part_entity_path)
           if (picked_part = _generate_part_from_path(picked_part_entity_path)).is_a?(Part)
-            _set_active_part(picked_part_entity_path, picked_part)
+            can_activate, error_key, error_vars = _can_activate_part?(picked_part_entity_path, picked_part)
+            if can_activate
+              _set_active_part(picked_part_entity_path, picked_part)
+            elsif error_key.nil? && picker.pick_past_refused
+              # Silent refusal (eg. already selected) : the part is see-through,
+              # the picker moved on to the next face behind and fired again
+            else
+              _reset_active_part
+              @tool.set_root_tooltip(PLUGIN.get_i18n_string(error_key, error_vars), SmartTool::MESSAGE_TYPE_ERROR) if error_key.is_a?(String)
+              @tool.push_cursor(_get_part_error_cursor)
+            end
             return
           end
         end
@@ -2275,21 +2733,30 @@ module Ladb::OpenCutList
       _reset_active_part
     end
 
-    def _pick_part_siblings?
+    def _pick_part_twins?
       false
     end
 
-    def _pick_part_sibling(picker, view)
-      return unless _pick_part_siblings?
+    def _pick_part_twin(picker, view)
+      return unless _pick_part_twins?
       if @active_part_entity_path.is_a?(Array) && picker.picked_face_path.is_a?(Array)
         if (picked_part_entity_path = _get_part_entity_path_from_path(picker.picked_face_path)).is_a?(Array)
           return if picked_part_entity_path == @active_part_entity_path                   # Abandon if part seems to be the active one
           return if picked_part_entity_path[0...-1] != @active_part_entity_path[0...-1]   # Abandon if part does not have the same ancestors
           if (picked_part = _generate_part_from_path(picked_part_entity_path)).is_a?(Part)
-            _add_part_sibling(picked_part_entity_path, picked_part) if picked_part.id == @active_part.id
+            can_activate, error_key, error_vars = _can_activate_part?(picked_part_entity_path, picked_part)
+            if can_activate
+              _add_part_twin(picked_part_entity_path, picked_part) if picked_part.id == @active_part.id
+            else
+              @tool.set_root_tooltip(PLUGIN.get_i18n_string(error_key, error_vars), SmartTool::MESSAGE_TYPE_ERROR) if error_key.is_a?(String)
+              @tool.push_cursor(_get_part_error_cursor)
+              return
+            end
           end
         end
       end
+      @tool.remove_root_tooltip
+      @tool.pop_to_root_cursor
     end
 
     # --
@@ -2298,21 +2765,65 @@ module Ladb::OpenCutList
       false
     end
 
-    def _preview_axes?
+    def _preview_part_axes?
       false
     end
 
-    def _preview_arrows?
+    def _preview_part_arrows?
       false
     end
 
-    def _preview_box?
+    def _preview_part_box?
       false
     end
 
-    def _preview_part(part_entity_path, part, layer = LAYER_3D_PART_PREVIEW, highlighted = false)
-      @tool.remove_3d(layer)
-      if part
+    def _preview_part_mesh?
+      true
+    end
+
+    def _preview_part_container?
+      false
+    end
+
+    def _preview_part_container_axes?
+      false
+    end
+
+    def _get_active_part_preview_color(part, highlighted = false)
+      highlighted ? COLOR_PART_HIGHLIGHTED : COLOR_PART
+    end
+
+    def _get_instance_part_preview_color(part, highlighted = false)
+      highlighted ? COLOR_INSTANCE_HIGHLIGHTED : COLOR_INSTANCE
+    end
+
+    def _get_path_part_preview_color(path, part, highlighted = false)
+      if path == @active_part_entity_path
+        _get_active_part_preview_color(part, highlighted)
+      else
+        _get_instance_part_preview_color(part, highlighted)
+      end
+    end
+
+    def _get_active_part_preview_offset(part, highlighted = false)
+      0
+    end
+
+    def _get_instance_part_preview_offset(part, highlighted = false)
+      0
+    end
+
+    def _get_path_part_preview_offset(path, part, highlighted = false)
+      if path == @active_part_entity_path
+        _get_active_part_preview_offset(part, highlighted)
+      else
+        _get_instance_part_preview_offset(part, highlighted)
+      end
+    end
+
+    def _preview_part(part_entity_path, part, layer = LAYER_3D_PART_PREVIEW, highlighted: false, clear_before: true)
+      @tool.clear_3d(layer) if clear_before
+      if part.is_a?(Part)
 
         instance_paths = []
         if _preview_all_instances?
@@ -2323,7 +2834,7 @@ module Ladb::OpenCutList
           unless part_entity_path.nil?
             active_instance = part_entity_path.last
             instances = active_instance.definition.instances
-            _instances_to_paths(instances, instance_paths, model.active_entities, model.active_path ? model.active_path : [])
+            _instances_to_paths(instances, instance_paths, model.active_entities, model.active_path.to_a)
           end
 
         else
@@ -2333,12 +2844,13 @@ module Ladb::OpenCutList
 
         end
 
-        if (drawing_def = _get_drawing_def).is_a?(DrawingDef)
+        if (_preview_part_axes? || _preview_part_arrows? || _preview_part_box?) &&
+           (drawing_def = _get_drawing_def).is_a?(DrawingDef)
 
           et = _get_edit_transformation
           eb = _get_drawing_def_edit_bounds(drawing_def, et)
 
-          if _preview_axes?
+          if _preview_part_axes?
 
             # Axes helper
             k_axes_helper = Kuix::AxesHelper.new
@@ -2347,12 +2859,16 @@ module Ladb::OpenCutList
 
           end
 
-          if _preview_arrows?
+          if _preview_part_arrows?
+
+            instance_info = part.def.get_one_instance_info
+            arrow_color = part.auto_oriented ? SmartTool::COLOR_ARROW_AUTO_ORIENTED : SmartTool::COLOR_ARROW
 
             # Back arrow
             k_arrow = Kuix::ArrowMotif3d.new
+            k_arrow.patterns_transformation = instance_info.size.oriented_transformation
             k_arrow.bounds.copy!(eb)
-            k_arrow.color = Kuix::COLOR_WHITE
+            k_arrow.color = arrow_color
             k_arrow.line_width = 2
             k_arrow.line_stipple = Kuix::LINE_STIPPLE_SHORT_DASHES
             k_arrow.transformation = et
@@ -2360,16 +2876,41 @@ module Ladb::OpenCutList
 
             # Front arrow
             k_arrow = Kuix::ArrowMotif3d.new
-            k_arrow.patterns_transformation = Geom::Transformation.translation(Z_AXIS)
+            k_arrow.patterns_transformation = instance_info.size.oriented_transformation
+            k_arrow.patterns_transformation *= Geom::Transformation.translation(Z_AXIS)
             k_arrow.bounds.copy!(eb)
-            k_arrow.color = Kuix::COLOR_WHITE
+            k_arrow.color = arrow_color
             k_arrow.line_width = 2
             k_arrow.transformation = et
             @tool.append_3d(k_arrow, layer)
 
+            if part.follow_grain_direction
+
+              # Back chevron
+              k_chevron = Kuix::ChevronMotif3d.new
+              k_chevron.patterns_transformation = instance_info.size.oriented_transformation
+              k_chevron.bounds.copy!(eb)
+              k_chevron.color = arrow_color
+              k_chevron.line_width = 2
+              k_chevron.line_stipple = Kuix::LINE_STIPPLE_SHORT_DASHES
+              k_chevron.transformation = et
+              @tool.append_3d(k_chevron, layer)
+
+              # Front chevron
+              k_chevron = Kuix::ChevronMotif3d.new
+              k_chevron.patterns_transformation = instance_info.size.oriented_transformation
+              k_chevron.patterns_transformation *= Geom::Transformation.translation(Z_AXIS)
+              k_chevron.bounds.copy!(eb)
+              k_chevron.color = arrow_color
+              k_chevron.line_width = 2
+              k_chevron.transformation = et
+              @tool.append_3d(k_chevron, layer)
+
+            end
+
           end
 
-          if _preview_box?
+          if _preview_part_box?
 
             k_box = Kuix::BoxMotif3d.new
             k_box.bounds.copy!(eb)
@@ -2383,39 +2924,90 @@ module Ladb::OpenCutList
         end
 
         # Mesh
-        instance_paths.each do |path|
+        if _preview_part_mesh?
 
-          triangles = _compute_children_faces_triangles(path.last.definition.entities)
-          t = PathUtils::get_transformation(path)
+          view = Sketchup.active_model.active_view
+          center = part.def.definition.bounds.center
 
-          k_mesh = Kuix::Mesh.new
-          k_mesh.add_triangles(triangles)
-          k_mesh.background_color = if highlighted
-                                      path == @active_part_entity_path ? COLOR_PART_HIGHLIGHTED : COLOR_INSTANCE_HIGHLIGHTED
-                                    else
-                                      path == @active_part_entity_path ? COLOR_PART : COLOR_INSTANCE
-                                    end
-          k_mesh.transformation = t
-          @tool.append_3d(k_mesh, layer)
+          triangles = _compute_children_faces_triangles(part.def.definition.entities)
+
+          instance_paths.each do |path|
+
+            t = PathUtils::get_transformation(path)
+
+            k_mesh = Kuix::Mesh.new
+            k_mesh.add_triangles(triangles)
+            k_mesh.background_color = _get_path_part_preview_color(path, part, highlighted)
+            k_mesh.offset = view.pixels_to_model(_get_path_part_preview_offset(path, part, highlighted), center.transform(t))
+            k_mesh.transformation = t
+            @tool.append_3d(k_mesh, layer)
+
+          end
+
+        end
+
+        # Container
+        if _preview_part_container?
+
+          container_path = part_entity_path[0...-1]
+          if container_path.any? && container_path != Sketchup.active_model.active_path
+
+            container = container_path.last
+            kb = Kuix::Bounds3d.new.copy!(container.definition.bounds).inflate_all!(1)
+            t = PathUtils.get_transformation(container_path, IDENTITY)
+
+            k_box = Kuix::BoxCornersMotif3d.new
+            k_box.bounds.copy!(kb)
+            k_box.corner_size = 20
+            k_box.color = Kuix::COLOR_DARK_GREY
+            k_box.line_width = 2.0
+            k_box.line_stipple = Kuix::LINE_STIPPLE_SOLID
+            k_box.transformation = t
+            @tool.append_3d(k_box, layer)
+
+            k_box = Kuix::BoxMotif3d.new
+            k_box.bounds.copy!(kb)
+            k_box.color = Kuix::COLOR_DARK_GREY
+            k_box.line_width = 1.5
+            k_box.line_stipple = Kuix::LINE_STIPPLE_DOTTED
+            k_box.transformation = t
+            @tool.append_3d(k_box, layer)
+
+            if _preview_part_container_axes?
+
+              k_axes_helper = Kuix::AxesHelper.new(20)
+              k_axes_helper.transformation = t * Geom::Transformation.translation(ORIGIN.vector_to(kb.min.to_p))
+              @tool.append_3d(k_axes_helper, layer)
+
+            end
+
+          end
 
         end
 
       end
     end
 
-    def _preview_part_siblings(layer = LAYER_3D_PART_SIBLING_PREVIEW, highlighted = false)
-      @tool.remove_3d(layer)
-      if @active_part_sibling_entity_paths.is_a?(Array)
+    def _preview_part_twins(layer = LAYER_3D_PART_TWINS_PREVIEW, highlighted = false)
+      @tool.clear_3d(layer)
+      if @active_part_twins_entity_paths.is_a?(Array) && has_active_part?
+
+        part = get_active_part
+
+        view = Sketchup.active_model.active_view
+        center = part.def.definition.bounds.center
+
+        triangles = _compute_children_faces_triangles(part.def.definition.entities)
 
         # Mesh
-        @active_part_sibling_entity_paths.each do |path|
+        @active_part_twins_entity_paths.each do |path|
 
-          triangles = _compute_children_faces_triangles(path.last.definition.entities)
           t = PathUtils::get_transformation(path)
 
           k_mesh = Kuix::Mesh.new
           k_mesh.add_triangles(triangles)
-          k_mesh.background_color = highlighted ? COLOR_PART_HIGHLIGHTED : COLOR_PART
+          k_mesh.background_color = highlighted ? COLOR_INSTANCE_HIGHLIGHTED : COLOR_INSTANCE
+          k_mesh.offset = view.pixels_to_model(_get_instance_part_preview_offset(part, highlighted), center.transform(t))
           k_mesh.transformation = t
           @tool.append_3d(k_mesh, layer)
 
@@ -2426,6 +3018,16 @@ module Ladb::OpenCutList
 
     # --
 
+    # The cursor shown over a part that cannot be activated.
+    def _get_part_error_cursor
+      SmartCursorManager.cursor_select_error
+    end
+
+    def _can_activate_part?(part_entity_path, part)
+      return [ false, 'tool.default.error.locked_part' ] unless _can_activate_locked? || part.nil? || part_entity_path.nil? || part_entity_path.none?(&:locked?)
+      [ true, nil ]
+    end
+
     def _refresh_active_part(highlighted = false)
       _set_active_part(@active_part_entity_path, _generate_part_from_path(@active_part_entity_path), highlighted)
     end
@@ -2434,19 +3036,55 @@ module Ladb::OpenCutList
       _set_active_part(nil, nil)
     end
 
-    def _set_active_part(part_entity_path, part, highlighted = false)
+    def _set_active_part(part_entity_path, part, highlighted = false, silent = false)
+      can_activate, error_key, error_vars = _can_activate_part?(part_entity_path, part)
+      if can_activate
+
+        if @active_part_entity_path != part_entity_path || part.nil?
+          @tool.remove_root_tooltip
+          @tool.pop_cursor
+        end
+
+      else
+
+        part_entity_path = nil
+        part = nil
+
+        unless silent
+          @tool.set_root_tooltip(PLUGIN.get_i18n_string(error_key, error_vars), SmartTool::MESSAGE_TYPE_ERROR) if error_key.is_a?(String)
+          @tool.push_cursor(_get_part_error_cursor)
+        end
+
+      end
       if @active_part_entity_path != part_entity_path # Has changed?
 
         @active_part_entity_path = part_entity_path
         @active_part = part
 
-        @active_part_sibling_entity_paths = nil
-        @active_part_siblings = nil
+        @active_part_twins_entity_paths = nil
+        @active_part_twins = nil
 
         if part_entity_path.is_a?(Array)
           _set_active_selection(part_entity_path[0...-1], [ part_entity_path[-1] ])
         else
           _set_active_selection(nil, nil)
+        end
+
+        # Update highlighted parts if necessary
+        if part.is_a?(Part) && !@tool.highlighted_parts.nil? && @tool.highlighted_parts.any?
+
+          if _preview_all_instances?
+            instance_paths = []
+            active_instance = part_entity_path.last
+            instances = active_instance.definition.instances
+            model = Sketchup.active_model
+            _instances_to_paths(instances, instance_paths, model.active_entities, model.active_path.to_a)
+          else
+            instance_paths = [ part_entity_path ]
+          end
+
+          @tool.setup_highlighted_part_helper(part, instance_paths)
+
         end
 
         onActivePartChanged(part_entity_path, part, highlighted)
@@ -2456,7 +3094,7 @@ module Ladb::OpenCutList
 
     def _get_active_part_name(sanitize_for_filename = false)
       return nil unless @active_part.is_a?(Part)
-      "#{@active_part.saved_number && @active_part.number == @active_part.saved_number ? "#{@active_part.number} - " : ''}#{sanitize_for_filename ? _sanitize_filename(@active_part.name) : @active_part.name}"
+      "#{@active_part.saved_number && @active_part.number == @active_part.saved_number ? "#{@active_part.number} - " : ''}#{sanitize_for_filename ? FilePathUtils.sanitize_file_name(@active_part.name) : @active_part.name}"
     end
 
     def _get_active_part_size
@@ -2471,11 +3109,12 @@ module Ladb::OpenCutList
 
     def _get_active_part_icons
       return nil unless @active_part.is_a?(Part)
-      if @active_part.flipped || @active_part.resized || @active_part.auto_oriented
+      if @active_part.flipped || @active_part.resized || @active_part.auto_oriented || @active_part.follow_grain_direction
         icons = []
         icons << Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.5,0L0.5,0.2 M0.5,0.4L0.5,0.6 M0.5,0.8L0.5,1 M0,0.2L0.3,0.5L0,0.8L0,0.2 M1,0.2L0.7,0.5L1,0.8L1,0.2')) if @active_part.flipped
         icons << Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.6,0L0.4,0 M0.6,0.4L0.8,0.2L0.5,0.2 M0.8,0.2L0.8,0.5 M0.8,0L1,0L1,0.2 M1,0.4L1,0.6 M1,0.8L1,1L0.8,1 M0.2,0L0,0L0,0.2 M0,1L0,0.4L0.6,0.4L0.6,1L0,1')) if @active_part.resized
         icons << Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.642,0.349L0.642,0.752 M0.541,0.45L0.642,0.349L0.743,0.45 M0.292,0.954L0.642,0.752 M0.43,0.991L0.292,0.954L0.329,0.816 M0.991,0.954L0.642,0.752 M0.853,0.991L0.991,0.954L0.954,0.816 M0.477,0.001L0.584,0.091L0.494,0.198 M0.001,0.477L0.091,0.584L0.198,0.494 M0.091,0.584L0.108,0.456L0.157,0.338L0.235,0.235L0.338,0.157L0.456,0.108L0.584,0.091')) if @active_part.auto_oriented
+        icons << Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.417,0.1L0,0.1L0,0.9L0.417,0.9 M0,0.25L0.417,0.25 M0,0.417L0.417,0.417 M0,0.75L0.417,0.75 M0.583,0.1L1,0.1L1,0.9L0.583,0.9 M1,0.25L0.583,0.25 M1,0.417L0.583,0.417 M0.983,0.75L0.583,0.75')) if @active_part.follow_grain_direction
         return icons
       end
       nil
@@ -2495,21 +3134,14 @@ module Ladb::OpenCutList
       end
     end
 
-    def _add_part_sibling(part_entity_path, part)
-      return true if @active_part_sibling_entity_paths.is_a?(Array) && @active_part_sibling_entity_paths.include?(part_entity_path)
-      (@active_part_sibling_entity_paths ||= []) << part_entity_path
-      (@active_part_siblings ||= []) << part
+    def _add_part_twin(part_entity_path, part)
+      return true if @active_part_twins_entity_paths.is_a?(Array) && @active_part_twins_entity_paths.include?(part_entity_path)
+      (@active_part_twins_entity_paths ||= []) << part_entity_path
+      (@active_part_twins ||= []) << part
       onActivePartChanged(@active_part_entity_path, @active_part, false)
     end
 
     # -- INSTANCE --
-
-    def _get_instance
-      if (instances = _get_instances).is_a?(Array)
-        return instances.last
-      end
-      nil
-    end
 
     def _hide_instance
       _hide_instances
@@ -2521,36 +3153,36 @@ module Ladb::OpenCutList
 
     def _select_instance
       model = Sketchup.active_model
-      if model && !(instance = _get_instance).nil?
+      if model && !(instance = _get_active_part_entity).nil?
         selection = model.selection
         selection.clear
         selection.add(instance)
       end
     end
 
-    def _get_sibling_instances
-      return @active_part_sibling_entity_paths.map { |path| path.last } if @active_part_sibling_entity_paths.is_a?(Array)
+    def _get_twin_instances
+      return @active_part_twins_entity_paths.map(&:last) if @active_part_twins_entity_paths.is_a?(Array)
       nil
     end
 
-    def _hide_sibling_instances
-      return if (sibling_instances = _get_sibling_instances).nil?
-      @unhide_local_sibling_instance_transformations = sibling_instances.map { |sibling_instance| Geom::Transformation.new(sibling_instance.transformation) }
-      sibling_instances.each { |sibling_instance| sibling_instance.move!(Geom::Transformation.scaling(0)) unless sibling_instance.deleted? }
+    def _hide_twin_instances
+      return if @unhide_local_twin_instance_transformations.is_a?(Array) || (twin_instances = _get_twin_instances).nil?
+      @unhide_local_twin_instance_transformations = twin_instances.map { |twin_instance| Geom::Transformation.new(twin_instance.transformation) }
+      twin_instances.each { |twin_instance| twin_instance.move!(Geom::Transformation.scaling(0)) unless twin_instance.deleted? }
     end
 
-    def _unhide_sibling_instances
-      return if !@unhide_local_sibling_instance_transformations.is_a?(Array) || (sibling_instances = _get_sibling_instances).nil?
-      sibling_instances.each_with_index { |sibling_instance, i| sibling_instance.move!(@unhide_local_sibling_instance_transformations[i]) unless sibling_instance.deleted? }
-      @unhide_local_sibling_instance_transformations = nil
+    def _unhide_twin_instances
+      return if !@unhide_local_twin_instance_transformations.is_a?(Array) || (twin_instances = _get_twin_instances).nil?
+      twin_instances.each_with_index { |twin_instance, i| twin_instance.move!(@unhide_local_twin_instance_transformations[i]) unless twin_instance.deleted? }
+      @unhide_local_twin_instance_transformations = nil
     end
 
-    def _select_sibling_instances
+    def _select_twin_instances
       model = Sketchup.active_model
-      if model && !(sibling_instances = _get_sibling_instances).nil?
+      if model && !(twin_instances = _get_twin_instances).nil?
         selection = model.selection
         selection.clear
-        selection.add(sibling_instances)
+        selection.add(twin_instances)
       end
     end
 
@@ -2567,23 +3199,202 @@ module Ladb::OpenCutList
       }
     end
 
-    # -- UTILS --
+  end
 
-    def _instances_to_paths(instances, instance_paths, entities, path = [])
-      entities.each do |entity|
-        next if entity.is_a?(Sketchup::Edge) || entity.is_a?(Sketchup::Face)   # Minor Speed improvement
-        if entity.visible? && _layer_visible?(entity.layer, path.empty?)
-          if entity.is_a?(Sketchup::ComponentInstance)
-            if instances.include?(entity)
-              instance_paths << path + [ entity ]
-            else
-              _instances_to_paths(instances, instance_paths, entity.definition.entities, path + [ entity ])
-            end
-          elsif entity.is_a?(Sketchup::Group)
-            _instances_to_paths(instances, instance_paths, entity.entities, path + [ entity ])
+  # How the tools hand solids to CommonSolidBooleanApplyWorker.
+  #
+  # Two things every one of them needs, and needs IDENTICAL : a decomposition
+  # that keeps the container tree and leaves the parts' own machinings out of
+  # the operands, and a call that joins the operation the caller already owns
+  # rather than opening one of its own.
+  #
+  # They lived in two copies - the reshape tool's boolean handler and the draw
+  # tool's crossing cut, whose comment already pointed at the other one - which
+  # is the whole reason this module exists : one definition, so the two cannot
+  # drift apart.
+  module SmartActionHandlerSolidBooleanHelper
+
+    # The container tree PRESERVED (flatten: false), so the worker can rebuild
+    # every fragment inside the container it came from ; and the parts'
+    # existing machinings left OUT of the operands, so a part already grooved
+    # is not rebuilt around its own pockets.
+    SOLID_BOOLEAN_DRAWING_DEF_PARAMETERS = {
+      ignore_surfaces: true,
+      ignore_faces: false,
+      ignore_edges: true,
+      ignore_soft_edges: true,
+      ignore_clines: true,
+      container_validator: CommonDrawingDecompositionWorker::CONTAINER_VALIDATOR_PART_WITHOUT_MACHININGS,
+      flatten: false
+    }.freeze
+
+    # One reading per given instance path, each in its OWN drawing def : the
+    # worker takes the operands as a list and attributes every fragment to the
+    # one it came from, which a single merged reading would have thrown away.
+    #
+    # Answers whatever the decomposition answered, DrawingDef or not : what to
+    # do with a path that could not be read is the caller's business - the
+    # reshape tool has a user to tell, the draw tool has an operation to abort.
+    def _decompose_for_solid_boolean(ipaths)
+      ipaths.map { |ipath| CommonDrawingDecompositionWorker.new([ ipath ], **SOLID_BOOLEAN_DRAWING_DEF_PARAMETERS).run }
+    end
+
+    # The operation itself, run inside the caller's own (wrap_operation:
+    # false) : ONE undo then takes back everything the caller did, the boolean
+    # included. The caller MUST check the answer and abort its own operation
+    # when the boolean failed - the boolean modifies nothing in that case, but
+    # whatever the caller wrote beforehand still stands.
+    #
+    # +result_def+ is the operation already computed on these very drawing def
+    # lists, when the caller had to read it before writing anything.
+    def _apply_solid_boolean(src_drawing_defs, cut_drawing_defs, operation:, keep_srcs: false, keep_cuts: false, make_unique: true, result_def: nil)
+      CommonSolidBooleanApplyWorker.new(
+        src_drawing_defs,
+        cut_drawing_defs,
+        operation: operation,
+        result_def: result_def,
+        keep_srcs: keep_srcs,
+        keep_cuts: keep_cuts,
+        make_unique: make_unique,
+        wrap_operation: false
+      ).run
+    end
+
+  end
+
+  module SmartActionHandlerAutoOrientHelper
+
+    # Weights of the axis signs in #_get_auto_orient_axes_transformation's
+    # score. Offsets are normalized in [ -1, 1 ], and 4 > 2 + 1, 2 > 1, so
+    # these make the score a STRICT priority order Z > X > Y : the offset
+    # magnitudes only break ties, when an axis is ambiguous (offset ~ 0).
+    AUTO_ORIENT_Z_WEIGHT = 4.0
+    AUTO_ORIENT_X_WEIGHT = 2.0
+    AUTO_ORIENT_Y_WEIGHT = 1.0
+
+    # Orients the newly built +definition+'s own axes on its own geometry :
+    # Z on the normal of its largest face, X on the longest edge lying in
+    # that face (perpendicular to the normal) - so the part's axes read as
+    # "front/thickness" instead of whatever axes the pick happened to leave
+    # it in. Axis SIGNS are then decided by the geometry itself, see
+    # #_get_auto_orient_axes_transformation. Returns a transformation to
+    # apply to the definition's content (see callers), or IDENTITY when
+    # there is no face to orient on.
+    def _get_auto_orient_transformation(definition, transformation = IDENTITY)
+
+      # Sum areas of all faces that are "parallel"
+      a_defs = {}
+      definition.entities.each do |entity|
+        next unless entity.is_a?(Sketchup::Face)
+        normal = entity.normal
+        key = a_defs.keys.find { |k| k.parallel?(normal) }
+        if (a_def = a_defs[key]).nil?
+          a_def = { :area => 0, :face => entity }
+          a_defs[normal] = a_def
+        end
+        a_def[:area] += entity.area(transformation)
+      end
+      max_a_def = a_defs.values.max_by { |a_def| a_def[:area] }
+      unless max_a_def.nil?
+
+        face = max_a_def[:face]
+        normal = face.normal
+
+        # Sum lengths of all edges that are "parallel"
+        l_defs = {}
+        definition.entities.each do |entity|
+          next unless entity.is_a?(Sketchup::Edge)
+          _, direction = entity.line
+          next unless direction.valid?
+          next unless direction.perpendicular?(normal)
+          key = l_defs.keys.find { |k| k.parallel?(direction) }
+          if (l_def = l_defs[key]).nil?
+            l_def = { :length => 0, :edge => entity }
+            l_defs[direction] = l_def
+          end
+          l_def[:length] += entity.length(transformation)
+        end
+        max_l_def = l_defs.values.max_by { |l_def| l_def[:length] }
+        unless max_l_def.nil?
+
+          edge = max_l_def[:edge]
+          _, direction = edge.line
+
+          # Both candidates are directions, not oriented axes : the face is
+          # the FIRST one of its parallel group (a panel's two large faces
+          # are antiparallel, so they share a group) and the edge direction
+          # follows its start/end order. Both signs are therefore arbitrary,
+          # and the helper decides them from the geometry.
+          return _get_auto_orient_axes_transformation(definition, direction, normal)
+        end
+
+      end
+
+      IDENTITY
+    end
+
+    # Signs +x_axis+ and +z_axis+ - given as unsigned DIRECTIONS - so that
+    # they point toward +definition+'s geometry, and returns the resulting
+    # transformation (IDENTITY when the corrected basis is the canonical
+    # one, both callers rely on that).
+    #
+    # The transformation is a pure rotation around the definition's own
+    # ORIGIN and Y = Z * X, so the three signs can NOT be chosen freely :
+    # once X and Z are set, Y follows - picking it too would mirror the part
+    # (negative determinant). Only the 4 (sx, sz) combinations are valid, and
+    # they are ranked by a woodworking priority : Z (thickness) first, then
+    # X (length), Y last (see AUTO_ORIENT_*_WEIGHT).
+    def _get_auto_orient_axes_transformation(definition, x_axis, z_axis)
+
+      y_axis = z_axis * x_axis
+
+      points = definition.entities.grep(Sketchup::Edge).flat_map { |edge| [ edge.start.position, edge.end.position ] }
+      return Geom::Transformation.axes(ORIGIN, x_axis, y_axis, z_axis) if points.empty?
+
+      ox = _get_auto_orient_offset(points, x_axis)
+      oy = _get_auto_orient_offset(points, y_axis)
+      oz = _get_auto_orient_offset(points, z_axis)
+
+      # (1, 1) is evaluated first and only a strictly better score replaces
+      # it : a symmetric geometry - where every offset is 0 - keeps the
+      # incoming basis instead of flipping on numerical noise.
+      best_sx = 1
+      best_sz = 1
+      best_score = nil
+      [ 1, -1 ].each do |sx|
+        [ 1, -1 ].each do |sz|
+          score = AUTO_ORIENT_Z_WEIGHT * sz * oz + AUTO_ORIENT_X_WEIGHT * sx * ox + AUTO_ORIENT_Y_WEIGHT * sx * sz * oy
+          if best_score.nil? || score > best_score + 1e-9
+            best_score = score
+            best_sx = sx
+            best_sz = sz
           end
         end
       end
+
+      x_axis = x_axis.reverse if best_sx < 0
+      z_axis = z_axis.reverse if best_sz < 0
+      y_axis = z_axis * x_axis  # Recomputed : keeps the basis right handed, never a mirror
+
+      Geom::Transformation.axes(ORIGIN, x_axis, y_axis, z_axis)
+    end
+
+    # Where +points+ sit along +axis+, relative to the definition's origin,
+    # as a ratio in [ -1, 1 ] : 1 = entirely on the positive side, 0 =
+    # centered on the origin (ambiguous : a disc, a cylinder), -1 = entirely
+    # on the negative side.
+    def _get_auto_orient_offset(points, axis)
+      min = nil
+      max = nil
+      points.each do |point|
+        # Point3d coordinates are Lengths, whose comparisons are tolerant :
+        # to_f keeps the extent computation in plain Float
+        d = point.x.to_f * axis.x + point.y.to_f * axis.y + point.z.to_f * axis.z
+        min = d if min.nil? || d < min
+        max = d if max.nil? || d > max
+      end
+      return 0.0 if min.nil? || (max - min).abs < 1e-9
+      (min + max) / (max - min)
     end
 
   end
@@ -2593,9 +3404,10 @@ module Ladb::OpenCutList
     include SmartActionHandlerPartHelper
 
     STATE_SELECT = 0
+    STATE_SELECT_MULTIPLE = 7
     STATE_SELECT_RECT = 5
     STATE_SELECT_TREE = 6
-    STATE_SELECT_SIBLINGS = 4
+    STATE_SELECT_TWINS = 4
 
     LAYER_2D_FLOATING_TOOLS = 10
 
@@ -2604,6 +3416,7 @@ module Ladb::OpenCutList
 
       @mouse_down_point_2d = nil
       @mouse_move_point_2d = nil
+      @select_rect_canceled = false
 
       @startup_state = STATE_SELECT
 
@@ -2618,64 +3431,53 @@ module Ladb::OpenCutList
       selection = model.selection
 
       # Try to copy the previous action handler selection
+
       if @previous_action_handler && _start_with_previous_selection?
 
-        if (part_entity_path = @previous_action_handler.get_active_part_entity_path) &&
+        if @previous_action_handler.is_a?(SmartActionHandlerPartHelper) &&
+           (part_entity_path = @previous_action_handler.get_active_part_entity_path) &&
            (part = @previous_action_handler.get_active_part)
 
-          _set_active_part(part_entity_path, part)
+          _set_active_part(part_entity_path, part, false, true)
 
-          if _pick_part_siblings?
+          if _pick_part_twins?
 
-            if (part_sibling_entity_paths = @previous_action_handler.get_active_part_sibling_entity_paths) &&
-               (part_siblings = @previous_action_handler.get_active_part_siblings)
+            if (part_twin_entity_paths = @previous_action_handler.get_active_part_twin_entity_paths) &&
+               (part_twin = @previous_action_handler.get_active_part_twins)
 
-              part_sibling_entity_paths.zip(part_siblings).each do |part_sibling_entity_path, part_sibling|
-                _add_part_sibling(part_sibling_entity_path, part_sibling)
+              part_twin_entity_paths.zip(part_twin).each do |part_twin_entity_path, part_twin|
+                _add_part_twin(part_twin_entity_path, part_twin)
               end
 
             end
 
           end
 
-          onPartSelected
+          onSelected if has_active_part?
 
-        elsif (selection_path = @previous_action_handler.get_active_selection_path) &&
+        elsif @previous_action_handler.is_a?(SmartActionHandlerSelectionHelper) &&
+              (selection_path = @previous_action_handler.get_active_selection_path) &&
               (instances = @previous_action_handler.get_active_selection_instances)
 
           _reset_active_part
           _set_active_selection(selection_path, instances)
 
-          onPartSelected
+          onSelected if has_active_selection?
 
         end
 
-      else
+      elsif @tool.respond_to?(:startup_selection) && @tool.startup_selection.is_a?(SmartSelection)
 
-        if (entities = selection.select { |entity| entity.respond_to?(:transformation) }).any?
+        _select_from_smart_selection(@tool.startup_selection)
 
-          entities = entities[0,1] unless _allows_multiple_selections?
-          active_path = model.active_path.is_a?(Array) ? model.active_path : []
+      elsif _start_with_model_selection?
 
-          if entities.one?
-            path = active_path + [ entities.first ]
-            unless (part = _generate_part_from_path(path)).nil?
-              _set_active_part(path, part)
-            end
-          end
-
-          unless has_active_part?
-            _set_active_selection(active_path, entities)
-          end
-
-          onPartSelected
-
-        end
+        _select_from_model_selection
 
       end
 
       # Clear current selection
-      selection.clear if _clear_selection_on_start
+      selection.clear if _clear_selection_on_start?
 
     end
 
@@ -2689,13 +3491,16 @@ module Ladb::OpenCutList
 
       case state
       when STATE_SELECT
-        return @tool.cursor_select_part
+        return SmartCursorManager.cursor_select_part
 
-      when STATE_SELECT_SIBLINGS
-        return @tool.cursor_select_part_plus
+      when STATE_SELECT_MULTIPLE
+        return SmartCursorManager.cursor_select_plus_minus
 
       when STATE_SELECT_RECT
-        return @tool.cursor_select_rect
+        return SmartCursorManager.cursor_select_rect
+
+      when STATE_SELECT_TWINS
+        return SmartCursorManager.cursor_select_part_plus
       end
 
       super
@@ -2704,8 +3509,8 @@ module Ladb::OpenCutList
     def get_state_picker(state)
 
       case state
-      when STATE_SELECT, STATE_SELECT_SIBLINGS
-        return SmartPicker.new(tool: @tool, observer: self, pick_point: false)
+      when STATE_SELECT, STATE_SELECT_MULTIPLE, STATE_SELECT_TWINS
+        return SmartPicker.new(tool: @tool, observer: self, pick_point: false, lockable: false)
       end
 
       super
@@ -2717,9 +3522,10 @@ module Ladb::OpenCutList
 
       when STATE_SELECT
         return PLUGIN.get_i18n_string("tool.smart_select.state_0_status") +
-               ' | ' + PLUGIN.get_i18n_string("default.copy_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string("tool.smart_select.state_0_to_6_status") + '.'
+               (_allows_multiple_selections? ? ' | ' + PLUGIN.get_i18n_string("default.constrain_key") + ' = ' + PLUGIN.get_i18n_string("tool.smart_select.state_0_to_7_status") + '.' : '') +
+               (_allows_tree_selection? ? ' | ' + PLUGIN.get_i18n_string("default.copy_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string("tool.smart_select.state_0_to_6_status") + '.' : '')
 
-      when STATE_SELECT_SIBLINGS, STATE_SELECT_RECT, STATE_SELECT_TREE
+      when STATE_SELECT_MULTIPLE, STATE_SELECT_RECT, STATE_SELECT_TREE, STATE_SELECT_TWINS
         return PLUGIN.get_i18n_string("tool.smart_select.state_#{state}_status") + '.'
 
       end
@@ -2730,7 +3536,7 @@ module Ladb::OpenCutList
     # -----
 
     def onToolSuspend(tool, view)
-      tool.remove_2d(LAYER_2D_FLOATING_TOOLS) if STATE_SELECT_TREE
+      tool.clear_2d(LAYER_2D_FLOATING_TOOLS) if @state == STATE_SELECT_TREE
     end
 
     def onToolCancel(tool, reason, view)
@@ -2738,9 +3544,18 @@ module Ladb::OpenCutList
 
       case @state
 
-      when STATE_SELECT_SIBLINGS, STATE_SELECT_RECT
+      when STATE_SELECT_TWINS
         @mouse_down_point_2d = nil
         @mouse_move_point_2d = nil
+
+      when STATE_SELECT_RECT
+        # The rectangle is dropped : the button release, still to come, must
+        # not select what it ends on
+        @mouse_down_point_2d = nil
+        @mouse_move_point_2d = nil
+        @select_rect_canceled = true
+        @tool.clear_all_2d
+        set_state(STATE_SELECT)
 
       end
 
@@ -2762,7 +3577,7 @@ module Ladb::OpenCutList
 
       when STATE_SELECT_RECT
 
-        @tool.remove_all_2d
+        @tool.clear_all_2d
 
         unless @mouse_down_point_2d.nil?
           @mouse_move_point_2d = Geom::Point3d.new(x, y)
@@ -2771,19 +3586,19 @@ module Ladb::OpenCutList
 
       end
 
-      view.tooltip = @mouse_ip.tooltip
-      view.invalidate
-
       false
     end
 
     def onToolLButtonDown(tool, flags, x, y, view)
+      super
+
+      @select_rect_canceled = false  # Its release may have been missed - off the viewport
 
       case @state
 
       when STATE_SELECT
-        if has_active_part? && _pick_part_siblings?
-          set_state(STATE_SELECT_SIBLINGS)
+        if has_active_part? && _pick_part_twins?
+          set_state(STATE_SELECT_TWINS)
           return true
         else
           @mouse_down_point_2d = Geom::Point3d.new(x, y)
@@ -2795,20 +3610,42 @@ module Ladb::OpenCutList
     end
 
     def onToolLButtonUp(tool, flags, x, y, view)
+      super
 
       @mouse_down_point = nil
 
+      # The release of a canceled rectangle
+      if @select_rect_canceled
+        @select_rect_canceled = false
+        return true
+      end
+
       case @state
 
-      when STATE_SELECT, STATE_SELECT_SIBLINGS
+      when STATE_SELECT, STATE_SELECT_TWINS
         @mouse_down_point_2d = nil
         @mouse_move_point_2d = nil
         unless has_active_part?
           Sketchup.active_model.selection.clear
           return true
         end
-        onPartSelected
+        onSelected
         return true
+
+      when STATE_SELECT_MULTIPLE
+        if (instances = get_active_selection_instances).is_a?(Array) && instances.any?
+          selection = Sketchup.active_model.selection
+
+          removed_instances = instances.select { |instance| selection.include?(instance) }
+          selection.remove(removed_instances)
+          @multiple_smart_selection.remove(*removed_instances.map { |instance| get_active_selection_path + [ instance ] })
+
+          added_instances = instances.difference(removed_instances)
+          selection.add(added_instances)
+          @multiple_smart_selection.add(*added_instances.map { |instance| get_active_selection_path + [ instance ] })
+
+          return true
+        end
 
       when STATE_SELECT_RECT
         if @mouse_down_point_2d.nil?
@@ -2816,36 +3653,40 @@ module Ladb::OpenCutList
           return true
         else
 
-          pick_type = Sketchup::PickHelper::PICK_CROSSING # TODO : @mouse_down_point_2d.x < x ? Sketchup::PickHelper::PICK_INSIDE : Sketchup::PickHelper::PICK_CROSSING
+          # Left to right = window (inside), right to left = crossing (like SketchUp)
+          pick_inside = @mouse_down_point_2d.x < x
 
-          ph = view.pick_helper(x, y)
-          ph.window_pick(
-            @mouse_down_point_2d,
-            Geom::Point3d.new(x, y),
-            pick_type
-          )
+          pick_paths = _window_pick_paths(view, @mouse_down_point_2d, Geom::Point3d.new(x, y), pick_inside)
 
-          @tool.remove_all_2d
+          @tool.clear_all_2d
+          @select_rect_points_2d = [ @mouse_down_point_2d, Geom::Point3d.new(x, y) ]  # Kept for onSelected
+          @select_rect_pick_paths = pick_paths  # Kept for onSelected
+          @select_rect_pick_inside = pick_inside
           @mouse_down_point_2d = nil
           @mouse_move_point_2d = nil
 
-          if ph.count > 0
+          if pick_paths.any?
 
             model = Sketchup.active_model
-            active_path = model.active_path.is_a?(Array) ? model.active_path : []
+            active_path = model.active_path.to_a
             active_path_length = active_path.length
 
+            # Picked paths are absolute (from the model root) and stop at the highest entity fully inside the rect,
+            # at any depth. A partially crossed instance yields one of its leaves (crossing only).
+
             instances = Set[]
-            (0...ph.count).each do |i|
-              path = ph.path_at(i)
-              next if path.first(active_path_length) != active_path
-              if path == active_path
+            pick_paths.each do |path|
+              if path.length <= active_path_length && active_path.first(path.length) == path
+                # The active context itself or one of its ancestors is fully inside the rect
                 model.active_entities.each do |entity|
-                  instances << entity if entity.respond_to?(:transformation)
+                  instances << entity if entity.respond_to?(:transformation) && entity.visible? && entity.layer.visible?
                 end
                 next
               end
-              entity, _ = path[active_path_length, 1]
+              next if path.first(active_path_length) != active_path
+              # Inside : the active context child must be fully inside itself, not only one of its descendants
+              next if pick_inside && path.length > active_path_length + 1 && !_select_rect_deep_inside?
+              entity = path[active_path_length]
               instances << entity if entity.respond_to?(:transformation)
             end
 
@@ -2854,7 +3695,11 @@ module Ladb::OpenCutList
               _reset_active_part
               _set_active_selection(active_path, instances.to_a)
 
-              onPartSelected
+              if has_active_selection?
+                onSelected
+              else
+                _reset
+              end
 
               return true
             end
@@ -2878,13 +3723,22 @@ module Ladb::OpenCutList
       case @state
 
       when STATE_SELECT
-        if tool.is_key_ctrl_or_option?(key)
+        if tool.is_key_ctrl_or_option?(key) && _allows_tree_selection?
           if has_active_part?
-            set_state(STATE_SELECT_TREE)
+            if get_active_selection_path.empty?
+              tool.notify_warnings([ 'tool.smart_select.warning.no_parent_group' ])
+            else
+              set_state(STATE_SELECT_TREE)
+            end
           else
             tool.notify_warnings([ 'tool.smart_select.warning.no_active_part' ])
           end
           return true
+        elsif tool.is_key_shift?(key)
+          if _allows_multiple_selections?
+            set_state(STATE_SELECT_MULTIPLE)
+            return true
+          end
         end
 
       end
@@ -2896,10 +3750,20 @@ module Ladb::OpenCutList
 
       case @state
 
+      when STATE_SELECT, STATE_SELECT_MULTIPLE, STATE_SELECT_TWINS
+        if @state == STATE_SELECT_MULTIPLE
+          if tool.is_key_shift?(key)
+            _reset_active_part
+            _select_from_smart_selection(@multiple_smart_selection)
+            Sketchup.active_model.selection.clear if _clear_selection_on_start?
+            set_state(STATE_SELECT) unless has_active_selection?
+            return true
+          end
+        end
+
       when STATE_SELECT_TREE
         if tool.is_key_ctrl_or_option?(key)
           Sketchup.active_model.selection.clear
-          tool.remove_2d(LAYER_2D_FLOATING_TOOLS)
           set_state(STATE_SELECT)
           _refresh
           return true
@@ -2914,28 +3778,39 @@ module Ladb::OpenCutList
 
       case @state
 
-      when STATE_SELECT
+      when STATE_SELECT, STATE_SELECT_MULTIPLE
         _pick_part(picker, view)
 
-      when STATE_SELECT_SIBLINGS
-        _pick_part_sibling(picker, view)
+      when STATE_SELECT_TWINS
+        _pick_part_twin(picker, view)
 
       end
 
       super
     end
 
-    def onStateChanged(state)
+    def onStateChanged(old_state, new_state)
       super
 
-      @tool.remove_tooltip
+      @tool.remove_root_tooltip
 
-      unless _get_instances.nil?
+      if old_state == STATE_SELECT_TREE
+        @tool.clear_2d(LAYER_2D_FLOATING_TOOLS) # Close the dropup
+        @tree_dropup = nil
+        @tree_path = nil
+      end
 
-        case state
+      if has_active_selection?
+
+        case new_state
 
         when STATE_SELECT
           _unhide_instances
+
+        when STATE_SELECT_MULTIPLE
+          _reset_active_part
+          _reset_active_selection
+          _refresh
 
         when STATE_SELECT_RECT
           _reset_active_part
@@ -2945,104 +3820,239 @@ module Ladb::OpenCutList
 
           part = get_active_part
           path = get_active_part_entity_path
-          active_path_depth = Sketchup.active_model.active_path.is_a?(Array) ? Sketchup.active_model.active_path.size : 0
+          active_path_depth = Sketchup.active_model.active_path.to_a.size
 
-          @tool.remove_all_2d
-          @tool.remove_all_3d
+          @tool.clear_all_2d
+          @tool.clear_all_3d
           _reset_active_part
 
-          unit = @tool.get_unit
+          k_dropup = SmartDropup.new(
+            @tool,
+            path.each_with_index.map { |entity, depth|
 
-          k_panel = Kuix::Panel.new
-          k_panel.layout_data = Kuix::StaticLayoutData.new(tool.last_mouse_x, tool.last_mouse_y, -1, -1, Kuix::Anchor.new(Kuix::Anchor::BOTTOM_RIGHT))
-          k_panel.layout = Kuix::GridLayout.new(1, path.size, 0, unit * 0.25)
-          k_panel.border.set_all!(unit * 0.25)
-          k_panel.padding.set_all!(unit * 0.25)
-          k_panel.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_LIGHT)
-          k_panel.set_style_attribute(:border_color, ColorUtils.color_darken(SmartTool::COLOR_BRAND_LIGHT, 0.1))
-          @tool.append_2d(k_panel, LAYER_2D_FLOATING_TOOLS)
+              on_click = lambda { |k_btn| _select_tree_item(path, part, depth) }
+              on_enter = lambda { |k_btn| _preview_tree_item(path, part, depth) }
+              on_leave = lambda { |k_btn| _clear_tree_item_preview }
 
-          path.each_with_index do |entity, depth|
+              indent = depth
+              disabled = depth < active_path_depth
 
-            disabled = depth < active_path_depth
-            text_color = disabled ? SmartTool::COLOR_BRAND_LIGHT : Kuix::COLOR_BLACK
-
-            k_btn = Kuix::Button.new
-            k_btn.layout = Kuix::InlineLayout.new(true, unit * 0.5, Kuix::Anchor.new(Kuix::Anchor::LEFT))
-            k_btn.margin.left = unit * depth
-            k_btn.border.set_all!(unit * 0.5)
-            k_btn.padding.set_all!(unit)
-            k_btn.set_style_attribute(:background_color, Kuix::COLOR_WHITE)
-            k_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_LIGHT, :hover)
-            k_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND, :active)
-            k_btn.set_style_attribute(:border_color, Kuix::COLOR_WHITE)
-            k_btn.set_style_attribute(:border_color, SmartTool::COLOR_BRAND, :hover)
-            k_btn.disabled = disabled
-            k_btn.on(:enter) do
-              if entity == path.last
-                _preview_part(path, part)
-              else
-                tool.remove_3d(LAYER_3D_PART_PREVIEW)
-                Sketchup.active_model.selection.clear
-                Sketchup.active_model.selection.add(entity)
+              text_color = disabled ? SmartTool::COLOR_BRAND_LIGHT : Kuix::COLOR_BLACK
+              text_defs = []
+              unless entity.name.empty?
+                text_defs << SmartDropup::SmartDropupTextDef.new(
+                  entity.name,
+                  text_color,
+                  true
+                )
               end
-            end
-            k_btn.on(:leave) do
-              tool.remove_3d(LAYER_3D_PART_PREVIEW)
-              Sketchup.active_model.selection.clear
-            end
-            k_btn.on(:click) do
-              Sketchup.active_model.selection.clear
-              _reset_active_part
-              _set_active_selection(path[0...depth-path.size], [ entity ])
-              onPartSelected
-            end
-            k_panel.append(k_btn)
+              unless entity.definition.group? && !entity.name.empty?
+                text_defs << SmartDropup::SmartDropupTextDef.new(
+                  entity.definition.group? ? PLUGIN.get_i18n_string('tab.outliner.type_1') : "<#{entity.definition.name}>",
+                  text_color
+                )
+              end
 
-            unless entity.name.empty?
-              k_label = Kuix::Label.new
-              k_label.text = entity.name
-              k_label.text_size = unit * 3
-              k_label.text_bold = true
-              k_label.set_style_attribute(:color, text_color)
-              k_label.set_style_attribute(:color, Kuix::COLOR_WHITE, :active)
-              k_btn.append(k_label)
-            end
-
-            unless entity.definition.group? && !entity.name.empty?
-              k_label = Kuix::Label.new
-              k_label.text = entity.definition.group? ? PLUGIN.get_i18n_string('tab.outliner.type_1') : "<#{entity.definition.name}>"
-              k_label.text_size = unit * 3
-              k_label.set_style_attribute(:color, text_color)
-              k_label.set_style_attribute(:color, Kuix::COLOR_WHITE, :active)
-              k_btn.append(k_label)
-            end
-
-          end
+              SmartDropup::SmartDropupBtnDef.new(
+                text_defs,
+                on_click,
+                on_enter,
+                on_leave,
+                indent,
+                disabled,
+                nil,
+                _get_tree_item_swatch_color(path, depth),
+                _get_tree_item_swatch_hover_color(path, depth)
+              )
+            }
+          )
+          @tool.append_2d(k_dropup, LAYER_2D_FLOATING_TOOLS)
+          @tree_dropup = k_dropup
+          @tree_path = path
 
         end
 
       end
 
+      if new_state == STATE_SELECT_TWINS
+        if (active_instance = _get_active_part_entity) && active_instance.respond_to?(:definition)
+          active_definition = active_instance.definition
+          @picker.set_fn_face_filter(lambda { |relative_path|
+              relative_path.reverse_each.any? { |i| i.respond_to?(:definition) && i.definition == active_definition }
+          }) unless @picker.nil?
+        end
+      end
+      if old_state == STATE_SELECT_TWINS
+        @picker.set_fn_face_filter(nil) unless @picker.nil?
+      end
+
+      if new_state == STATE_SELECT_MULTIPLE
+        @multiple_smart_selection = SmartSelection.new
+      end
+      if old_state == STATE_SELECT_MULTIPLE
+        @multiple_smart_selection = nil
+      end
+
     end
 
-    def onPartSelected
+    def onSelected
     end
 
     # -----
 
     protected
 
+    def _reset
+      super
+      set_state(STATE_SELECT)
+    end
+
+    #-----
+
     def _start_with_previous_selection?
       false
+    end
+
+    def _start_with_model_selection?
+      true
     end
 
     def _allows_multiple_selections?
       false
     end
 
-    def _clear_selection_on_start
+    def _allows_tree_selection?
       false
+    end
+
+    # Does the rectangle selection keep the active context children holding a
+    # fully inside descendant ? The handler then reads the raw picked paths
+    # (@select_rect_pick_paths) to select at the descendants depth.
+    def _select_rect_deep_inside?
+      false
+    end
+
+    def _clear_selection_on_start?
+      false
+    end
+
+    # -- Tree --
+
+    # Selects the tree dropup item at 'depth' of the part 'path' : the part
+    # itself at the last depth, one of its parents otherwise
+    def _select_tree_item(path, part, depth)
+      Sketchup.active_model.selection.clear
+      _reset_active_part
+      if depth == path.size - 1
+        _set_active_part(path, part)
+      else
+        _set_active_selection(path[0...depth], [ path[depth] ])
+      end
+      onSelected
+    end
+
+    # Previews the tree dropup item at 'depth' of the part 'path' : the part
+    # itself at the last depth, one of its parents otherwise
+    def _preview_tree_item(path, part, depth)
+      if depth == path.size - 1
+        _preview_part(path, part)
+      else
+        @tool.clear_3d(LAYER_3D_PART_PREVIEW)
+        Sketchup.active_model.selection.clear
+        Sketchup.active_model.selection.add(path[depth])
+      end
+    end
+
+    def _clear_tree_item_preview
+      @tool.clear_3d(LAYER_3D_PART_PREVIEW)
+      Sketchup.active_model.selection.clear
+    end
+
+    # The swatch_color of the tree dropup item at 'depth' of the part 'path' -
+    # nil for no swatch
+    def _get_tree_item_swatch_color(path, depth)
+      nil
+    end
+
+    # The swatch_color of the tree dropup item while hovered - nil for no change
+    def _get_tree_item_swatch_hover_color(path, depth)
+      nil
+    end
+
+    # Asks the swatch colors again - what they show changed
+    def _refresh_tree_swatches
+      return if @tree_dropup.nil?
+      @tree_dropup.swatches.each_with_index do |k_swatch, depth|
+        k_swatch.set_colors(_get_tree_item_swatch_color(@tree_path, depth), _get_tree_item_swatch_hover_color(@tree_path, depth)) unless k_swatch.nil?
+      end
+    end
+
+    # -----
+
+    def _select_from_smart_selection(smart_selection)
+
+      path = smart_selection.path
+      instances = smart_selection.instances
+
+      _set_active_selection(path, instances)
+
+      onSelected if has_active_selection?
+
+    end
+
+    def _select_from_model_selection
+      return if (model = Sketchup.active_model).nil?
+      selection = model.selection
+      if (instances = selection.select { |entity| entity.respond_to?(:transformation) && entity.respond_to?(:move!) }).any?
+        instances = instances[0,1] unless _allows_multiple_selections?
+        if (first_entity_path = DrawingelementUtils.get_drawingelement_path(instances.first)).is_a?(Array) && first_entity_path.any?
+
+          active_path = first_entity_path[0...-1]
+
+          if instances.one?
+            path = active_path + [ instances.first ]
+            unless (part = _generate_part_from_path(path)).nil?
+              _set_active_part(path, part, false, true)
+            end
+          end
+
+          unless has_active_part?
+            _set_active_selection(active_path, instances)
+          end
+
+          onSelected if has_active_selection?
+
+        end
+
+      end
+    end
+
+    # The absolute paths a rectangle picks. Shown guides are hidden meanwhile :
+    # crossing, a guide the rectangle touches ends the walk of its container
+    # - the entities after it in the container are never picked (SketchUp 2026).
+    # Guides are no parts, nothing is lost.
+    def _window_pick_paths(view, point_a, point_b, pick_inside)
+      rendering_options = Sketchup.active_model.rendering_options
+      hide_construction_geometry = rendering_options['HideConstructionGeometry']
+      rendering_options['HideConstructionGeometry'] = true unless hide_construction_geometry
+      ph = view.pick_helper
+      ph.window_pick(point_a, point_b, pick_inside ? Sketchup::PickHelper::PICK_INSIDE : Sketchup::PickHelper::PICK_CROSSING)
+      (0...ph.count).map { |i| ph.path_at(i) }
+    ensure
+      rendering_options['HideConstructionGeometry'] = false unless hide_construction_geometry
+    end
+
+    # -----
+
+    def _can_activate_part?(part_entity_path, part)
+      if !part_entity_path.nil? &&
+         @state == STATE_SELECT_MULTIPLE &&
+         @multiple_smart_selection.is_a?(SmartSelection) &&
+         !@multiple_smart_selection.empty? &&
+         @multiple_smart_selection.path != part_entity_path[0...-1]
+        return [ false, 'tool.default.error.not_sibling_part' ]
+      end
+      super
     end
 
     # -----
@@ -3052,10 +4062,1094 @@ module Ladb::OpenCutList
       k_rect = _create_floating_rect(
         start_point_2d: @mouse_down_point_2d,
         end_point_2d: @mouse_move_point_2d,
-        line_stipple: Kuix::LINE_STIPPLE_LONG_DASHES # TODO : @mouse_down_point_2d.x < @mouse_move_point_2d.x ? Kuix::LINE_STIPPLE_SOLID : Kuix::LINE_STIPPLE_LONG_DASHES,
+        line_stipple: @mouse_down_point_2d.x < @mouse_move_point_2d.x ? Kuix::LINE_STIPPLE_SOLID : Kuix::LINE_STIPPLE_LONG_DASHES
       )
       @tool.append_2d(k_rect)
 
+    end
+
+  end
+
+  # -----
+
+  module SmartCursorManager
+
+    extend self
+
+    CURSOR_SIZE = 32  # All cursor images are 32x32
+
+    def create_cursor(name, hot_x = 0, hot_y = 0)
+      (@cursors ||= {})[name] ||= begin
+        cursor_id = 0
+        cursor_path = File.join(PLUGIN_DIR, 'img', "cursor-#{name}.#{PLUGIN.platform_is_mac? ? 'pdf' : 'svg'}")
+        cursor_id = UI.create_cursor(cursor_path, hot_x, hot_y) if File.exist?(cursor_path)
+        (@hot_spots ||= {})[cursor_id] = [ hot_x, hot_y ]
+        cursor_id
+      end
+    end
+
+    # Returns the [ hot_x, hot_y ] of the cursor image (unscaled), [ 0, 0 ] if unknown (eg. native cursors).
+    def hot_spot(cursor_id)
+      (@hot_spots ||= {}).fetch(cursor_id, [ 0, 0 ])
+    end
+
+    # -- CURSORS --
+
+    def cursor_select
+      create_cursor('select')
+    end
+
+    def cursor_select_error
+      create_cursor('select-error')
+    end
+
+    def cursor_select_part
+      create_cursor('select-part')
+    end
+
+    def cursor_select_part_plus
+      create_cursor('select-part-plus')
+    end
+
+    def cursor_select_plus_minus
+      create_cursor('select-plus-minus')
+    end
+
+    def cursor_select_rect
+      create_cursor('select-rect')
+    end
+
+    def cursor_select_copy_line
+      create_cursor('select-copy-line')
+    end
+
+    def cursor_select_copy_grid
+      create_cursor('select-copy-grid')
+    end
+
+    def cursor_select_move_line
+      create_cursor('select-move-line')
+    end
+
+    def cursor_select_distribute
+      create_cursor('select-distribute')
+    end
+
+    def cursor_select_stretch
+      create_cursor('select-stretch')
+    end
+
+    def cursor_select_paneling
+      create_cursor('select-paneling')
+    end
+
+    def cursor_select_flip
+      create_cursor('select-flip')
+    end
+
+    def cursor_select_swap_length_width
+      create_cursor('select-swap-length-width')
+    end
+
+    def cursor_select_swap_front_back
+      create_cursor('select-swap-front-back')
+    end
+
+    def cursor_select_axes
+      create_cursor('select-axes')
+    end
+
+    def cursor_select_stl
+      create_cursor('select-stl')
+    end
+
+    def cursor_select_obj
+      create_cursor('select-obj')
+    end
+
+    def cursor_select_dxf
+      create_cursor('select-dxf')
+    end
+
+    def cursor_select_svg
+      create_cursor('select-svg')
+    end
+
+    def cursor_select_grain
+      create_cursor('select-grain')
+    end
+
+    def cursor_select_join
+      create_cursor('select-join')
+    end
+
+    def cursor_select_join_plus
+      create_cursor('select-join-plus')
+    end
+
+    def cursor_select_join_minus
+      create_cursor('select-join-minus')
+    end
+
+    def cursor_select_a
+      create_cursor('select-a')
+    end
+
+    def cursor_select_b
+      create_cursor('select-b')
+    end
+
+    def cursor_select_unite_a
+      create_cursor('select-unite-a')
+    end
+
+    def cursor_select_unite_b
+      create_cursor('select-unite-b')
+    end
+
+    def cursor_select_subtract_a
+      create_cursor('select-subtract-a')
+    end
+
+    def cursor_select_subtract_b
+      create_cursor('select-subtract-b')
+    end
+
+    def cursor_select_intersect_a
+      create_cursor('select-intersect-a')
+    end
+
+    def cursor_select_intersect_b
+      create_cursor('select-intersect-b')
+    end
+
+    def cursor_select_module_plus
+      create_cursor('select-module-plus')
+    end
+
+    def cursor_select_scissors
+      create_cursor('select-scissors')
+    end
+
+
+    def cursor_move
+      create_cursor('move', 16, 16)
+    end
+
+    def cursor_move_copy
+      create_cursor('move-copy', 16, 16)
+    end
+
+
+    def cursor_pin_1
+      create_cursor('pin-1', 11, 31)
+    end
+
+    def cursor_pin_2
+      create_cursor('pin-2', 11, 31)
+    end
+
+    def cursor_pin_3
+      create_cursor('pin-3', 11, 31)
+    end
+
+
+    def cursor_pencil_rectangle
+      create_cursor('pencil-rectangle', 0, 31)
+    end
+
+    def cursor_pencil_circle
+      create_cursor('pencil-circle', 0, 31)
+    end
+
+    def cursor_pencil_polygon
+      create_cursor('pencil-polygon', 0, 31)
+    end
+
+    def cursor_pencil_module
+      create_cursor('pencil-module', 0, 31)
+    end
+
+    def cursor_pencil_divider
+      create_cursor('pencil-divider', 0, 31)
+    end
+
+    def cursor_pencil_front_panel
+      create_cursor('pencil-front-panel', 0, 31)
+    end
+
+    def cursor_pencil_back_panel
+      create_cursor('pencil-back-panel', 0, 31)
+    end
+
+
+    def cursor_pull
+      create_cursor('pull', 16, 3)
+    end
+
+
+    def cursor_paint_error
+      create_cursor('paint-error', 2 ,15)
+    end
+
+    def cursor_paint_part
+      create_cursor('paint-part', 2 ,15)
+    end
+
+    def cursor_paint_edge_1
+      create_cursor('paint-edge-1', 2 ,15)
+    end
+
+    def cursor_paint_edge_2
+      create_cursor('paint-edge-2', 2 ,15)
+    end
+
+    def cursor_paint_edge_4
+      create_cursor('paint-edge-4', 2 ,15)
+    end
+
+    def cursor_paint_face_1
+      create_cursor('paint-face-1', 2 ,15)
+    end
+
+    def cursor_paint_face_2
+      create_cursor('paint-face-2', 2 ,15)
+    end
+
+    def cursor_paint_clean
+      create_cursor('paint-clean', 2 ,15)
+    end
+
+
+    def cursor_picker
+      create_cursor('picker')
+    end
+
+
+    def cursor_hand
+      create_cursor('hand', 7, 2)
+    end
+
+    def cursor_hand_error
+      create_cursor('hand-error', 7, 2)
+    end
+
+  end
+
+  # -----
+
+  # Paints the "no material" background : the background color, its lower
+  # left half darkened - the Smart Paint "no material" button look
+  module SmartNoneMaterialBackground
+
+    def paint_background(graphics)
+      super
+      return unless none_material?
+
+      width = @bounds.width - @margin.left - @border.left - @margin.right - @border.right
+      height = @bounds.height - @margin.top - @border.top - @margin.bottom - @border.bottom
+
+      graphics.draw_triangle(
+        x1: 0,
+        y1: 0,
+        x2: 0,
+        y2: height,
+        x3: width,
+        y3: height,
+        fill_color: @background_color.blend(Sketchup::Color.new(0, 0, 0), 0.9)
+      )
+    end
+
+    # Is "no material" drawn, in the current state ?
+    def none_material?
+      true
+    end
+
+  end
+
+  # The swatch of a SmartDropup row : a color or SmartDropup::SWATCH_NONE_MATERIAL
+  # - another one while the row is hovered, if 'hover_color' isn't nil
+  class SmartDropupSwatch < Kuix::Panel
+
+    include SmartNoneMaterialBackground
+
+    def initialize(color, hover_color = nil)
+      super()
+      set_colors(color, hover_color)
+    end
+
+    def set_colors(color, hover_color = nil)
+      hover_color = color if hover_color.nil?
+      @color_none_material = color == SmartDropup::SWATCH_NONE_MATERIAL
+      @hover_color_none_material = hover_color == SmartDropup::SWATCH_NONE_MATERIAL
+      set_style_attribute(:background_color, @color_none_material ? Kuix::COLOR_WHITE : color)
+      set_style_attribute(:background_color, @hover_color_none_material ? Kuix::COLOR_WHITE : hover_color, :hover)
+    end
+
+    # The row hover reaches the swatch : a button passes its pseudo classes on
+    def none_material?
+      has_pseudo_class?(:hover) ? @hover_color_none_material : @color_none_material
+    end
+
+  end
+
+  # -----
+
+  # A floating list of buttons, anchored at the mouse - by its bottom right
+  # corner by default : it drops up and left.
+  #  - title : an optional first row, not clickable - the handle to drag the
+  #    dropup ;
+  #  - footer_btn_defs : optional SmartDropupFooterBtnDefs, side by side in a
+  #    last row - their buttons and labels are kept in footer_btns, the
+  #    owner updates them. MOTIF_CANCEL_PATH and MOTIF_VALIDATE_PATH draw the
+  #    validation buttons ones.
+  # Beyond MAX_ROWS buttons, the list scrolls - by the wheel or by the up
+  # and down bars around it.
+  # A row swatch_color is a color, or SWATCH_NONE_MATERIAL - its
+  # swatch_hover_color too, shown while the row is hovered.
+  class SmartDropup < Kuix::Panel
+
+    MAX_ROWS = 10
+
+    # A swatch_color drawing "no material" : white, its lower left half grey
+    SWATCH_NONE_MATERIAL = :none_material
+
+    MOTIF_CANCEL_PATH = 'M0,0L1,1 M0,1L1,0'.freeze
+    MOTIF_VALIDATE_PATH = 'M0,0.5L0.375,1L1,0'.freeze
+    MOTIF_SCROLL_UP_PATH = 'M0,1L1,1L0.5,0L0,1Z'.freeze
+    MOTIF_SCROLL_DOWN_PATH = 'M0,0L1,0L0.5,1L0,0Z'.freeze
+
+    # [ { :button => Kuix::Button, :label => Kuix::Label - nil for a motif } ] in footer_btn_defs order
+    attr_reader :footer_btns
+
+    # [ SmartDropupSwatch - nil for a row without ] in btn_defs order : the
+    # owner updates their colors
+    attr_reader :swatches
+
+    def initialize(tool, btn_defs, id = nil, anchor: Kuix::Anchor::BOTTOM_RIGHT, title: nil, footer_btn_defs: nil)
+      super(id)
+
+      @swatches = []
+
+      unit = tool.get_unit
+
+      self.layout_data = Kuix::StaticLayoutData.new(tool.last_mouse_x, tool.last_mouse_y, -1, -1, Kuix::Anchor.new(anchor))
+      self.layout_data.keep_inside = true
+      self.layout = Kuix::BorderLayout.new(0, unit * 0.25)
+      self.border.set_all!(unit * 0.25)
+      self.padding.set_all!(unit * 0.25)
+      self.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_LIGHT)
+      self.set_style_attribute(:border_color, ColorUtils.color_darken(SmartTool::COLOR_BRAND_LIGHT, 0.1))
+
+        unless title.nil?
+
+          # The title is the drag handle of the dropup
+          k_title = Kuix::Label.new
+          k_title.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::NORTH)
+          k_title.text = title
+          k_title.text_size = unit * 3
+          k_title.text_bold = true
+          k_title.padding.set_all!(unit)
+          k_title.drag_target = self
+          k_title.cursor = SmartCursorManager.cursor_move
+          k_title.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_LIGHT)  # Hittable
+          k_title.set_style_attribute(:color, Kuix::COLOR_BLACK)
+          self.append(k_title)
+
+        end
+
+        k_list = Kuix::Panel.new
+        k_list.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+        k_list.layout = Kuix::BorderLayout.new(0, unit * 0.25)
+        self.append(k_list)
+
+          k_rows = Kuix::ScrollPanel.new(1, [ btn_defs.size, MAX_ROWS ].min, 0, unit * 0.25)
+          k_rows.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+          k_list.append(k_rows)
+
+          if btn_defs.size > MAX_ROWS
+            [
+              [ Kuix::BorderLayoutData::NORTH, MOTIF_SCROLL_UP_PATH ],
+              [ Kuix::BorderLayoutData::SOUTH, MOTIF_SCROLL_DOWN_PATH ]
+            ].each do |position, motif_path|
+
+              k_scroll_btn = Kuix::Button.new
+              k_scroll_btn.layout_data = Kuix::BorderLayoutData.new(position)
+              k_scroll_btn.layout = Kuix::InlineLayout.new(true, 0, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+              k_scroll_btn.padding.set_all!(unit)
+              k_scroll_btn.set_style_attribute(:background_color, Kuix::COLOR_WHITE)
+              k_scroll_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND, :hover)
+              k_scroll_btn.set_style_attribute(:background_color, Kuix::COLOR_WHITE, :disabled)
+              k_list.append(k_scroll_btn)
+              position == Kuix::BorderLayoutData::NORTH ? k_rows.bind_scroll_up_btn(k_scroll_btn) : k_rows.bind_scroll_down_btn(k_scroll_btn)
+
+                k_scroll_motif = Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path(motif_path))
+                k_scroll_motif.min_size.set!(unit * 3, unit * 1.5)
+                k_scroll_motif.filled = true
+                k_scroll_motif.hittable = false
+                k_scroll_motif.set_style_attribute(:color, Kuix::COLOR_DARK_GREY)
+                k_scroll_motif.set_style_attribute(:color, Kuix::COLOR_WHITE, :hover)
+                k_scroll_motif.set_style_attribute(:color, Kuix::COLOR_LIGHT_GREY, :disabled)
+                k_scroll_btn.append(k_scroll_motif)
+
+            end
+          end
+
+        btn_defs.each do |btn_def|
+
+          k_btn = Kuix::Button.new
+          k_btn.layout = Kuix::BorderLayout.new(unit)
+          k_btn.margin.left = unit * btn_def.indent
+          k_btn.border.set_all!(unit * 0.5)
+          k_btn.padding.set_all!(unit)
+          k_btn.set_style_attribute(:background_color, Kuix::COLOR_WHITE)
+          k_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_LIGHT, :hover)
+          k_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND, :active)
+          k_btn.set_style_attribute(:border_color, Kuix::COLOR_WHITE)
+          k_btn.set_style_attribute(:border_color, SmartTool::COLOR_BRAND, :hover)
+          k_btn.disabled = btn_def.disabled
+          k_btn.on(:enter) { btn_def.on_enter.call(k_btn) } unless btn_def.on_enter.nil?
+          k_btn.on(:leave) { btn_def.on_leave.call(k_btn) } unless btn_def.on_leave.nil?
+          k_btn.on(:click) { btn_def.on_click.call(k_btn) } unless btn_def.on_click.nil?
+          k_rows.append(k_btn)
+
+            # The swatch is a full height bar on the left edge : the vertical
+            # padding moves to the labels and the tick
+            swatch = !btn_def.swatch_color.nil?
+            k_swatch = nil
+            if swatch
+
+              k_btn.padding.set!(0, unit, 0, 0)
+
+              k_swatch = SmartDropupSwatch.new(btn_def.swatch_color, btn_def.swatch_hover_color)
+              k_swatch.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::WEST)
+              k_swatch.min_size.width = unit * 2
+              k_swatch.hittable = false
+              k_btn.append(k_swatch)
+
+            end
+            @swatches << k_swatch
+
+            k_labels = Kuix::Panel.new
+            k_labels.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+            k_labels.layout = Kuix::InlineLayout.new(true, unit * 0.5, Kuix::Anchor.new(Kuix::Anchor::LEFT))
+            k_labels.padding.set!(unit, 0, unit, 0) if swatch
+            k_btn.append(k_labels)
+
+              btn_def.text_defs.each do |text_def|
+
+                k_label = Kuix::Label.new
+                k_label.text = text_def.text
+                k_label.text_size = unit * 3
+                k_label.text_bold = text_def.bold
+                k_label.set_style_attribute(:color, text_def.color)
+                k_label.set_style_attribute(:color, Kuix::COLOR_WHITE, :active)
+                k_labels.append(k_label)
+
+              end
+
+            unless btn_def.tick_def.nil?
+
+              # A checkbox : empty light grey box when unticked, brand V motif in a medium grey box when ticked
+              k_tick_btn = Kuix::Button.new
+              k_tick_btn.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::EAST)
+              k_tick_btn.layout = Kuix::InlineLayout.new(true, 0, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+              k_tick_btn.border.set_all!(unit * 0.25)
+              k_tick_btn.padding.set_all!(unit * 0.5)
+              k_tick_btn.margin.set!(unit * 0.5, 0, unit * 0.5, 0) if swatch
+              k_tick_btn.set_style_attribute(:background_color, Kuix::COLOR_WHITE)
+              k_tick_btn.set_style_attribute(:border_color, Kuix::COLOR_LIGHT_GREY)
+              k_tick_btn.set_style_attribute(:border_color, Kuix::COLOR_MEDIUM_GREY, :hover)
+              k_tick_btn.set_style_attribute(:border_color, Kuix::COLOR_MEDIUM_GREY, :selected)
+              k_tick_btn.set_style_attribute(:border_color, Kuix::COLOR_LIGHT_GREY, :disabled)
+              k_tick_btn.selected = btn_def.tick_def.selected
+              k_tick_btn.disabled = btn_def.disabled || btn_def.tick_def.disabled
+              k_tick_btn.on(:click) { btn_def.tick_def.on_click.call(k_tick_btn) } unless btn_def.tick_def.on_click.nil?
+              k_btn.append(k_tick_btn)
+
+                k_tick_motif = Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path(MOTIF_VALIDATE_PATH))
+                k_tick_motif.min_size.set_all!(unit * 3)  # Square, as high as a text line
+                k_tick_motif.line_width = unit * 0.5
+                k_tick_motif.hittable = false
+                k_tick_motif.set_style_attribute(:color, Kuix::COLOR_WHITE)  # Invisible on the white box
+                k_tick_motif.set_style_attribute(:color, SmartTool::COLOR_BRAND, :selected)
+                k_tick_motif.set_style_attribute(:color, Kuix::COLOR_LIGHT_GREY, :disabled)
+                k_tick_btn.append(k_tick_motif)
+
+            end
+
+        end
+        k_rows.scroll(0)  # The scroll bars enabled accordingly
+
+        @footer_btns = []
+        unless footer_btn_defs.nil? || footer_btn_defs.empty?
+
+          k_footer = Kuix::Panel.new
+          k_footer.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::SOUTH)
+          k_footer.layout = Kuix::GridLayout.new(footer_btn_defs.size, 1, unit * 0.25, 0)
+          self.append(k_footer)
+
+            footer_btn_defs.each do |footer_btn_def|
+
+              # Colored as the validation buttons : light background and colored
+              # text, inverted on hover
+              case footer_btn_def.type
+              when SmartTool::MESSAGE_TYPE_SUCCESS
+                color = SmartTool::COLOR_MESSAGE_BACKGROUND_SUCCESS
+                text_color = SmartTool::COLOR_MESSAGE_TEXT_SUCCESS
+              when SmartTool::MESSAGE_TYPE_ERROR
+                color = SmartTool::COLOR_MESSAGE_BACKGROUND_ERROR
+                text_color = SmartTool::COLOR_MESSAGE_TEXT_ERROR
+              else
+                color = Kuix::COLOR_WHITE
+                text_color = Kuix::COLOR_BLACK
+              end
+
+              k_btn = Kuix::Button.new
+              k_btn.layout = footer_btn_def.motif_path.nil? ? Kuix::GridLayout.new : Kuix::InlineLayout.new(true, 0, Kuix::Anchor.new(Kuix::Anchor::CENTER))
+              k_btn.border.set_all!(unit * 0.5)
+              k_btn.padding.set_all!(unit)
+              k_btn.set_style_attribute(:background_color, color)
+              k_btn.set_style_attribute(:background_color, text_color, :hover)
+              k_btn.set_style_attribute(:background_color, Kuix::COLOR_LIGHT_GREY, :disabled)
+              k_btn.set_style_attribute(:border_color, color)
+              k_btn.set_style_attribute(:border_color, text_color, :hover)
+              k_btn.set_style_attribute(:border_color, Kuix::COLOR_LIGHT_GREY, :disabled)
+              k_btn.disabled = footer_btn_def.disabled
+              k_btn.on(:click) { footer_btn_def.on_click.call(k_btn) } unless footer_btn_def.on_click.nil?
+              k_footer.append(k_btn)
+
+                if footer_btn_def.motif_path.nil?
+                  k_content = Kuix::Label.new
+                  k_content.text = footer_btn_def.text
+                  k_content.text_size = unit * 3
+                  k_content.text_bold = !footer_btn_def.type.nil?
+                else
+                  k_content = Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path(footer_btn_def.motif_path))
+                  k_content.min_size.set_all!(unit * 3)  # Square, as high as a text line
+                  k_content.line_width = unit * 0.5
+                  k_content.hittable = false
+                end
+                k_content.set_style_attribute(:color, text_color)
+                k_content.set_style_attribute(:color, color, :hover)
+                k_content.set_style_attribute(:color, Kuix::COLOR_MEDIUM_GREY, :disabled)
+                k_btn.append(k_content)
+
+              @footer_btns << { :button => k_btn, :label => footer_btn_def.motif_path.nil? ? k_content : nil }
+
+            end
+
+        end
+
+    end
+
+    # The anchor that keeps a dropup opened at the end of a drag from
+    # 'start_point_2d' to 'end_point_2d' beside the dragged rectangle :
+    # horizontally outside, not to hide it, and vertically inside.
+    def self.anchor_beside_drag(start_point_2d, end_point_2d)
+      if end_point_2d.y >= start_point_2d.y
+        end_point_2d.x >= start_point_2d.x ? Kuix::Anchor::BOTTOM_LEFT : Kuix::Anchor::BOTTOM_RIGHT
+      else
+        end_point_2d.x >= start_point_2d.x ? Kuix::Anchor::TOP_LEFT : Kuix::Anchor::TOP_RIGHT
+      end
+    end
+
+    SmartDropupFooterBtnDef = Struct.new(
+      :text,
+      :on_click,
+      :type,  # SmartTool::MESSAGE_TYPE_SUCCESS or MESSAGE_TYPE_ERROR to color it as a validation button, nil for none
+      :disabled,
+      :motif_path  # A Motif2d SVG path drawn instead of the text
+    ) do
+      def initialize(
+        text,
+        on_click = nil,
+        type = nil,
+        disabled = false,
+        motif_path = nil
+      )
+        super
+      end
+    end
+
+    SmartDropupBtnDef = Struct.new(
+      :text_defs,
+      :on_click,
+      :on_enter,
+      :on_leave,
+      :indent,
+      :disabled,
+      :tick_def,
+      :swatch_color,
+      :swatch_hover_color
+    ) do
+      def initialize(
+        text_defs = [],
+        on_click = nil,
+        on_enter = nil,
+        on_leave = nil,
+        indent = 0,
+        disabled = false,
+        tick_def = nil,
+        swatch_color = nil,
+        swatch_hover_color = nil
+      )
+        super
+      end
+    end
+
+    SmartDropupTextDef = Struct.new(
+      :text,
+      :color,
+      :bold
+    ) do
+      def initialize(
+        text,
+        color = Kuix::COLOR_BLACK,
+        bold = false
+      )
+        super
+      end
+    end
+
+    SmartDropupTickDef = Struct.new(
+      :selected,
+      :on_click,
+      :disabled,
+    ) do
+      def initialize(
+        selected = false,
+        on_click = nil,
+        disabled = false
+      )
+        super
+      end
+    end
+
+  end
+
+  # -----
+
+  # The bottom bar of a Smart action browsing a folder of the asset library : a
+  # row of the sub folders of the browsed folder - led by its parent below the
+  # library root - above the buttons of its files.
+  #
+  # A root is browsed in two libraries : the user's one ('$LIB/…', "Ma
+  # Bibliothèque") and the one shipped with the extension ('$OCL/…',
+  # "Bibliothèque OCL", read only). Both are the sub folders of a virtual
+  # parent, LIBRARIES_REF ("Bibliothèques"), which holds no file.
+  #
+  # The bar only draws : what is browsed and picked stays the owner's, given
+  # at each setup, and a click is handed back to it (on_browse, on_select).
+  #
+  # The scroll of both rows is kept by key, across handlers, while the browsed
+  # folder is : the panel is rebuilt - on a restart, by a new handler - scrolled
+  # as it was left.
+  class SmartLibraryPanel
+
+    # The virtual parent of both libraries - not a library ref
+    LIBRARIES_REF = '$LIBS'.freeze
+
+    # Scrolled panels, by key : { :dir_ref, :dirs_panel, :files_panel }
+    @@scrolls = {}
+
+    # A button of the files row : its ref, its label, and whether it is shown
+    # as missing - a picked file gone from the library.
+    FileItem = Struct.new(:ref, :label, :missing)
+
+    COLOR_MISSING = Sketchup::Color.new('#d9534f').freeze
+
+    MOTIF_PARENT_PATH = 'M1,.917H.5V.083M.25,.333L.5,.083L.75,.333'.freeze
+    MOTIF_EXPLORE_PATH = 'M.875,.417V.208H.5L.375,.083H0V.917H.792L1,.417H.208L0,.917'.freeze
+    MOTIF_HOME_PATH = 'M0,.5L.5,.083L1,.5M.167,.361V.917H.833V.361M.417,.917V.667H.583V.917'.freeze
+    MOTIF_ADD_PATH = 'M0,0.5L0.5,0.5L0.5,0L0.5,0.5L1,0.5L0.5,0.5L0.5,1'.freeze
+    MOTIF_EDIT_PATH = 'M.7,.1L.9,.3L.35,.85L.1,.9L.15,.65L.7,.1M.6,.2L.8,.4'.freeze
+
+    # Can the given folder be browsed below the given root - a '$LIB/…' ref ?
+    # LIBRARIES_REF, both libraries' roots - even missing - and their existing
+    # sub folders can.
+    def self.browsable?(root_ref, dir_ref)
+      return true if dir_ref == LIBRARIES_REF
+      return false unless dir_ref.is_a?(String)
+      [ root_ref, PLUGIN.bundled_library_ref(root_ref) ].any? { |ref|
+        dir_ref == ref || dir_ref.start_with?("#{ref}/") && File.directory?(PLUGIN.resolve_library_ref(dir_ref).to_s)
+      }
+    end
+
+    # Is the given folder one files can be added to - a folder of the user's
+    # library, or of the shipped one in a dev build run from the sources ?
+    def self.writable?(dir_ref)
+      PLUGIN.library_ref?(dir_ref) && !PLUGIN.library_readonly_ref?(dir_ref)
+    end
+
+    def initialize(tool, layer, key)
+      @tool = tool
+      @layer = layer
+      @key = key
+      @file_btns = {}
+      @with_selected_file_btns = false
+      @add_btn = nil
+      tool.create_2d(layer, :bottom)
+    end
+
+    # Rebuilds the bar.
+    #  - root_ref : the '$LIB/…' folder above which nothing is browsed - its
+    #    '$OCL/…' counterpart too ;
+    #  - dir_ref : the browsed folder, or LIBRARIES_REF ;
+    #  - selected_ref : the picked file, nil if none ;
+    #  - files : the FileItems of the files row, in order - the owner filters ;
+    #  - empty_text : shown when there is no file ;
+    #  - on_browse(dir_ref), on_select(file_ref) : the clicks - a click on the
+    #    picked file is ignored ;
+    #  - add_btn : { :selected, :on_click } for a toggle button left of the
+    #    files - disabled out of the user's library - nil for none ;
+    #  - selected_file_btns : [ { :motif, :tooltip, :disabled, :on_click } ]
+    #    the buttons in the picked file's one - none by default.
+    def setup(root_ref:, dir_ref:, selected_ref:, files:, empty_text:, on_browse:, on_select:, add_btn: nil, selected_file_btns: nil)
+
+      # The scroll is kept while the browsed folder is
+      scroll = @@scrolls[@key]
+      scroll = !scroll.nil? && scroll[:dir_ref] == dir_ref ? {
+        :dirs => scroll[:dirs_panel].nil? ? 0 : scroll[:dirs_panel].layout.start_row,
+        :files => scroll[:files_panel].nil? ? 0 : scroll[:files_panel].layout.start_row
+      } : {}
+      @@scrolls[@key] = { :dir_ref => dir_ref }
+
+      @tool.clear_2d(@layer)
+      @file_btns = {}
+      @add_btn = nil
+
+      unit = @tool.get_unit
+      text_size = unit * 3 * @tool.get_text_unit_factor
+
+      libraries = dir_ref == LIBRARIES_REF
+      bundled_root_ref = PLUGIN.bundled_library_ref(root_ref)
+      writable = SmartLibraryPanel.writable?(dir_ref)
+      fn_basename_label = lambda { |ref| File.basename(ref).sub(/\A./) { |c| c.upcase } }  # Only the first letter : capitalize would lower the rest
+      fn_dir_label = lambda { |ref|
+        case ref
+        when LIBRARIES_REF then PLUGIN.get_i18n_string('core.library.libraries')
+        when root_ref then PLUGIN.get_i18n_string('core.library.user')
+        when bundled_root_ref then PLUGIN.get_i18n_string('core.library.bundled')
+        else fn_basename_label.call(ref)
+        end
+      }
+      fn_parent_ref = lambda { |ref|
+        ref == root_ref || ref == bundled_root_ref ? LIBRARIES_REF : File.dirname(ref)
+      }
+
+      dir_refs = libraries ? [ root_ref, bundled_root_ref ] : PLUGIN.list_library_dirs(dir_ref)
+      files = [] if libraries
+
+      # Both rows share the same columns
+      num_dirs = dir_refs.length + 1
+      num_cols = [ [ num_dirs, files.length, 5 ].max, 10 ].min
+
+      fn_create_btn = lambda { |text, color, selected, disabled = false, hover_background = true, &block|
+
+        bg_color = color
+        bg_active_color = ColorUtils.color_darken(color, 0.1)
+        text_color = ColorUtils.color_is_dark?(bg_color) ? Kuix::COLOR_WHITE : Kuix::COLOR_BLACK
+
+        btn = Kuix::Button.new
+        btn.min_size.set!(unit * 20, unit * 10)
+        btn.set_style_attribute(:background_color, bg_color)
+        btn.set_style_attribute(:background_color, bg_active_color, :active)
+        btn.set_style_attribute(:background_color, bg_active_color, :hover) if hover_background
+        btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND, :selected)
+        btn.set_style_attribute(:background_color, ColorUtils.color_darken(SmartTool::COLOR_BRAND, 0.1), [ :hover, :selected ])
+        if block
+          block.call(btn)
+        else
+          btn.append_static_label(text, text_size)
+             .set_style_attribute(:color, text_color)
+             .set_style_attribute(:color, text_color, :hover)
+             .set_style_attribute(:color, Kuix::COLOR_WHITE, :selected)
+        end
+        btn.selected = selected
+        btn.disabled = disabled
+        btn
+      }
+
+      fn_create_motif = lambda { |path|
+        motif = Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path(path))
+        motif.padding.set_all!(unit * 2)
+        motif.min_size.set_all!(unit * 6)
+        motif.line_width = unit <= 4 ? 1 : 2
+        motif
+      }
+
+      # Each row overflows its 2 lines of buttons
+      dirs_overflow = num_dirs > num_cols * 2
+      files_overflow = files.length > num_cols * 2
+
+      # A scroll buttons column on the right of a row : reserved on both rows
+      # as soon as one overflows, to keep their columns aligned, with its
+      # buttons only on the rows that overflow.
+      fn_append_scroll_btns = lambda { |row, scroll_panel, overflow, start_row|
+
+        scroll_btns = Kuix::Panel.new
+        scroll_btns.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::EAST)
+        scroll_btns.layout = Kuix::GridLayout.new(1, 2)
+        scroll_btns.min_size.set!(unit * 8, 0)
+        scroll_btns.visible = dirs_overflow || files_overflow
+        row.append(scroll_btns)
+
+        [ [ 'M0,1L1,1L0.5,0L0,1Z', -1 ], [ 'M0,0L1,0L0.5,1L0,0Z', 1 ] ].each do |path, delta|
+
+          btn = Kuix::Button.new
+          btn.layout = Kuix::StaticLayout.new
+          btn.min_size.set!(unit * 8, unit * 8)
+          btn.visible = overflow
+          btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_DARK)
+          btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_LIGHT, :hover)
+          scroll_btns.append(btn)
+          delta < 0 ? scroll_panel.bind_scroll_up_btn(btn) : scroll_panel.bind_scroll_down_btn(btn)
+
+          motif = fn_create_motif.call(path)
+          motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_LIGHT)
+          motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_DARK, :hover)
+          motif.set_style_attribute(:color, Kuix::COLOR_MEDIUM_GREY, :disabled)
+          btn.append(motif)
+
+        end
+
+        scroll_panel.layout.start_row = start_row.to_i
+        scroll_panel.scroll(0)  # Clamped, and the buttons enabled accordingly
+
+      }
+
+      wrapper = Kuix::Panel.new
+      wrapper.layout_data = Kuix::StaticLayoutData.new(0, 1.0, 1.0, -1, Kuix::Anchor.new(Kuix::Anchor::BOTTOM_LEFT))
+      wrapper.layout = Kuix::BorderLayout.new
+      @tool.append_2d(wrapper, @layer)
+
+      # Path : over the view, without background
+
+      # The browsed folder and its ancestors
+      path_refs = []
+      ref = dir_ref
+      until ref == LIBRARIES_REF || ref == File.dirname(ref)
+        path_refs.unshift(ref)
+        ref = fn_parent_ref.call(ref)
+      end
+
+      # Headed by the libraries' family - the root folder's name if untranslated : which of their folders is browsed
+      family_key = "core.library.family_#{File.basename(root_ref)}"
+      family_label = PLUGIN.get_i18n_string(family_key)
+      family_label = fn_basename_label.call(root_ref) if family_label == family_key
+      path_lbl = Kuix::Label.new(([ family_label ] + path_refs.map { |ref| fn_dir_label.call(ref) }).join(' / '))
+      path_lbl.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::NORTH)
+      path_lbl.text_size = text_size
+      path_lbl.text_align = TextAlignLeft
+      path_lbl.padding.set!(unit, unit * 2, unit, unit * 2)
+      path_lbl.set_style_attribute(:color, SmartTool::COLOR_BRAND_DARK)
+      wrapper.append(path_lbl)
+
+      panel = Kuix::Panel.new
+      panel.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+      panel.layout = Kuix::BorderLayout.new(0, unit)
+      panel.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_DARK)
+      wrapper.append(panel)
+
+      # Folders
+
+      dirs_row = Kuix::Panel.new
+      dirs_row.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::NORTH)
+      dirs_row.layout = Kuix::BorderLayout.new
+      dirs_row.set_style_attribute(:background_color, Kuix::COLOR_WHITE)
+      panel.append(dirs_row)
+
+      dirs_panel = Kuix::ScrollPanel.new(num_cols, [ (num_dirs / num_cols.to_f).ceil, 2 ].min, 1, 1)
+      dirs_panel.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+      dirs_row.append(dirs_panel)
+
+      folder_btn_text = fn_dir_label.call(dir_ref)
+      folder_btn_disabled = libraries
+      parent_ref = fn_parent_ref.call(dir_ref)
+      btn = fn_create_btn.call(folder_btn_text, SmartTool::COLOR_BRAND_DARK, false, folder_btn_disabled, true) { |btn|
+
+        btn.layout = Kuix::BorderLayout.new
+
+        lbl = Kuix::Label.new(folder_btn_text)
+        lbl.text_size = text_size + 1
+        lbl.text_bold = true
+        lbl.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+        lbl.set_style_attribute(:color, Kuix::COLOR_WHITE)
+        btn.append(lbl)
+
+        unless folder_btn_disabled
+
+          if writable
+
+            # A button in the button : see the selected file's ones
+            explore_btn = Kuix::Button.new
+            explore_btn.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::WEST)
+            explore_btn.layout = Kuix::StaticLayout.new
+            explore_btn.min_size.set!(unit * 10, unit * 10)  # Square : the height of a folder button
+            explore_btn.set_style_attribute(:background_color, ColorUtils.color_translucent(Kuix::COLOR_WHITE, 0))  # Hittable
+            explore_btn.set_style_attribute(:background_color, ColorUtils.color_translucent(Kuix::COLOR_WHITE, 77), :hover)
+            explore_btn.on(:click) {
+              begin
+                PLUGIN.open_dir(PLUGIN.ensure_library_dir(dir_ref))  # The browsed folder may not exist yet
+              rescue SystemCallError
+                UI.beep
+              end
+            }
+            btn.append(explore_btn)
+
+            motif = fn_create_motif.call(MOTIF_EXPLORE_PATH)
+            motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_LIGHT)
+            explore_btn.append(motif)
+
+          end
+
+          motif = fn_create_motif.call(MOTIF_PARENT_PATH)
+          motif.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::EAST)
+          motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_LIGHT)
+          motif.set_style_attribute(:color, Kuix::COLOR_WHITE, :hover)
+          btn.append(motif)
+
+        end
+
+      }
+      btn.on(:click) { on_browse.call(parent_ref) }
+      dirs_panel.append(btn)
+
+      dir_refs.each do |sub_dir_ref|
+        btn = fn_create_btn.call(fn_dir_label.call(sub_dir_ref), ColorUtils.color_lighten(SmartTool::COLOR_BRAND_DARK, 0.3), false, false, true)
+        btn.on(:click) { on_browse.call(sub_dir_ref) }
+        dirs_panel.append(btn)
+      end
+
+      dirs_home_btn = Kuix::Button.new
+      dirs_home_btn.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::WEST)
+      dirs_home_btn.layout = Kuix::StaticLayout.new
+      dirs_home_btn.min_size.set!(unit * 8, unit * 8)
+      dirs_home_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_DARK)
+      dirs_home_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_LIGHT, :hover)
+      dirs_home_btn.disabled = libraries
+      dirs_home_btn.on(:click) { on_browse.call(LIBRARIES_REF) }
+      dirs_row.append(dirs_home_btn)
+
+      dirs_home_btn_motif = fn_create_motif.call(MOTIF_HOME_PATH)
+      dirs_home_btn_motif.set_style_attribute(:color, Kuix::COLOR_LIGHT_GREY)
+      dirs_home_btn_motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_DARK, :hover)
+      dirs_home_btn_motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_DARK, :disabled)  # Invisible
+      dirs_home_btn.append(dirs_home_btn_motif)
+
+      fn_append_scroll_btns.call(dirs_row, dirs_panel, dirs_overflow, scroll[:dirs])
+      @@scrolls[@key][:dirs_panel] = dirs_panel
+
+      # Files
+
+      files_row = Kuix::Panel.new
+      files_row.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+      files_row.layout = Kuix::BorderLayout.new
+      panel.append(files_row)
+
+      if files.empty?
+
+        lbl = Kuix::Label.new
+        lbl.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+        lbl.text = libraries ? PLUGIN.get_i18n_string('tool.default.library_choose') : empty_text
+        lbl.text_size = text_size
+        lbl.padding.set_all!(unit * 3)
+        lbl.set_style_attribute(:color, Kuix::COLOR_WHITE)
+        files_row.append(lbl)
+
+      else
+
+        files_panel = Kuix::ScrollPanel.new(num_cols, [ [ (files.length / num_cols.to_f).ceil, 1 ].max, 2 ].min, 1, 1)
+        files_panel.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+        files_row.append(files_panel)
+
+        files.each do |file|
+          sub_btn_defs = file.ref == selected_ref && !file.missing ? selected_file_btns.to_a : []
+          btn = fn_create_btn.call(file.label, file.missing ? COLOR_MISSING : ColorUtils.color_darken(SmartTool::COLOR_BRAND_LIGHT, 0.1), file.ref == selected_ref, &(sub_btn_defs.empty? ? nil : lambda { |file_btn|
+
+            file_btn.layout = Kuix::BorderLayout.new
+
+            lbl = Kuix::Label.new(file.label)
+            lbl.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::CENTER)
+            lbl.text_size = text_size
+            lbl.set_style_attribute(:color, Kuix::COLOR_WHITE)
+            file_btn.append(lbl)
+
+            sub_btns_panel = Kuix::Panel.new
+            sub_btns_panel.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::EAST)
+            sub_btns_panel.layout = Kuix::GridLayout.new(sub_btn_defs.length, 1)
+            file_btn.append(sub_btns_panel)
+
+            # Buttons in the button : a click reaches the deepest hittable
+            # one only - a background makes it hittable - and a button doesn't
+            # pass its pseudo classes to a child button.
+            sub_btn_defs.each do |sub_btn_def|
+              sub_btn = Kuix::Button.new
+              sub_btn.layout = Kuix::StaticLayout.new
+              sub_btn.min_size.set!(unit * 10, unit * 10)  # Square : the height of a file button
+              sub_btn.set_style_attribute(:background_color, ColorUtils.color_translucent(Kuix::COLOR_WHITE, 0))  # Hittable
+              sub_btn.set_style_attribute(:background_color, ColorUtils.color_translucent(Kuix::COLOR_WHITE, 77), :hover)
+              sub_btn.disabled = sub_btn_def[:disabled]
+              sub_btn.on(:click) { sub_btn_def[:on_click].call }
+              unless sub_btn_def[:tooltip].nil?
+                sub_btn.on(:enter) { @tool.show_message(sub_btn_def[:tooltip]) }
+                sub_btn.on(:leave) { @tool.hide_message }
+              end
+              motif = fn_create_motif.call(sub_btn_def[:motif])  # Sized to fill the square button
+              motif.set_style_attribute(:color, Kuix::COLOR_WHITE)
+              motif.set_style_attribute(:color, ColorUtils.color_translucent(Kuix::COLOR_WHITE, 90), :disabled)
+              sub_btn.append(motif)
+              sub_btns_panel.append(sub_btn)
+            end
+
+          }))
+          btn.on(:click) { |button| on_select.call(file.ref) unless button.selected? }
+          files_panel.append(btn)
+          @file_btns[file.ref] = btn
+        end
+        @with_selected_file_btns = !selected_file_btns.to_a.empty?
+
+        fn_append_scroll_btns.call(files_row, files_panel, files_overflow, scroll[:files])
+        @@scrolls[@key][:files_panel] = files_panel
+
+      end
+
+      unless add_btn.nil?
+
+        files_add_btn = Kuix::Button.new
+        files_add_btn.layout_data = Kuix::BorderLayoutData.new(Kuix::BorderLayoutData::WEST)
+        files_add_btn.layout = Kuix::StaticLayout.new
+        files_add_btn.min_size.set!(unit * 8, unit * 8)
+        files_add_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_DARK)
+        files_add_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND_LIGHT, :hover)
+        files_add_btn.set_style_attribute(:background_color, SmartTool::COLOR_BRAND, :selected)
+        files_add_btn.selected = add_btn[:selected]
+        files_add_btn.disabled = !writable
+        files_add_btn.on(:click) { add_btn[:on_click].call }
+        files_row.append(files_add_btn)
+        @add_btn = files_add_btn
+
+        files_add_btn_motif = fn_create_motif.call(MOTIF_ADD_PATH)
+        files_add_btn_motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_LIGHT)
+        files_add_btn_motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_DARK, :hover)
+        files_add_btn_motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_DARK, :selected)
+        files_add_btn_motif.set_style_attribute(:color, SmartTool::COLOR_BRAND_DARK, :disabled) # Invisible
+        files_add_btn.append(files_add_btn_motif)
+
+      end
+
+    end
+
+    # Moves the selection to the given file - and the add button - without
+    # rebuilding the bar, which would scroll its rows back to the top. Returns
+    # false if the bar doesn't show that file : it has to be set up again.
+    def update_selection(selected_ref, add_selected = false)
+      return false unless selected_ref.nil? || @file_btns.key?(selected_ref)
+      return false if @with_selected_file_btns  # They move with the selection
+      @file_btns.each { |file_ref, btn| btn.selected = file_ref == selected_ref }
+      @add_btn.selected = add_selected unless @add_btn.nil?
+      true
     end
 
   end
@@ -3205,7 +5299,7 @@ module Ladb::OpenCutList
         @position_type = POSITION_TYPE_NONE
         @cline = nil
       elsif o.is_a?(SmartInputPoint)
-        @ip.copy!(o.inputpoint)
+        @ip.copy!(o.ip)
         @degrees_of_freedom = o.degrees_of_freedom
         @position = o.position
         @position_type = o.position_type
@@ -3253,7 +5347,7 @@ module Ladb::OpenCutList
 
         ph = view.pick_helper(x, y, 40) if ph.nil?
         entity = @ip.instance_path.leaf
-        entity = ph.best_picked if entity.nil?  # Allows to detect ConstructionLines outside a group
+        entity = ph.best_picked if entity.nil?  # Allows detecting ConstructionLines outside a group
 
         if entity.is_a?(Sketchup::ConstructionLine)
 
@@ -3291,12 +5385,9 @@ module Ladb::OpenCutList
       # Try to retrieve the background face transformation
       unless @ip.face.nil?
 
-        ph = view.pick_helper(x, y, 40) if ph.nil?
-        ph.count.times do |i|
-          if ph.leaf_at(i) == @ip.face
-            @face_transformation = ph.transformation_at(i)
-            break
-          end
+        _, path = Sketchup.active_model.raytest(view.pickray(x, y))
+        if path.is_a?(Array) && path.last == @ip.face
+          @face_transformation = PathUtils.get_transformation(path)
         end
 
       end
@@ -3314,7 +5405,11 @@ module Ladb::OpenCutList
 
   class SmartPicker
 
+    PICK_DEPTH_TOLERANCE = 3              # Screen pixels the cursor may move without losing the picked depth
+    PICK_DEPTH_COPLANAR_TOLERANCE = 0.001 # Inches between two faces at the same depth
+
     attr_reader :tool
+    attr_reader :view
     attr_reader :pick_position
     attr_reader :picked_face, :picked_face_path
     attr_reader :picked_point, :picked_point_path
@@ -3327,11 +5422,15 @@ module Ladb::OpenCutList
 
                    pick_context_by_face: true,
                    pick_context_by_edge: false,
+                   pick_context_by_cline: false,
 
                    pick_point: false,
                    pick_edges: false,
                    pick_clines: false,
-                   pick_axes: false
+                   pick_axes: false,
+
+                   lockable: true,
+                   drawable: true
 
     )
 
@@ -3343,13 +5442,32 @@ module Ladb::OpenCutList
       @pick_helper = @view.pick_helper
       @pick_ip = SmartInputPoint.new(tool) if pick_point
 
-      @pick_context = pick_context_by_face || pick_context_by_edge
+      @pick_context = pick_context_by_face || pick_context_by_edge || pick_context_by_cline
       @pick_context_by_face = pick_context_by_face
       @pick_context_by_edge = pick_context_by_edge
+      @pick_context_by_cline = pick_context_by_cline
       @pick_point = pick_point
       @pick_edges = pick_edges
       @pick_clines = pick_clines
       @pick_axes = pick_axes
+
+      @lockable = lockable
+      @drawable = drawable
+
+      @fn_face_filter = nil
+      @fn_edge_filter = nil
+      @fn_cline_filter = nil
+
+      @invalidated = false
+
+      @regular_face = nil           # The face picked without depth
+      @regular_face_path = nil
+      @face_stack = nil             # [ face, path ] under the cursor, front to back, one per container - the regular pick first. Built on demand
+      @pick_depth_path = nil        # Container path of the face picked deeper - nil = the regular pick
+      @pick_depth_step = 1          # Direction of the last depth move
+      @pick_depth_position = nil    # Screen position the depth was picked at
+      @pick_depth_skip_start = nil  # Stack index a #pick_past_refused chain started from
+      @pick_depth_skipping = false
 
       @picked_face = nil
       @picked_face_path = nil
@@ -3367,10 +5485,49 @@ module Ladb::OpenCutList
 
     # --
 
+    def set_fn_face_filter(fn_face_filter)
+      if fn_face_filter.is_a?(Proc)
+        @fn_face_filter = fn_face_filter
+      else
+        @fn_face_filter = nil
+      end
+    end
+
+    def set_fn_edge_filter(fn_edge_filter)
+      if fn_edge_filter.is_a?(Proc)
+        @fn_edge_filter = fn_edge_filter
+      else
+        @fn_edge_filter = nil
+      end
+    end
+
+    # --
+
     def picked_context_path
       return @picked_face_path[0...-1] if @pick_context_by_face && @picked_face_path.is_a?(Array)
       return @picked_edge_path[0...-1] if @pick_context_by_edge && @picked_edge_path.is_a?(Array)
+      return @picked_cline_path[0...-1] if @pick_context_by_cline && @picked_cline_path.is_a?(Array)
       nil
+    end
+
+    # The degrees of freedom of the inference behind #picked_point : 0 on a
+    # vertex, a midpoint..., 1 on an edge, 2 on a face. nil without a point.
+    def picked_point_degrees_of_freedom
+      return nil if @picked_point.nil? || @pick_ip.nil?
+      @pick_ip.degrees_of_freedom
+    end
+
+    # Whether #picked_point is a position that still means something once
+    # projected on a line of the given +direction+ : a vertex, an edge across
+    # it, a face facing it - not a mere point on an edge or a face it slides
+    # along, nor a point floating in the void.
+    def picked_point_stable_along?(direction)
+      return false if @picked_point.nil? || @pick_ip.nil? || !@pick_ip.valid?
+      ip = @pick_ip
+      !(ip.degrees_of_freedom > 2 ||
+        ip.instance_path.empty? && ip.degrees_of_freedom > 1 ||
+        ip.face && ip.face == ip.instance_path.leaf && ip.vertex.nil? && ip.edge.nil? && !ip.face.normal.transform(ip.transformation).parallel?(direction) ||
+        ip.edge && ip.degrees_of_freedom == 1 && !ip.edge.start.position.vector_to(ip.edge.end.position).transform(ip.transformation).perpendicular?(direction))
     end
 
     def picked_plane_manipulator
@@ -3391,6 +5548,7 @@ module Ladb::OpenCutList
     def onToolMouseMove(tool, flags, x, y, view)
       @pick_position.x = x
       @pick_position.y = y
+      _reset_pick_depth unless @pick_depth_position.nil? || @pick_depth_position.distance(@pick_position) <= PICK_DEPTH_TOLERANCE
       do_pick
       false
     end
@@ -3399,6 +5557,11 @@ module Ladb::OpenCutList
 
       @pick_position.x = 0
       @pick_position.y = 0
+
+      _reset_pick_depth
+      @regular_face = nil
+      @regular_face_path = nil
+      @face_stack = nil
 
       @pick_ip.clear if @pick_ip
 
@@ -3423,23 +5586,25 @@ module Ladb::OpenCutList
     end
 
     def onToolKeyUp(tool, key, repeat, flags, view)
-      do_pick if tool.is_key_shift?(key)
+      do_pick if @lockable && tool.is_key_shift?(key)
       false
     end
 
     # -- UI --
 
     def draw(view)
-      @pick_ip.draw(view) if !@pick_ip.nil? && @pick_ip.valid?
+      @pick_ip.draw(view) if @drawable && !@pick_ip.nil? && @pick_ip.valid?
     end
 
     # -- Pick --
 
     def do_pick
 
-      active_path = @view.model.active_path.nil? ? [] : @view.model.active_path # Picker 'path_at' returns path only in active_path context
+      @pick_depth_skip_start = nil unless @pick_depth_skipping
 
-      context_locked = @tool.is_key_shift_down?
+      active_path = @view.model.active_path.to_a # Picker 'path_at' returns a path only in the active_path context
+
+      context_locked = @lockable && @tool.is_key_shift_down?
 
       picked_face = context_locked && @pick_context_by_face ? @picked_face : nil
       picked_face_path = context_locked && @pick_context_by_face ? @picked_face_path : nil
@@ -3447,34 +5612,74 @@ module Ladb::OpenCutList
       picked_point_path = nil
       picked_edge = context_locked && @pick_context_by_edge ? @picked_edge : nil
       picked_edge_path = context_locked && @pick_context_by_edge ? @picked_edge_path : nil
-      picked_cline = nil
-      picked_cline_path = nil
+      picked_cline = context_locked && @pick_context_by_cline ? @picked_cline : nil
+      picked_cline_path = context_locked && @pick_context_by_cline ? @picked_cline_path : nil
       picked_axes = nil
       picked_axes_line = nil
       picked_axes_path = nil
 
-      # First stage : pick "context" (aperture = 0)
+      # First stage: pick "context" (aperture = 0)
 
-      if !context_locked && (@pick_context_by_face && picked_face.nil? || @pick_context_by_edge && picked_edge.nil?)
+      best_picked = nil
+
+      if !context_locked && (@pick_context_by_face && picked_face.nil? || @pick_context_by_edge && picked_edge.nil? || @pick_context_by_cline && picked_cline.nil?)
         @pick_helper.do_pick(@pick_position.x, @pick_position.y)
+        best_picked = @pick_helper.best_picked
         @pick_helper.count.times do |index|
 
+          path = @pick_helper.path_at(index)
+          next unless @pick_context_by_cline || best_picked.nil? || path.include?(best_picked)
+
           if @pick_context_by_face && @pick_helper.leaf_at(index).is_a?(Sketchup::Face)
-            picked_face = @pick_helper.leaf_at(index)
-            picked_face_path = active_path + @pick_helper.path_at(index)
-            break
+            if @fn_face_filter.nil? || @fn_face_filter.call(path)
+              picked_face = @pick_helper.leaf_at(index)
+              picked_face_path = active_path + path
+              break
+            end
           end
 
           if @pick_context_by_edge && @pick_helper.leaf_at(index).is_a?(Sketchup::Edge)
-            picked_edge = @pick_helper.leaf_at(index)
-            picked_edge_path = active_path + @pick_helper.path_at(index)
-            break
+            if @fn_edge_filter.nil? || @fn_edge_filter.call(path)
+              picked_edge = @pick_helper.leaf_at(index)
+              picked_edge_path = active_path + path
+              break
+            end
+          end
+
+          if @pick_context_by_cline && @pick_helper.leaf_at(index).is_a?(Sketchup::ConstructionLine)
+            if @fn_cline_filter.nil? || @fn_cline_filter.call(path)
+              picked_cline = @pick_helper.leaf_at(index)
+              picked_cline_path = active_path + path
+              break
+            end
           end
 
         end
+
+        @face_stack = nil
+        if @pick_context_by_face
+
+          @regular_face = picked_face
+          @regular_face_path = picked_face_path
+
+          # A face picked deeper : the stack is needed again to find it. The depth
+          # follows the picked container : the stack changes with the cursor, even
+          # within the tolerance
+          unless @pick_depth_path.nil?
+            @face_stack = _stack_faces(active_path)
+            if (depth = _get_pick_depth) > 0
+              picked_face, picked_face_path = @face_stack[depth]
+              best_picked = nil # The front entity no longer bounds the deeper face's edges
+            else
+              _reset_pick_depth
+            end
+          end
+
+        end
+
       end
 
-      if !@pick_context || picked_face || picked_edge
+      if !@pick_context || picked_face || picked_edge || picked_cline
 
         # Second stage
 
@@ -3496,9 +5701,9 @@ module Ladb::OpenCutList
 
       end
 
-      if picked_face || picked_edge
+      if picked_face || picked_edge || picked_cline
 
-          if @pick_edges || @picked_cline || @pick_axes
+        if @pick_edges || @pick_clines || @pick_axes
 
           # pick "lines" (aperture = 50)
 
@@ -3509,6 +5714,7 @@ module Ladb::OpenCutList
               unless context_locked
                 # External edges are considered only if context is locked
                 next if !@pick_helper.leaf_at(index).used_by?(picked_face) || (active_path + @pick_helper.path_at(index))[0...-1] != picked_face_path[0...-1]
+                next unless best_picked.nil? || @pick_helper.path_at(index).include?(best_picked)
               end
               picked_edge = @pick_helper.leaf_at(index)
               picked_edge_path = active_path + @pick_helper.path_at(index)
@@ -3568,7 +5774,9 @@ module Ladb::OpenCutList
 
       end
 
-      changed = @picked_face_path != picked_face_path || @picked_point != picked_point || @picked_edge_path != picked_edge_path || @picked_cline_path != picked_cline_path || @picked_axes_path != picked_axes_path || @picked_axes_line != picked_axes_line
+      changed = @invalidated || @picked_face_path != picked_face_path || @picked_point != picked_point || @picked_edge_path != picked_edge_path || @picked_cline_path != picked_cline_path || @picked_axes_path != picked_axes_path || @picked_axes_line != picked_axes_line
+
+      @invalidated = false
 
       @picked_face = picked_face
       @picked_face_path = picked_face_path
@@ -3589,8 +5797,181 @@ module Ladb::OpenCutList
 
     # -----
 
+    # Moves the picked face <step> faces deeper (negative = shallower) in the
+    # stack under the cursor, cycling. Returns true if it moved.
+    def pick_deeper(step)
+      return false unless _ensure_face_stack
+      depth = _get_pick_depth
+      loop do
+        depth = (depth + step) % @face_stack.length
+        break unless @face_stack[depth][1].nil?  # Skip the "nothing" regular pick
+      end
+      _set_pick_depth(depth, step < 0 ? -1 : 1)
+      do_pick
+      true
+    end
+
+    # The observer refuses what is picked : moves on to the next face in the
+    # last depth direction, and fires again. Returns false once the whole stack
+    # was refused. Meant to be called from #onPickerChanged.
+    def pick_past_refused
+      return false unless _ensure_face_stack
+      depth = _get_pick_depth
+      @pick_depth_skip_start = depth if @pick_depth_skip_start.nil?
+      loop do
+        depth = (depth + @pick_depth_step) % @face_stack.length
+        return false if depth == @pick_depth_skip_start
+        break unless @face_stack[depth][1].nil?  # Skip the "nothing" regular pick
+      end
+      _set_pick_depth(depth, @pick_depth_step)
+      skipping = @pick_depth_skipping
+      @pick_depth_skipping = true
+      begin
+        do_pick
+      ensure
+        @pick_depth_skipping = skipping
+      end
+      true
+    end
+
+    # -----
+
+    # Force the next #do_pick to fire its change event, whatever it picks.
+    # The picked context (face, edge) is deliberately kept : SHIFT locks it and
+    # #do_pick feeds it back to itself, so dropping it here would not refresh
+    # the pick but lose it.
+    def invalidate
+      @invalidated = true
+    end
+
+    # -----
+
     def inspect
       self.class.inspect  # Simplify exception display
+    end
+
+    # -----
+
+    private
+
+    def _reset_pick_depth
+      @pick_depth_path = nil
+      @pick_depth_step = 1
+      @pick_depth_position = nil
+    end
+
+    def _set_pick_depth(depth, step)
+      @pick_depth_path = depth == 0 ? nil : @face_stack[depth][1][0...-1]
+      @pick_depth_step = step
+      @pick_depth_position = Geom::Point3d.new(@pick_position.x, @pick_position.y)
+    end
+
+    # The index in the face stack of the face picked deeper, 0 = the regular pick
+    def _get_pick_depth
+      return 0 if @pick_depth_path.nil? || @face_stack.nil?
+      @face_stack.index { |_, path| !path.nil? && path[0...-1] == @pick_depth_path } || 0
+    end
+
+    # Builds the face stack if not already there - a new pick, the pick helper
+    # holding the second stage's. Returns true if there is something to go through.
+    def _ensure_face_stack
+      return false if !@pick_context_by_face || @lockable && @tool.is_key_shift_down?
+      if @face_stack.nil?
+        @pick_helper.do_pick(@pick_position.x, @pick_position.y)
+        @face_stack = _stack_faces(@view.model.active_path.to_a)
+      end
+      @face_stack.length > 1
+    end
+
+    # Returns the regular pick, then the other faces under the cursor sorted by
+    # depth, the nearest one per container (a part's back face is the same part).
+    # Reads the pick helper as left by an aperture 0 pick.
+    def _stack_faces(active_path)
+
+      ray = @view.pickray(@pick_position.x, @pick_position.y)
+
+      nearests = {}  # container path => [ distance, face, path ]
+      @pick_helper.count.times do |index|
+
+        face = @pick_helper.leaf_at(index)
+        next unless face.is_a?(Sketchup::Face)
+
+        path = @pick_helper.path_at(index)
+        next unless @fn_face_filter.nil? || @fn_face_filter.call(path)
+
+        # Ray / face plane intersection, in the face's space
+        transformation = @pick_helper.transformation_at(index)
+        inverse = transformation.inverse
+        local_ray = [ ray[0].transform(inverse), ray[1].transform(inverse) ]
+        next if (local_point = Geom.intersect_line_plane(local_ray, face.plane)).nil?
+        distance = ray[0].vector_to(local_point.transform(transformation)) % ray[1]
+
+        path = active_path + path
+        container_path = path[0...-1]
+        nearest = nearests[container_path]
+        nearests[container_path] = [ distance, face, path, index ] if nearest.nil? || distance < nearest[0]
+
+      end
+
+      nearests.delete(@regular_face_path[0...-1]) unless @regular_face_path.nil?
+
+      # Coplanar faces tie : the pick order breaks it, to keep the order stable
+      # while the cursor moves
+      [ [ @regular_face, @regular_face_path ] ] + nearests.values.sort { |a, b| (a[0] - b[0]).abs <= PICK_DEPTH_COPLANAR_TOLERANCE ? a[3] <=> b[3] : a[0] <=> b[0] }.map { |_, face, path| [ face, path ] }
+    end
+
+  end
+
+  # -----
+
+  class SmartSelection
+
+    include Enumerable
+
+    def initialize(paths_or_selection = nil)
+      if paths_or_selection.is_a?(Sketchup::Selection)
+        active_path = paths_or_selection.model.active_path.to_a
+        @paths = paths_or_selection.map { |drawing_element| active_path + [ drawing_element ] }
+      else
+        @paths = []
+        add(*paths_or_selection) if paths_or_selection.is_a?(Array)
+      end
+    end
+
+    def add(*paths)
+      @paths |= paths
+    end
+
+    def remove(*paths)
+      @paths.reject! { |p| paths.include?(p) }
+    end
+
+    def clear
+      @paths.clear
+    end
+
+    def empty?
+      @paths.empty?
+    end
+
+    def each(&block)
+      @paths.each(&block)
+    end
+
+    def path
+      return [] unless @paths.is_a?(Array)
+      return @paths.first[0...-1] if @paths.one?
+      ArrayUtils.array_common_prefix(*@paths)
+    end
+
+    def instances
+      return [] unless @paths.is_a?(Array)
+      @paths.map(&:last)
+    end
+
+    def sync
+      Sketchup.active_model.selection.clear
+      Sketchup.active_model.selection.add(*@paths)
     end
 
   end

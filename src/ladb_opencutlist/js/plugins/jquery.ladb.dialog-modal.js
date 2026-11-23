@@ -18,8 +18,29 @@
 
     LadbDialogModal.DEFAULTS = {};
 
-    LadbDialogModal.prototype.hide = function () {
-        rubyCallCommand('core_modal_dialog_hide');
+    // force : closes even with unsaved changes (see setGuarded)
+    LadbDialogModal.prototype.hide = function (force) {
+        rubyCallCommand('core_modal_dialog_hide', { force: force === true });
+    };
+
+    // Unsaved changes : closing the window - its close button or from Ruby -
+    // goes through confirmClose instead.
+    LadbDialogModal.prototype.setGuarded = function (guarded) {
+        guarded = guarded === true;
+        if (guarded !== this._guarded) {
+            this._guarded = guarded;
+            rubyCallCommand('core_modal_dialog_set_guarded', { guarded: guarded });
+        }
+    };
+
+    // Asks the modal - if it knows how to - before closing.
+    LadbDialogModal.prototype.confirmClose = function () {
+        const jQueryPlugin = this.$modal ? this.$modal.data('ladb.modal.plugin') : null;
+        if (jQueryPlugin && typeof jQueryPlugin.confirmClose === 'function') {
+            jQueryPlugin.confirmClose();
+        } else {
+            this.hide(true);
+        }
     };
 
     LadbDialogModal.prototype.loadModal = function (modalName, params) {
@@ -35,7 +56,9 @@
         const $modal = $('#ladb_modal_' + modalName, this.$wrapper);
 
         // Initialize modal (with its jQuery plugin)
-        const jQueryPluginFn = 'ladbModal' + modalName.camelize().capitalize();
+        const jQueryPluginFn = 'ladbModal' + modalName.toLowerCase().split(/[^a-z0-9]+/g).map(function (word) {
+            return word.charAt(0).toUpperCase() + word.slice(1);
+        }).join('');   // ex: 'hardware_editor' -> 'ladbModalHardwareEditor'
         $modal[jQueryPluginFn]($.extend({ dialog: this }, typeof params === 'object' && params));
 
         // Bind help buttons (if exist)
@@ -76,6 +99,12 @@
                     return;
                 }
 
+                if (that._$modal) {
+                    // A dialog modal (confirm, prompt...) is shown over, dismiss it only
+                    $('[data-dismiss="modal"]', that._$modal).first().click();
+                    return;
+                }
+
                 if (that.$modal) {
                     // A modal is shown, try to click on first "dismiss" button
                     $('[data-dismiss="modal"]', that.$modal).first().click();
@@ -95,8 +124,21 @@
                 // Prevent default behavior
                 e.preventDefault();
 
-                if (that.$modal) {
-                    const $btnValidate = $('.btn-validate-modal', that.$modal).first();
+                // Try to retrieve the current top modal (1. from global dialog modal, 2. from inner modal, 3. form dialog itself)
+                let $modal = null;
+                if (that._$modal) {
+                    $modal = that._$modal;
+                } else {
+                    const jQueryPlugin = that.$modal.data('ladb.modal.plugin');
+                    if (jQueryPlugin && jQueryPlugin._$modal) {
+                        $modal = jQueryPlugin._$modal;
+                    } else {
+                        $modal = that.$modal;
+                    }
+                }
+
+                if ($modal) {
+                    const $btnValidate = $('.btn-validate-modal', $modal).first();
                     if ($btnValidate && $btnValidate.is(':enabled')) {
                         $btnValidate.click();
                     }
@@ -138,7 +180,7 @@
     function Plugin(option, params) {
         return this.each(function () {
             const $this = $(this);
-            let data = $this.data('ladb.dialog-modal');
+            let data = $this.data('ladb.dialog');
             if (!data) {
                 const options = $.extend({}, LadbDialogModal.DEFAULTS, $this.data(), typeof option === 'object' && option);
                 $this.data('ladb.dialog', (data = new LadbDialogModal(this, options)));

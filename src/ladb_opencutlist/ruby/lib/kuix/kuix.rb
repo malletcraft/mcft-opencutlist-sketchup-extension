@@ -6,7 +6,8 @@ module Ladb::OpenCutList
 
     VK_TAB = 9
     VK_ENTER = 13
-    if Sketchup.platform == :platform_osx
+    VK_ESCAPE = 27
+    if Sketchup.platform == :platform_osx && Sketchup.version_number < 2700000000
       VK_NUMPAD0 = 48
       VK_NUMPAD1 = 49
       VK_NUMPAD2 = 50
@@ -17,7 +18,10 @@ module Ladb::OpenCutList
       VK_NUMPAD7 = 55
       VK_NUMPAD8 = 56
       VK_NUMPAD9 = 57
+      VK_MULTIPLY = 42
       VK_ADD = 43
+      VK_SUBTRACT = 45
+      VK_DIVIDE = 47
     else
       VK_NUMPAD0 = 0x60
       VK_NUMPAD1 = 0x61
@@ -29,7 +33,29 @@ module Ladb::OpenCutList
       VK_NUMPAD7 = 0x67
       VK_NUMPAD8 = 0x68
       VK_NUMPAD9 = 0x69
+      VK_MULTIPLY = 0x6A
       VK_ADD = 0x6B
+      VK_SUBTRACT = 0x6D
+      VK_DIVIDE = 0x6F
+    end
+    # Keys typing a char in the VCB, SPACE excluded
+    vk_oem_ranges = [
+      0xBA..0xC0,   # OEM ; = , - . / `
+      0xDB..0xDF,   # OEM [ \ ] ' §
+      0xE2..0xE2,   # OEM < > (ISO keyboards)
+    ]
+    if Sketchup.platform == :platform_osx
+      if Sketchup.version_number < 2700000000
+        VK_PRINTABLE_RANGES = [ 33..126 ].freeze  # Character codes
+      else
+        VK_PRINTABLE_RANGES = ([ 33..126 ] + vk_oem_ranges).freeze  # Virtual key codes, or character codes for chars without one ( @ " ...), arrows are 63232+
+      end
+    else
+      VK_PRINTABLE_RANGES = ([
+        0x30..0x39,   # Digits
+        0x41..0x5A,   # Letters
+        0x60..0x6F,   # Numpad
+      ] + vk_oem_ranges).freeze  # Virtual key codes
     end
 
     # Color constants
@@ -43,12 +69,19 @@ module Ladb::OpenCutList
     COLOR_YELLOW = Sketchup::Color.new(255, 255, 0).freeze
     COLOR_CYAN = Sketchup::Color.new(0, 255, 255).freeze
     COLOR_ORANGE = Sketchup::Color.new(255, 127, 0).freeze
+    COLOR_PURPLE = Sketchup::Color.new(127, 0, 255).freeze
     COLOR_LIGHT_GREY = Sketchup::Color.new(220, 220, 220).freeze
     COLOR_MEDIUM_GREY = Sketchup::Color.new(170, 170, 170).freeze
     COLOR_DARK_GREY = Sketchup::Color.new(120, 120, 120).freeze
     COLOR_X = Sketchup::Color.new(255, 0, 15).freeze
     COLOR_Y = Sketchup::Color.new(0, 187, 0).freeze
     COLOR_Z = Sketchup::Color.new(0, 50, 255).freeze
+    COLOR_SNAP_FILL = Sketchup::Color.new(68, 152, 212).freeze
+    COLOR_SNAP_STROKE = Sketchup::Color.new(30, 64, 105).freeze
+
+    COLOR_DANGER = Sketchup::Color.new(217, 83, 79).freeze
+    COLOR_WARNING = Sketchup::Color.new(123, 116, 4).freeze
+    COLOR_SUCCESS = Sketchup::Color.new(86, 149, 83).freeze
 
     # Line stipple constants
 
@@ -67,6 +100,12 @@ module Ladb::OpenCutList
     POINT_STYLE_PLUS = 5
     POINT_STYLE_CROSS = 6
     POINT_STYLE_STAR = 7
+
+    # Cull face constants
+
+    CULL_FACE_NONE = 0   # Draw all primitives (default)
+    CULL_FACE_BACK = 1   # Draw only camera facing primitives
+    CULL_FACE_FRONT = 2  # Draw only primitives facing away from the camera
 
     require_relative 'gl/graphics'
     require_relative 'gl/graphics2d'
@@ -113,9 +152,7 @@ module Ladb::OpenCutList
 
       def initialize(quit_on_esc = true, quit_on_undo = false)
 
-        if Plugin::IS_DEV
-          SKETCHUP_CONSOLE.clear
-        end
+        SKETCHUP_CONSOLE.clear if Plugin::IS_LAB
 
         # Determine if the tool is deactiveted when the user hit the ESC key
         @quit_on_esc = quit_on_esc
@@ -123,13 +160,14 @@ module Ladb::OpenCutList
         # Determine if the tool is deactiveted when the user undo last action
         @quit_on_undo = quit_on_undo
 
-        # Cursor management
-        @cursor_select_id = create_cursor('select', 0, 0)
-        @cursors = [ @cursor_select_id ]
+        # Cursor stack
+        @cursors = [ get_default_cursor ]
 
         # Internals
 
         @mouse_down_widget = nil
+        @mouse_down_point = nil
+        @mouse_dragging = false
         @mouse_hover_widget = nil
         @mouse_is_outside = true
 
@@ -144,22 +182,17 @@ module Ladb::OpenCutList
       end
 
       def clear_canvas
-        @canvas.remove_all unless @canvas.nil?
+        @canvas.clear unless @canvas.nil?
       end
 
       def clear_space
-        @space.remove_all unless @space.nil?
+        @space.clear unless @space.nil?
       end
 
       # -- Cursors stuff --
 
-      def create_cursor(name, hot_x, hot_y)
-        cursor_id = nil
-        cursor_path = File.join(PLUGIN_DIR,'img', "cursor-#{name}.#{PLUGIN.platform_is_mac? ? 'pdf' : 'svg'}")
-        if cursor_path
-          cursor_id = UI.create_cursor(cursor_path, hot_x, hot_y)
-        end
-        cursor_id
+      def get_default_cursor
+        0
       end
 
       def set_root_cursor(cursor_id)
@@ -221,7 +254,7 @@ module Ladb::OpenCutList
 
       def draw(view)
 
-        # Check if space need to be revalidated
+        # Check if space needs to be revalidated
         if @space.invalidated?
           @space.do_layout(IDENTITY)
         end
@@ -237,7 +270,7 @@ module Ladb::OpenCutList
           @canvas.do_layout
         end
 
-        # Check if canvas need to be revalidated
+        # Check if canvas needs to be revalidated
         if @canvas.invalidated?
           @canvas.do_layout
         end
@@ -271,25 +304,32 @@ module Ladb::OpenCutList
         key == COPY_MODIFIER_KEY
       end
 
+      def is_key_printable?(key)
+        VK_PRINTABLE_RANGES.any? { |range| range.include?(key) }
+      end
+
       def is_key_down?(key)
         @key_down_times[key].is_a?(Time)
       end
 
-      def is_key_shift_down?
-        is_key_down?(CONSTRAIN_MODIFIER_KEY)
+      def is_key_shift_down?(flags = 0)
+        is_key_down?(CONSTRAIN_MODIFIER_KEY) || flags & CONSTRAIN_MODIFIER_KEY == CONSTRAIN_MODIFIER_KEY
       end
 
-      def is_key_alt_or_command_down?
-        is_key_down?(ALT_MODIFIER_KEY)
+      def is_key_alt_or_command_down?(flags = 0)
+        is_key_down?(ALT_MODIFIER_KEY) || flags & ALT_MODIFIER_KEY == ALT_MODIFIER_KEY
       end
 
-      def is_key_ctrl_or_option_down?
-        is_key_down?(COPY_MODIFIER_KEY)
+      def is_key_ctrl_or_option_down?(flags = 0)
+        is_key_down?(COPY_MODIFIER_KEY) || flags & COPY_MODIFIER_KEY == COPY_MODIFIER_KEY
       end
 
       # -- Events --
 
       def onActivate(view)
+
+        # Observe model events
+        view.model.add_observer(self)
 
         # Create the root canvas
         @canvas = Canvas.new(view)
@@ -304,8 +344,13 @@ module Ladb::OpenCutList
       end
 
       def onDeactivate(view)
-        @canvas.remove_all
-        @space.remove_all
+
+        # Stop observing model events
+        view.model.remove_observer(self)
+
+        @canvas.clear
+        @space.clear
+
         view.invalidate
       end
 
@@ -335,7 +380,7 @@ module Ladb::OpenCutList
         key_down_time = @key_down_times[key]
         after_down = key_down_time.is_a?(Time)
         @key_down_times.delete(key)
-        onKeyUpExtended(key, repeat, flags, view, after_down, after_down && (Time.new - key_down_time) <= 0.15) # < 150ms
+        onKeyUpExtended(key, repeat, flags, view, after_down, after_down && (Time.new - key_down_time) <= 0.2) # < 200ms
       end
 
       def onKeyUpExtended(key, repeat, flags, view, after_down, is_quick)
@@ -343,8 +388,10 @@ module Ladb::OpenCutList
       end
 
       def onLButtonDown(flags, x, y, view)
-        hit_widget = @canvas.hit_widget(x, y)
-        @mouse_down_widget = hit_widget
+        hit_entity = @canvas.hit_entity(x, y)
+        @mouse_down_widget = hit_entity
+        @mouse_down_point = Geom::Point3d.new(x, y)
+        @mouse_dragging = false
         if @mouse_down_widget
           @mouse_down_widget.onMouseDown(flags)
           return true
@@ -353,8 +400,15 @@ module Ladb::OpenCutList
       end
 
       def onLButtonUp(flags, x, y, view)
-        hit_widget = @canvas.hit_widget(x, y)
-        if hit_widget && @mouse_down_widget == hit_widget
+        if @mouse_dragging
+          # The end of a drag : no click, and nothing for the tool
+          @mouse_down_widget.deactivate_pseudo_class(:active) if @mouse_down_widget
+          @mouse_down_widget = nil
+          @mouse_dragging = false
+          return true
+        end
+        hit_entity = @canvas.hit_entity(x, y)
+        if hit_entity && @mouse_down_widget == hit_entity
           @mouse_down_widget.onMouseClick(flags)
           @mouse_down_widget = nil
           return true
@@ -364,9 +418,9 @@ module Ladb::OpenCutList
       end
 
       def onLButtonDoubleClick(flags, x, y, view)
-        hit_widget = @canvas.hit_widget(x, y)
-        if hit_widget
-          hit_widget.onMouseDoubleClick(flags)
+        hit_entity = @canvas.hit_entity(x, y)
+        if hit_entity
+          hit_entity.onMouseDoubleClick(flags)
           @mouse_down_widget = nil
           return true
         end
@@ -375,17 +429,30 @@ module Ladb::OpenCutList
       end
 
       def onMouseMove(flags, x, y, view)
-        hit_widget = @canvas.hit_widget(x, y)
-        if hit_widget
+
+        # Drag of a drag handle : followed even out of it
+        if @mouse_down_widget && @mouse_down_widget.drag_target && @mouse_down_widget.in_dom?
+          point = Geom::Point3d.new(x, y)
+          @mouse_dragging = true if !@mouse_dragging && @mouse_down_point.distance(point) > 3  # px : below, a click
+          if @mouse_dragging
+            @mouse_down_widget.drag_target.onDragBy(x - @mouse_down_point.x, y - @mouse_down_point.y)
+            @mouse_down_point = point
+            view.invalidate
+          end
+          return true
+        end
+
+        hit_entity = @canvas.hit_entity(x, y)
+        if hit_entity
           onMouseLeaveSpace(view) if @mouse_hover_widget.nil? && !@mouse_is_outside
-          if hit_widget != @mouse_hover_widget
+          if hit_entity != @mouse_hover_widget
             if @mouse_hover_widget
               @mouse_hover_widget.onMouseLeave if @mouse_hover_widget.in_dom?
               pop_cursor
             end
-            @mouse_hover_widget = hit_widget
+            @mouse_hover_widget = hit_entity
             @mouse_hover_widget.onMouseEnter(flags)
-            push_cursor(@cursor_select_id)
+            push_cursor(@mouse_hover_widget.cursor || get_default_cursor)
           end
           @mouse_is_outside = false
           return true
@@ -417,13 +484,17 @@ module Ladb::OpenCutList
       end
 
       def onMouseWheel(flags, delta, x, y, view)
-        hit_widget = @canvas.hit_widget(x, y, :wheel)
-        return true if hit_widget && hit_widget.in_dom? && hit_widget.onMouseWheel(flags, delta)
+        hit_entity = @canvas.hit_entity(x, y, :wheel)
+        return true if hit_entity && hit_entity.in_dom? && hit_entity.onMouseWheel(flags, delta)
         false
       end
 
       def onSetCursor
-        UI.set_cursor(@cursors.last)
+        UI.set_cursor(@cursors.last.to_i)
+      end
+
+      def onTransactionUndo(model)
+        @key_down_times.clear
       end
 
       # -----
@@ -464,13 +535,13 @@ module Ladb::OpenCutList
 
           return unless @canvas
 
-          # Check if viewport has changed
+          # Check if the viewport has changed
           if view.vpwidth != @canvas.bounds.width || view.vpheight != @canvas.bounds.height
             @canvas.bounds.set!(0, 0, view.vpwidth, view.vpheight)
             @canvas.do_layout
           end
 
-          # Check if canvas need to be revalidated
+          # Check if canvas needs to be revalidated
           if @canvas.invalidated?
             @canvas.do_layout
           end

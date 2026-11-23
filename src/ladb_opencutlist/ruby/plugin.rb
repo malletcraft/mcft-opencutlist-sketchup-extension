@@ -10,43 +10,44 @@ module Ladb::OpenCutList
   require 'open-uri'
   require 'digest'
   require_relative 'constants'
+  require_relative 'server/local_http_server'
   require_relative 'observer/app_observer'
   require_relative 'observer/plugin_observer'
-  require_relative 'controller/materials_controller'
-  require_relative 'controller/cutlist_controller'
-  require_relative 'controller/outliner_controller'
-  require_relative 'controller/importer_controller'
-  require_relative 'controller/settings_controller'
-  require_relative 'controller/mcft_controller'
   require_relative 'utils/dimension_utils'
   require_relative 'utils/path_utils'
+  require_relative 'utils/file_path_utils'
   require_relative 'utils/hash_utils'
-  require_relative 'tool/smart_draw_tool'
-  require_relative 'tool/smart_handle_tool'
-  require_relative 'tool/smart_paint_tool'
-  require_relative 'tool/smart_axes_tool'
-  require_relative 'tool/smart_axes_tool_new'
-  require_relative 'tool/smart_export_tool'
-  require_relative 'tool/smart_reshape_tool'
+  require_relative 'updater/updater'
 
   attr_reader :app_observer
 
   class Plugin
     
     IS_RBZ = PLUGIN_DIR.start_with?(Sketchup.find_support_file('Plugins', ''))
-    IS_DEV = EXTENSION_VERSION.end_with?('-dev')
+    IS_LAB = EXTENSION_VERSION =~ /-[a-z]+\z/ ? true : false
 
-    require 'pp' if IS_DEV
+    require 'pp' if IS_LAB
 
     DEFAULT_SECTION = ATTRIBUTE_DICTIONARY = 'ladb_opencutlist'.freeze
+
     SU_ATTRIBUTE_DICTIONARY = 'SU_DefinitionSet'.freeze
+    SU_PRICE_ATTRIBUTE_KEY = 'Price'.freeze
 
     PRESETS_KEY = 'core.presets'.freeze
     PRESETS_DEFAULT_NAME = '_default'.freeze
 
+    UPGRADE_LOG_FILE_NAME = 'upgrade.log'.freeze
+
+    LIBRARY_DIR_NAME = 'library'.freeze
+    LIBRARY_REF_PREFIX = '$LIB/'.freeze
+    LIBRARY_BUNDLED_REF_PREFIX = '$OCL/'.freeze   # The library shipped with the extension
+    LIBRARY_SUB_DIR_COMPONENTS = 'components'.freeze
+    LIBRARY_SUB_DIR_MATERIALS = 'materials'.freeze
+
     PRESETS_PREPROCESSOR_NONE = 0
     PRESETS_PREPROCESSOR_D = 1                   # 1D dimension
     PRESETS_PREPROCESSOR_D_NEGATIVE_ALLOWED = 5  # 1D dimension (negative value allowed)
+    PRESETS_PREPROCESSOR_DIVIDER_OR_D = 6        # "/divider" or 1D dimension
     PRESETS_PREPROCESSOR_DXQ = 2                 # 1D dimension with quantity
     PRESETS_PREPROCESSOR_DXD = 3                 # 2D dimension
     PRESETS_PREPROCESSOR_DXDXQ = 4               # 2D dimension with quantity
@@ -66,7 +67,6 @@ module Ladb::OpenCutList
     SETTINGS_KEY_DIALOG_FONT_SIZE = 'settings.dialog_font_size'
     SETTINGS_KEY_DIALOG_TABLE_ROW_SIZE = 'settings.dialog_table_row_size'
     SETTINGS_KEY_DIALOG_PRINT_MARGIN = 'settings.dialog_print_margin'
-    SETTINGS_KEY_COMPONENTS_LAST_DIR = 'settings.components_last_dir'
     SETTINGS_KEY_MATERIALS_LAST_DIR = 'settings.materials_last_dir'
 
     TABS_DIALOG_STYLE = Sketchup.version_number >= 2300000000 ? UI::HtmlDialog::STYLE_UTILITY : UI::HtmlDialog::STYLE_DIALOG
@@ -97,16 +97,21 @@ module Ladb::OpenCutList
     MODAL_DIALOG_PREF_KEY = 'fr.lairdubois.opencutlist.modal'
 
     DOCS_URL = 'https://www.lairdubois.fr/opencutlist/docs'
-    DOCS_DEV_URL = 'https://www.lairdubois.fr/opencutlist/docs-dev'
+    DOCS_LAB_URL = 'https://www.lairdubois.fr/opencutlist/docs-lab'
 
-    TABS_STRIPPED_NAMES = %w[materials cutlist outliner importer]
-    SMART_TOOLS_STRIPPED_NAMES = IS_DEV && !IS_RBZ ? %w[draw handle reshape paint axes export] : %w[draw handle paint axes export]
+    TABS_STRIPPED_NAMES = %w[materials cutlist outliner importers_csv importers_bxf2]
+    if IS_RBZ && !Sketchup.debug_mode?
+      SMART_TOOLS_STRIPPED_NAMES = %w[draw build handle reshape paint axes export]
+    else
+      SMART_TOOLS_STRIPPED_NAMES = %w[draw build handle reshape paint axes join export]
+    end
 
     # -----
 
     def initialize
 
       @temp_dir = nil
+      @library_dir = nil
       @language = nil
       @webgl_available = false
 
@@ -140,6 +145,7 @@ module Ladb::OpenCutList
       @tabs_dialog_print_margin = read_default(SETTINGS_KEY_DIALOG_PRINT_MARGIN, TABS_DIALOG_DEFAULT_PRINT_MARGIN)
 
       @modal_dialog = nil
+      @modal_dialog_guarded = false   # Unsaved changes : closing asks the modal first
 
     end
 
@@ -152,6 +158,206 @@ module Ladb::OpenCutList
       Dir.mkdir(dir) unless Dir.exist?(dir)
       @temp_dir = dir
     end
+
+    # -----
+
+    # Converts an absolute path under temp_dir into a URL the dialog can load it from.
+    # Falls back to the raw path unchanged if the local HTTP server isn't running
+    # (dialog loaded via file://, where absolute paths resolve directly).
+    def dialog_temp_url(absolute_path)
+      return absolute_path if absolute_path.nil?
+      port = local_http_server.running? ? local_http_server.port : nil
+      return absolute_path unless port
+      relative = absolute_path.sub(temp_dir, '')
+      "http://127.0.0.1:#{port}/tmp#{relative}"
+    end
+
+    # Inverse of dialog_temp_url : converts a value received back from the dialog
+    # (a dialog_temp_url URL, or a raw path in the file:// fallback case) into a
+    # real filesystem path.
+    def resolve_dialog_temp_url(value)
+      return value if value.nil? || value.empty?
+      match = value.match(%r{\Ahttp://127\.0\.0\.1:\d+/tmp/(.+)\z})
+      match ? File.join(temp_dir, match[1]) : value
+    end
+
+    # -----
+
+    # The user's persistent data folder (library, upgrade log).
+    # Deliberately kept out of temp_dir (wiped at each startup) and of PLUGIN_DIR
+    # (wiped at each extension update), and not tied to a SketchUp version.
+    def app_data_dir
+      return @app_data_dir unless @app_data_dir.nil?
+      if Sketchup.platform == :platform_win
+        root = ENV['APPDATA']
+        root = File.join(ENV['USERPROFILE'].to_s, 'AppData', 'Roaming') if root.nil? || root.empty?
+      else
+        root = File.join(Dir.home, 'Library', 'Application Support')
+      end
+      @app_data_dir = File.join(root.to_s.gsub('\\', '/'), 'OpenCutList')
+    end
+
+    def upgrade_log_file
+      File.join(app_data_dir, UPGRADE_LOG_FILE_NAME)
+    end
+
+    # The user's asset library : where OCL stores the files (.skp, .skm) referenced
+    # by presets, so that a preset stays valid after an update or a SketchUp upgrade.
+    # The directory is *not* created here, only computed. See ensure_library_dir.
+    def library_dir
+      @library_dir ||= File.join(app_data_dir, LIBRARY_DIR_NAME)
+    end
+
+    # Creates the library root - or the library folder of the given '$LIB/…'
+    # ref - if missing, and returns its path (nil if the ref isn't valid). The
+    # shipped library is never written - but by a dev build run from the sources.
+    def ensure_library_dir(dir_ref = nil)
+      if dir_ref.nil?
+        dir = library_dir
+      else
+        return nil unless library_ref?(dir_ref)
+        dir = resolve_library_ref(dir_ref)
+        return nil if dir.nil?
+      end
+      FileUtils.mkdir_p(dir) unless Dir.exist?(dir) || library_readonly_ref?(dir_ref)
+      dir
+    end
+
+    # Returns true if the given value is a ref of a library : the user's one
+    # ('$LIB/…') or the shipped one ('$OCL/…')
+    def library_ref?(value)
+      value.is_a?(String) && (value.start_with?(LIBRARY_REF_PREFIX) || value.start_with?(LIBRARY_BUNDLED_REF_PREFIX))
+    end
+
+    # The library shipped with the extension : read only, replaced at each
+    # update, and laid out like the user's one. Its refs are '$OCL/…'.
+    def bundled_library_dir
+      File.join(PLUGIN_DIR, LIBRARY_DIR_NAME)
+    end
+
+    # Returns true if the given ref points into the shipped library
+    def library_bundled_ref?(value)
+      value.is_a?(String) && value.start_with?(LIBRARY_BUNDLED_REF_PREFIX)
+    end
+
+    # The shipped library can be written by a dev build run from the sources :
+    # it is the one of the repository.
+    def library_bundled_writable?
+      false #IS_LAB && !IS_RBZ
+    end
+
+    # Returns true if the given ref points into a library that can't be written
+    def library_readonly_ref?(value)
+      library_bundled_ref?(value) && !library_bundled_writable?
+    end
+
+    # The shipped library's counterpart of the given '$LIB/…' ref :
+    # '$LIB/hinges' -> '$OCL/hinges'. Returns the given value unchanged if it
+    # isn't a user's library ref.
+    def bundled_library_ref(value)
+      return value unless value.is_a?(String) && value.start_with?(LIBRARY_REF_PREFIX)
+      LIBRARY_BUNDLED_REF_PREFIX + value[LIBRARY_REF_PREFIX.length..-1]
+    end
+
+    # Converts a path located inside a library into a portable '$LIB/…' - or
+    # '$OCL/…' - ref. Returns the given value unchanged if it points elsewhere.
+    def library_ref_from_path(path)
+      return path unless path.is_a?(String) && !path.empty?
+      absolute = File.expand_path(path.gsub('\\', '/'))
+      [ [ bundled_library_dir, LIBRARY_BUNDLED_REF_PREFIX ], [ library_dir, LIBRARY_REF_PREFIX ] ].each do |dir, prefix|
+        root = File.expand_path(dir)
+        inside = Sketchup.platform == :platform_win ? absolute.downcase.start_with?("#{root.downcase}/") : absolute.start_with?("#{root}/")
+        return prefix + absolute[(root.length + 1)..-1] if inside
+      end
+      path
+    end
+
+    # Inverse of library_ref_from_path : converts a '$LIB/…' or '$OCL/…' ref
+    # into an absolute path. Returns the given value unchanged if it isn't a
+    # library ref, and nil if the ref tries to escape the library.
+    def resolve_library_ref(value)
+      return value unless library_ref?(value)
+      bundled = library_bundled_ref?(value)
+      relative = value[(bundled ? LIBRARY_BUNDLED_REF_PREFIX : LIBRARY_REF_PREFIX).length..-1].to_s
+      return nil if relative.empty? || relative.split('/').include?('..')
+      File.join(bundled ? bundled_library_dir : library_dir, relative)
+    end
+
+    # The refs of the sub folders of the given library folder ref, sorted by
+    # name. Hidden folders are skipped. Returns an empty array if the folder
+    # doesn't exist.
+    def list_library_dirs(dir_ref)
+      _list_library_entries(dir_ref) { |path| File.directory?(path) }
+    end
+
+    # The refs of the files of the given library folder ref - not
+    # recursive - sorted by name, optionally filtered by extensions (as
+    # '.skp', case insensitive). Hidden files and backups ('…~.skp') are
+    # skipped. Returns an empty array if the folder doesn't exist.
+    def list_library_files(dir_ref, extnames = nil)
+      extnames = Array(extnames).map(&:downcase)
+      _list_library_entries(dir_ref) { |path|
+        File.file?(path) && !File.basename(path, '.*').end_with?('~') && (extnames.empty? || extnames.include?(File.extname(path).downcase))
+      }
+    end
+
+    # The refs of the entries of the given library folder ref the
+    # block accepts (given their absolute path), sorted by name.
+    def _list_library_entries(dir_ref)
+      dir = resolve_library_ref(dir_ref)
+      return [] unless library_ref?(dir_ref) && dir.is_a?(String) && File.directory?(dir)
+      Dir.entries(dir)
+         .reject { |name| name.start_with?('.') }
+         .sort_by { |name| name.downcase }
+         .select { |name| yield(File.join(dir, name)) }
+         .map { |name| File.join(dir_ref.chomp('/'), name) }
+    end
+    private :_list_library_entries
+
+    # The library sub folder a file belongs to, deduced from its extension.
+    # Files are never stored at the root : an arbitrary name (of an archive, of a
+    # source folder) would make a taxonomy nobody chose, while the extension is
+    # always meaningful and identical on both sides of a shared archive.
+    def library_sub_dir_for(path)
+      case File.extname(path.to_s).downcase
+      when '.skm'
+        LIBRARY_SUB_DIR_MATERIALS
+      else
+        LIBRARY_SUB_DIR_COMPONENTS
+      end
+    end
+
+    # Copies the given file into the library, unless it is already stored there.
+    # An existing file with the same name is reused as is if its content is
+    # identical, else the copy is stored under a suffixed name.
+    # Returns the absolute path of the file inside the library.
+    def copy_to_library(path, sub_dir: nil)
+      return path unless library_ref_from_path(path) == path  # Already in the library
+
+      dir = ensure_library_dir
+      unless sub_dir.nil? || sub_dir.empty?
+        segments = sub_dir.gsub('\\', '/').split('/').reject { |segment| segment.empty? || segment == '.' || segment == '..' }
+        dir = File.join(dir, *segments.map { |segment| FilePathUtils.sanitize_folder_name(segment) }) unless segments.empty?
+        FileUtils.mkdir_p(dir) unless Dir.exist?(dir)
+      end
+
+      extname = File.extname(path)
+      basename = FilePathUtils.sanitize_file_name(File.basename(path, extname))
+      hexdigest = Digest::MD5.file(path).hexdigest
+
+      index = 1
+      loop do
+        candidate = File.join(dir, "#{basename}#{index > 1 ? " (#{index})" : ''}#{extname}")
+        unless File.exist?(candidate)
+          FileUtils.cp(path, candidate)
+          return candidate
+        end
+        return candidate if Digest::MD5.file(candidate).hexdigest == hexdigest  # Same content, reuse it
+        index += 1
+      end
+    end
+
+    # -----
 
     def language
       return @language unless @language.nil?
@@ -180,7 +386,7 @@ module Ladb::OpenCutList
       available_languages = []
       Dir[File.join(PLUGIN_DIR, 'js', 'i18n', '*.js')].each { |file|
         language = File.basename(file, File.extname(file))
-        next if language.start_with?('zz') && !IS_DEV
+        next if language.start_with?('zz') && !IS_LAB
         available_languages.push(language)
       }
       available_languages.sort
@@ -188,7 +394,7 @@ module Ladb::OpenCutList
 
     # Get all languages as Hash where key is language and value is its enabled status
     def get_languages
-      get_available_languages.map { |language| [ language, ENABLED_LANGUAGES.include?(language) || language.start_with?('zz') && IS_DEV] }.to_h
+      get_available_languages.map { |language| [ language, ENABLED_LANGUAGES.include?(language) || language.start_with?('zz') && IS_LAB] }.to_h
     end
 
     def webgl_available?
@@ -244,9 +450,17 @@ module Ladb::OpenCutList
       path_key
     end
 
+    # Opens the given folder in the Finder (macOS) or the File Explorer (Windows)
+    def open_dir(dir)
+      return unless dir.is_a?(String) && File.directory?(dir)
+      url = dir.gsub('\\', '/')
+      url = "/#{url}" unless url.start_with?('/')   # Windows drive letter
+      UI.openURL("file://#{URI::DEFAULT_PARSER.escape(url)}")
+    end
+
     def open_docs_page(page)
 
-      url = IS_DEV ? DOCS_DEV_URL : DOCS_URL
+      url = IS_LAB ? DOCS_LAB_URL : DOCS_URL
       url += "?v=#{EXTENSION_VERSION}&build=#{EXTENSION_BUILD}-#{(IS_RBZ ? 'rbz' : 'src')}&language=#{language}&locale=#{Sketchup.get_locale}"
       url += "&page=#{page}"
 
@@ -264,7 +478,7 @@ module Ladb::OpenCutList
           end
         end
 
-        puts "Failed to load docs page (page=#{page}, status=#{response.status_code})"
+        puts "Failed to load docs page (page=#{page}, status=#{response.status_code})" if IS_LAB
       end
 
     end
@@ -300,7 +514,7 @@ module Ladb::OpenCutList
       section = section.to_s unless section.is_a?(String)
       cache_key = "#{dictionary}_#{section}"
 
-      unless @app_defaults_cache && @app_defaults_cache.has_key?(cache_key)
+      unless @app_defaults_cache && @app_defaults_cache.key?(cache_key)
 
         file_path = File.join(PLUGIN_DIR, 'json', 'defaults', "#{dictionary}.json")
         begin
@@ -314,14 +528,18 @@ module Ladb::OpenCutList
         model_unit_is_metric = DimensionUtils.model_unit_is_metric
 
         defaults = {}
-        if data.has_key?(section)
+        if data.key?(section)
           data = data[section]
           data.each do |key, value|
             if value.is_a?(Hash)
-              if model_unit_is_metric
-                value = value['metric'] if value.has_key?('metric')
+              if value.key?('i18n')
+                value = get_i18n_string(value['i18n'])
               else
-                value = value['imperial'] if value.has_key?('imperial')
+                if model_unit_is_metric
+                  value = value['metric'] if value.key?('metric')
+                else
+                  value = value['imperial'] if value.key?('imperial')
+                end
               end
             end
             defaults.store(key, value)
@@ -345,7 +563,7 @@ module Ladb::OpenCutList
 
     def set_attribute(entity, key, value, dictionary = ATTRIBUTE_DICTIONARY)
       if value.is_a?(Hash) || value.is_a?(Array)
-        # Encode hash or array to json (because attribute don't support hashs)
+        # Encode hash or array to json (because attribute doesn't support hashs)
         value = value.to_json
       end
       entity.set_attribute(dictionary, key, value)
@@ -388,9 +606,9 @@ module Ladb::OpenCutList
         processed_values = {}
         values.keys.each do |key|
 
-          storage = storages.has_key?(key) ? storages[key] : PRESETS_STORAGE_ALL
+          storage = storages.key?(key) ? storages[key] : PRESETS_STORAGE_ALL
 
-          if app_defaults.has_key?(key) && # Only if exists in app defaults
+          if app_defaults.key?(key) && # Only if exists in app defaults
               (storage == PRESETS_STORAGE_ALL ||
               (is_global && storage == PRESETS_STORAGE_GLOBAL_ONLY) ||
               (!is_global && storage == PRESETS_STORAGE_MODEL_ONLY))
@@ -400,6 +618,12 @@ module Ladb::OpenCutList
               processed_values[key] = DimensionUtils.d_add_units(values[key])
             when PRESETS_PREPROCESSOR_D_NEGATIVE_ALLOWED
               processed_values[key] = DimensionUtils.d_add_units(values[key], true)
+            when PRESETS_PREPROCESSOR_DIVIDER_OR_D
+              if values[key].is_a?(String) && (value = values[key].strip).match(/^\/(\d+(?:[.,]\d+)?)$/)
+                processed_values[key] = value.gsub(/[.,]/, DimensionUtils.decimal_separator)
+              else
+                processed_values[key] = DimensionUtils.d_add_units(values[key])
+              end
             when PRESETS_PREPROCESSOR_DXQ
               processed_values[key] = DimensionUtils.dxq_add_units(values[key])
             when PRESETS_PREPROCESSOR_DXD
@@ -427,7 +651,7 @@ module Ladb::OpenCutList
       contains_default_values = false
       if default_values
         default_values.keys.each do |key|
-          if values.has_key?(key)
+          if values.key?(key)
 
             cleaners = get_app_defaults(dictionary, '_cleaners', false)
             case cleaners[key]
@@ -448,7 +672,7 @@ module Ladb::OpenCutList
 
                     # Remove old properties
                     h_custom_properties.each { |property, sorter|
-                      next unless h_default_properties.has_key?(property) && !sorter.nil?
+                      next unless h_default_properties.key?(property) && !sorter.nil?
                       sorters.push(sorter)
                       h_default_properties.delete(property)
                     }
@@ -512,8 +736,8 @@ module Ladb::OpenCutList
       read_global_presets if @global_presets_cache.nil?
 
       # Create the preset tree if it doesn't exist
-      @global_presets_cache[dictionary] = {} unless @global_presets_cache.has_key?(dictionary)
-      @global_presets_cache[dictionary][section] = {} unless @global_presets_cache[dictionary].has_key?(section)
+      @global_presets_cache[dictionary] = {} unless @global_presets_cache.key?(dictionary)
+      @global_presets_cache[dictionary][section] = {} unless @global_presets_cache[dictionary].key?(section)
 
       if values.nil?
 
@@ -561,7 +785,7 @@ module Ladb::OpenCutList
       else
         default_values = get_global_preset(dictionary, nil, section)
       end
-      if @global_presets_cache.has_key?(dictionary) && @global_presets_cache[dictionary].has_key?(section) && @global_presets_cache[dictionary][section].has_key?(name)
+      if @global_presets_cache.key?(dictionary) && @global_presets_cache[dictionary].key?(section) && @global_presets_cache[dictionary][section].key?(name)
 
         # Preset exists, synchronize returned values with default_values data and structure
         values, contains_default_values = _merge_preset_values_with_defaults(dictionary, @global_presets_cache[dictionary][section][name], default_values)
@@ -583,7 +807,7 @@ module Ladb::OpenCutList
 
     def list_global_preset_sections(dictionary)
       read_global_presets if @global_presets_cache.nil?
-      return @global_presets_cache[dictionary].keys.sort if @global_presets_cache.has_key?(dictionary)
+      return @global_presets_cache[dictionary].keys.sort if @global_presets_cache.key?(dictionary)
       []
     end
 
@@ -591,7 +815,7 @@ module Ladb::OpenCutList
       section = '0' if section.nil?
       section = section.to_s unless section.is_a?(String)
       read_global_presets if @global_presets_cache.nil?
-      return @global_presets_cache[dictionary][section].keys.select { |k, v| k != PRESETS_DEFAULT_NAME }.sort if @global_presets_cache.has_key?(dictionary) && @global_presets_cache[dictionary].has_key?(section)
+      return @global_presets_cache[dictionary][section].keys.select { |k, v| k != PRESETS_DEFAULT_NAME }.sort if @global_presets_cache.key?(dictionary) && @global_presets_cache[dictionary].key?(section)
       []
     end
 
@@ -642,8 +866,8 @@ module Ladb::OpenCutList
       read_model_presets if @model_presets_cache.nil?
 
       # Create the preset tree if it doesn't exist
-      @model_presets_cache[dictionary] = {} unless @model_presets_cache.has_key?(dictionary)
-      @model_presets_cache[dictionary][section] = {} unless @model_presets_cache[dictionary].has_key?(section)
+      @model_presets_cache[dictionary] = {} unless @model_presets_cache.key?(dictionary)
+      @model_presets_cache[dictionary][section] = {} unless @model_presets_cache[dictionary].key?(section)
 
       if values.nil?
 
@@ -680,7 +904,7 @@ module Ladb::OpenCutList
       read_model_presets if @model_presets_cache.nil?
 
       default_values = get_global_preset(dictionary, nil, app_defaults_section)
-      if @model_presets_cache.has_key?(dictionary) && @model_presets_cache[dictionary].has_key?(section)
+      if @model_presets_cache.key?(dictionary) && @model_presets_cache[dictionary].key?(section)
 
         # Preset exists, synchronize returned values with default_values data and structure
         values, contains_default_values = _merge_preset_values_with_defaults(dictionary, @model_presets_cache[dictionary][section], default_values)
@@ -702,7 +926,7 @@ module Ladb::OpenCutList
 
     def list_model_preset_sections(dictionary)
       read_model_presets if @model_presets_cache.nil?
-      return @model_presets_cache[dictionary].keys.sort if @model_presets_cache.has_key?(dictionary)
+      return @model_presets_cache[dictionary].keys.sort if @model_presets_cache.key?(dictionary)
       []
     end
 
@@ -722,8 +946,7 @@ module Ladb::OpenCutList
 
     def execute_command(command, params = nil)
       start unless @started
-      if @commands.has_key?(command)
-        block = @commands[command]
+      if (block = @commands[command])
         return block.call(params.is_a?(Hash) ? HashUtils.symbolize_keys(params) : params) # params keys are symbolized to be ready for using as "keyword arguments"
       end
       raise "Command '#{command}' not found"
@@ -732,40 +955,27 @@ module Ladb::OpenCutList
     # -----
 
     def add_event_callback(event, &block)
-      if event.is_a?(Array)
-        events = event
-      else
-        events = [ event ]
-      end
-      events.each do |e|
-        @event_callbacks[e] = [] unless @event_callbacks.has_key?(e)
-        @event_callbacks[e].push(block)
+      Array(event).each do |e|
+        (@event_callbacks[e] ||= []) << block
       end
       block
     end
 
     def remove_event_callback(event, block)
-      if event.is_a?(Array)
-        events = event
-      else
-        events = [ event ]
-      end
-      events.each do |e|
-        next unless @event_callbacks.has_key?(e)
-        @event_callbacks[e].delete(block)
+      Array(event).each do |e|
+        @event_callbacks[e].delete(block) if @event_callbacks.key?(e)
       end
     end
 
     def trigger_event(event, params = nil)
-      if @event_callbacks.has_key?(event)
-        blocks = @event_callbacks[event]
+      if (blocks = @event_callbacks[event])
         blocks.each do |block|
           block.call(params)
         end
       end
-      if @tabs_dialog
-        @tabs_dialog.execute_script("triggerEvent('#{event}', '#{params.is_a?(Hash) ? Base64.strict_encode64(JSON.generate(params)) : ''}');")
-      end
+      script = "triggerEvent('#{event}', '#{params.is_a?(Hash) ? Base64.strict_encode64(JSON.generate(params)) : ''}');"
+      @tabs_dialog.execute_script(script) if @tabs_dialog
+      @modal_dialog.execute_script(script) if @modal_dialog
     end
 
     # -----
@@ -788,7 +998,24 @@ module Ladb::OpenCutList
 
     # -----
 
+    def local_http_server
+      @local_http_server ||= LocalHttpServer.new
+    end
+
+    def stop_local_http_server
+      @local_http_server.stop unless @local_http_server.nil?
+    end
+
+    # -----
+
     def setup
+
+      # Remove previous version files left by an upgrade that could not clean them
+      if IS_RBZ
+        updater = Updater.new(PLUGIN_DIR, log_file: upgrade_log_file)
+        updater.discard_backup
+        puts updater.log.map { |line| "Upgrade : #{line}" }.join("\n") if IS_LAB && !updater.log.empty?
+      end
 
       fn_get_selected_component_entity = lambda do
         entity = (Sketchup.active_model.nil? || Sketchup.active_model.selection.length > 1) ? nil : Sketchup.active_model.selection.first
@@ -806,7 +1033,7 @@ module Ladb::OpenCutList
       menu = UI.menu
       submenu = menu.add_submenu(get_i18n_string('core.menu.submenu'))
       TABS_STRIPPED_NAMES.each do |stripped_name|
-        submenu.add_item(get_i18n_string("tab.#{stripped_name}.title")) {
+        submenu.add_item(get_i18n_string("tab.#{stripped_name.gsub('_', '.')}.title")) {
           show_tabs_dialog(stripped_name) if _assert_not_zzz
         }
       end
@@ -830,6 +1057,8 @@ module Ladb::OpenCutList
       submenu.add_separator
       SMART_TOOLS_STRIPPED_NAMES.each do |stripped_name|
 
+        require_relative "tool/smart_#{stripped_name}_tool"
+
         clazz = Object.const_get("Ladb::OpenCutList::Smart#{stripped_name.capitalize}Tool")
 
         smart_tool_submenu = submenu.add_submenu(get_i18n_string("core.menu.item.smart_#{stripped_name}"))
@@ -847,7 +1076,12 @@ module Ladb::OpenCutList
       submenu.add_separator
       # MCFT menu entries — added here (not via @controllers) because setup()
       # builds the menu at load time while the controller list is only
-      # populated in start(), on first dialog open.
+      # populated in start(), on first dialog open. And REQUIRED here, because
+      # on OpenCutList 8 start() is also where the controllers are required:
+      # setup() runs first, at load, and without this line McftController is
+      # a NameError that stops the whole extension (8's own pattern for the
+      # smart tools, above). tools/check-mcft-wiring.rb holds it.
+      require_relative 'controller/mcft_controller'
       McftController.new.setup_menu(submenu)
       submenu.add_item(get_i18n_string('core.menu.item.reset_dialog_position')) {
         tabs_dialog_reset_position if _assert_not_zzz
@@ -877,8 +1111,8 @@ module Ladb::OpenCutList
       cmd = UI::Command.new(get_i18n_string('core.toolbar.command.dialog')) {
         toggle_tabs_dialog if _assert_not_zzz
       }
-      cmd.small_icon = '../img/icon-dialog-72x72.png'
-      cmd.large_icon = '../img/icon-dialog-114x114.png'
+      cmd.small_icon = '../img/icon-dialog.svg'
+      cmd.large_icon = '../img/icon-dialog.svg'
       cmd.tooltip = get_i18n_string('core.toolbar.command.dialog')
       cmd.status_bar_text = get_i18n_string('core.toolbar.command.dialog')
       cmd.menu_text = get_i18n_string('core.toolbar.command.dialog')
@@ -903,8 +1137,8 @@ module Ladb::OpenCutList
             Sketchup.focus if Sketchup.respond_to?(:focus)
           end
         }
-        cmd.small_icon = "../img/icon-smart-#{stripped_name}-72x72.png"
-        cmd.large_icon = "../img/icon-smart-#{stripped_name}-114x114.png"
+        cmd.small_icon = "../img/icon-smart-#{stripped_name}.svg"
+        cmd.large_icon = "../img/icon-smart-#{stripped_name}.svg"
         cmd.tooltip = get_i18n_string("core.toolbar.command.smart_#{stripped_name}")
         cmd.status_bar_text = get_i18n_string("core.toolbar.command.smart_#{stripped_name}")
         cmd.menu_text = get_i18n_string("core.toolbar.command.smart_#{stripped_name}")
@@ -913,34 +1147,21 @@ module Ladb::OpenCutList
 
       end
 
-      # cmd = UI::Command.new(get_i18n_string('core.toolbar.command.smart_axes') + '_2') {
-      #   if Sketchup.active_model && _assert_not_zzz
-      #     if Sketchup.active_model.tools.respond_to?(:active_tool) && Sketchup.active_model.tools.active_tool.is_a?(SmartAxesToolNew)
-      #       Sketchup.active_model.select_tool(nil)
-      #     else
-      #       Sketchup.active_model.select_tool(SmartAxesToolNew.new)
-      #     end
-      #     Sketchup.focus if Sketchup.respond_to?(:focus)
-      #   end
-      # }
-      # cmd.small_icon = '../img/icon-dialog-72x72.png'
-      # cmd.large_icon = '../img/icon-dialog-114x114.png'
-      # cmd.tooltip = get_i18n_string('core.toolbar.command.smart_axes')
-      # cmd.status_bar_text = get_i18n_string('core.toolbar.command.smart_axes')
-      # cmd.menu_text = get_i18n_string('core.toolbar.command.smart_axes')
-      # cmd.set_validation_proc {
-      #   Sketchup.active_model.tools.respond_to?(:active_tool) && Sketchup.active_model.tools.active_tool.is_a?(SmartAxesToolNew) ? MF_CHECKED : MF_UNCHECKED
-      # }
-      # toolbar = toolbar.add_item(cmd)
-
       toolbar.restore
+
+      # Setup Importers
+      require_relative 'importer/csv_importer'
+      Sketchup.register_importer(CsvImporter.new)
+
+      require_relative 'importer/bxf2_importer'
+      Sketchup.register_importer(Bxf2Importer.new)
 
     end
 
     def start
 
       # Clear Ruby console if dev running
-      SKETCHUP_CONSOLE.clear if IS_DEV
+      SKETCHUP_CONSOLE.clear if IS_LAB
 
       # To minimize plugin initialization, start setup is called only once
       unless @started
@@ -952,11 +1173,21 @@ module Ladb::OpenCutList
 
         # -- Controllers --
 
+        require_relative 'controller/materials_controller'
+        require_relative 'controller/cutlist_controller'
+        require_relative 'controller/outliner_controller'
+        require_relative 'controller/importers_controller'
+        require_relative 'controller/settings_controller'
+        require_relative 'controller/hardware_controller'
+        require_relative 'controller/mcft_controller'
+
         @controllers.push(MaterialsController.new)
         @controllers.push(CutlistController.new)
         @controllers.push(OutlinerController.new)
-        @controllers.push(ImporterController.new)
+        @controllers.push(ImportersCsvController.new)
+        @controllers.push(ImportersBxf2Controller.new)
         @controllers.push(SettingsController.new)
+        @controllers.push(HardwareController.new)
         @controllers.push(McftController.new)
 
         # -- Commands --
@@ -1009,8 +1240,14 @@ module Ladb::OpenCutList
         register_command('core_tabs_dialog_hide') do
           tabs_dialog_hide_command
         end
-        register_command('core_modal_dialog_hide') do
-          modal_dialog_hide_command
+        register_command('core_tabs_dialog_set_position') do |params|
+          tabs_dialog_set_position_command(**params)
+        end
+        register_command('core_modal_dialog_hide') do |params|
+          modal_dialog_hide_command(**(params || {}))
+        end
+        register_command('core_modal_dialog_set_guarded') do |params|
+          modal_dialog_set_guarded_command(**params)
         end
         register_command('core_open_external_file') do |params|
           open_external_file_command(**params)
@@ -1039,6 +1276,15 @@ module Ladb::OpenCutList
         register_command('core_copy_to_clipboard') do |params|
           copy_to_clipboard_command(**params)
         end
+        register_command('core_browse_file') do |params|
+          browse_file_command(**params)
+        end
+        register_command('core_browse_library_file') do |params|
+          browse_library_file_command(**params)
+        end
+        register_command('core_open_library_dir') do |params|
+          open_library_dir_command
+        end
         register_command('core_unload_c_lib') do |params|
           unload_c_lib_command(**params)
         end
@@ -1064,7 +1310,7 @@ module Ladb::OpenCutList
       # Create dialog instance
       @tabs_dialog = UI::HtmlDialog.new(
           {
-              :dialog_title => get_i18n_string('core.dialog.title') + ' - ' + EXTENSION_VERSION + (IS_DEV ? " ( build: #{EXTENSION_BUILD} )" : ''),
+              :dialog_title => get_i18n_string('core.dialog.title') + ' - ' + EXTENSION_VERSION + (IS_LAB ? " ( build: #{EXTENSION_BUILD} )" : ''),
               :preferences_key => TABS_DIALOG_PREF_KEY,
               :scrollable => true,
               :resizable => true,
@@ -1089,17 +1335,26 @@ module Ladb::OpenCutList
       }
 
       # Setup dialog page
-      @tabs_dialog.set_file(File.join(PLUGIN_DIR, 'html', "dialog-tabs-#{language}.html"))
+      port = local_http_server.start
+      if port
+        @tabs_dialog.set_url("http://127.0.0.1:#{port}/html/dialog-tabs-#{language}.html")
+      else
+        @tabs_dialog.set_file(File.join(PLUGIN_DIR, 'html', "dialog-tabs-#{language}.html"))
+      end
 
       # Setup dialog actions
       @tabs_dialog.add_action_callback('ladb_opencutlist_setup_dialog_context') do |action_context, call_json|
         @tabs_dialog.execute_script("setDialogContext('tabs');")
       end
       @tabs_dialog.add_action_callback('ladb_opencutlist_command') do |action_context, call_json|
-        call = JSON.parse(call_json)
-        response = execute_command(call['command'], call['params'])
-        script = "rubyCommandCallback(#{call['id']}, '#{response.is_a?(Hash) ? Base64.strict_encode64(JSON.generate(response)) : ''}');"
-        @tabs_dialog.execute_script(script) if @tabs_dialog
+        begin
+          call = JSON.parse(call_json)
+          response = execute_command(call['command'], call['params'])
+          script = "rubyCommandCallback(#{call['id']}, '#{response.is_a?(Hash) ? Base64.strict_encode64(JSON.generate(response)) : ''}');"
+          @tabs_dialog.execute_script(script) if @tabs_dialog
+        rescue Exception => e
+          dump_exception(e)
+        end
       end
 
     end
@@ -1232,19 +1487,19 @@ module Ladb::OpenCutList
       write_default(SETTINGS_KEY_DIALOG_PRINT_MARGIN, print_margin) if persist
     end
 
-    def execute_tabs_dialog_command_on_tab(tab_name, command, parameters = nil, callback = nil)
+    def execute_tabs_dialog_command_on_tab(tab_name, command, parameters = nil, callback = nil, keep_tab_in_background = false)
 
       show_tabs_dialog(nil, true) do
         # parameters and callback must be formatted as JS code
         if tab_name and command
-          @tabs_dialog.bring_to_front
-          @tabs_dialog.execute_script("$('body').ladbDialogTabs('executeCommandOnTab', [ '#{tab_name}', '#{command}', #{parameters}, #{callback} ]);")
+          @tabs_dialog.bring_to_front unless keep_tab_in_background
+          @tabs_dialog.execute_script("$('body').ladbDialogTabs('executeCommandOnTab', [ '#{tab_name}', '#{command}', #{parameters}, #{callback}, #{keep_tab_in_background} ]);")
         end
       end
 
     end
 
-    def create_modal_dialog(modal_name, params = nil)
+    def create_modal_dialog(modal_name, params = nil, width = MODAL_DIALOG_DEFAULT_WIDTH, height = MODAL_DIALOG_DEFAULT_HEIGHT)
 
       # Start
       start
@@ -1255,64 +1510,114 @@ module Ladb::OpenCutList
           :preferences_key => MODAL_DIALOG_PREF_KEY,
           :scrollable => true,
           :resizable => true,
-          :width => MODAL_DIALOG_DEFAULT_WIDTH,
-          :height => MODAL_DIALOG_DEFAULT_HEIGHT,
+          :width => width,
+          :height => height,
           :min_width => MODAL_DIALOG_DEFAULT_WIDTH,
           :min_height => MODAL_DIALOG_DEFAULT_HEIGHT,
           :style => UI::HtmlDialog::STYLE_UTILITY,
           :use_content_size => true,
         }
       )
+      @modal_dialog_name = modal_name
       @modal_dialog.set_on_closed {
         @modal_dialog = nil
+        @modal_dialog_name = nil
+        @modal_dialog_guarded = false
+        trigger_event(PluginObserver::ON_MODAL_DIALOG_CLOSED, { :modal_name => modal_name })
+      }
+      @modal_dialog.set_can_close {
+        next true unless @modal_dialog_guarded
+        modal_dialog_request_close
+        false
       }
 
       # Setup dialog page
-      @modal_dialog.set_file(File.join(PLUGIN_DIR, 'html', "dialog-modal-#{language}.html"))
+      port = local_http_server.start
+      if port
+        @modal_dialog.set_url("http://127.0.0.1:#{port}/html/dialog-modal-#{language}.html")
+      else
+        @modal_dialog.set_file(File.join(PLUGIN_DIR, 'html', "dialog-modal-#{language}.html"))
+      end
 
       # Setup dialog actions
       @modal_dialog.add_action_callback('ladb_opencutlist_setup_dialog_context') do |action_context, call_json|
         @modal_dialog.execute_script("setDialogContext('modal', '#{Base64.strict_encode64(JSON.generate({ :startup_modal_name => modal_name, :params => params }))}');")
       end
       @modal_dialog.add_action_callback('ladb_opencutlist_command') do |action_context, call_json|
-        call = JSON.parse(call_json)
-        response = execute_command(call['command'], call['params'])
-        script = "rubyCommandCallback(#{call['id']}, '#{response.is_a?(Hash) ? Base64.strict_encode64(JSON.generate(response)) : ''}');"
-        @modal_dialog.execute_script(script) if @modal_dialog
+        begin
+          call = JSON.parse(call_json)
+          response = execute_command(call['command'], call['params'])
+          script = "rubyCommandCallback(#{call['id']}, '#{response.is_a?(Hash) ? Base64.strict_encode64(JSON.generate(response)) : ''}');"
+          @modal_dialog.execute_script(script) if @modal_dialog
+        rescue Exception => e
+          dump_exception(e)
+        end
       end
 
     end
 
-    def show_modal_dialog(modal_name = nil, params = nil)
+    # width, height : the size the dialog opens at - a modal that needs more
+    # room than the default one, never less.
+    def show_modal_dialog(modal_name = nil, params = nil, width = MODAL_DIALOG_DEFAULT_WIDTH, height = MODAL_DIALOG_DEFAULT_HEIGHT)
 
-      unless @modal_dialog
-        create_modal_dialog(modal_name, params)
-      end
+      width = [ width, MODAL_DIALOG_DEFAULT_WIDTH ].max
+      height = [ height, MODAL_DIALOG_DEFAULT_HEIGHT ].max
+
+      create_modal_dialog(modal_name, params, width, height) unless @modal_dialog
 
       unless @modal_dialog.visible?
 
         # Show dialog
         @modal_dialog.show
-        @modal_dialog.set_size(MODAL_DIALOG_DEFAULT_WIDTH, MODAL_DIALOG_DEFAULT_HEIGHT)
+        @modal_dialog.set_size(width, height)
         @modal_dialog.center
 
       end
 
     end
 
-    def hide_modal_dialog
-      if @modal_dialog
+    # modal_name_pattern : only the modal whose name matches it - the one of
+    # a tool, not the hardware editor it opened.
+    # force : closes even with unsaved changes - else the modal asks first.
+    def hide_modal_dialog(modal_name_pattern = nil, force = false)
+      if @modal_dialog && (modal_name_pattern.nil? || modal_name_pattern =~ @modal_dialog_name.to_s)
+        if @modal_dialog_guarded && !force
+          modal_dialog_request_close
+          return true
+        end
+        @modal_dialog_guarded = false
         @modal_dialog.close
-        true
-      else
-        false
+        return true
       end
+      false
     end
 
     def toggle_modal_dialog
       unless hide_modal_dialog
         show_modal_dialog
       end
+    end
+
+    # The modal decides : asks to discard its unsaved changes, then closes.
+    def modal_dialog_request_close
+      @modal_dialog.execute_script("$('body').ladbDialogModal('confirmClose');") if @modal_dialog
+    end
+
+    def modal_dialog_get_size
+      @modal_dialog.get_size if @modal_dialog
+    end
+
+    def modal_dialog_set_size(width, height)
+      @modal_dialog.set_size(width, height) if @modal_dialog
+    end
+
+    # nil when the position can't be read back (SketchUp < 2021.1)
+    def modal_dialog_get_position
+      @modal_dialog.get_position if @modal_dialog && @modal_dialog.respond_to?(:get_position)
+    end
+
+    def modal_dialog_set_position(left, top)
+      @modal_dialog.set_position(left, top) if @modal_dialog
     end
 
     # -- Devtool ---
@@ -1352,6 +1657,39 @@ module Ladb::OpenCutList
       !@zzz
     end
 
+    # -- Upgrade ---
+
+    def _upgrade_done(error)
+      case error
+      when nil
+
+        # Reset active tool
+        Sketchup.active_model.select_tool(nil) unless Sketchup.active_model.nil?
+
+        # Hide OCL dialog
+        hide_tabs_dialog
+
+        # Inform user to restart Sketchup
+        UI.messagebox(get_i18n_string('core.upgrade.success'))
+
+        # Flag as sleeping (need to restart SketchUp to wake up)
+        @zzz = true
+
+      when Interrupt
+        trigger_event('on_upgrade_cancelled', {})
+      when Updater::DownloadError
+        _upgrade_failed(get_i18n_string('core.upgrade.error.download'), error)
+      else
+        _upgrade_failed(get_i18n_string('core.upgrade.error.unzip'), error)
+      end
+    end
+
+    def _upgrade_failed(message, e)
+      UI.beep
+      UI.messagebox(message + "\n" + e.message + "\n\n" + upgrade_log_file.tr('/', File::ALT_SEPARATOR || '/'))
+      trigger_event('on_upgrade_cancelled', {})
+    end
+
     # -- Commands ---
 
     def set_update_status_command(manifest:, update_available:, update_muted:)    # Expected params = { manifest: MANIFEST, update_available: BOOL, update_muted: BOOL }
@@ -1369,7 +1707,11 @@ module Ladb::OpenCutList
       # MCFT Edition: upstream's updater would download the STOCK RBZ and
       # silently remove the ERPNext bridge. Updates come from the malletcraft
       # fork instead.
-      UI.messagebox("This is OpenCutList (MCFT Edition).\nUpdating from upstream would remove the ERPNext bridge.\nGet updates from github.com/malletcraft/mcft-opencutlist-sketchup-extension.")
+      # On 8 this is also the only route to Updater#download_and_install, so
+      # the refusal is the FIRST statement, before Updater.new
+      # (tools/check-upgrade-refused.rb holds it). MOP updates when SketchUp
+      # restarts: the startup stub fast-forwards the clone behind a CI gate.
+      UI.messagebox("This is OpenCutList (MCFT Edition). It updates when SketchUp restarts.\n\nNever click Upgrade here, and never install an OpenCutList .rbz on this SketchUp: either would replace the MCFT estimate with stock OpenCutList.")
       return { :cancelled => true }
 
       # Just open URL for older Sketchup versions
@@ -1388,74 +1730,28 @@ module Ladb::OpenCutList
         # pass for strings like "foo", though.
         url = URI(url)
 
-        last_progress = 0
-        request = Sketchup::Http::Request.new(url.to_s, Sketchup::Http::GET)
-        request.set_download_progress_callback do |current, total|
-          progress = current * 5 / total
-          if progress > last_progress
+        # Keep a reference to the updater until done : it holds the request
+        expected_build = @manifest.is_a?(Hash) ? (@manifest['build'] || @manifest[:build]) : nil
+        @updater = Updater.new(PLUGIN_DIR, backup: IS_RBZ, log_file: upgrade_log_file, expected_build: expected_build)
+        @updater.log_context(
+          :from => "#{EXTENSION_VERSION}-#{EXTENSION_BUILD}#{IS_RBZ ? '' : '-src'}",
+          :to => expected_build.nil? ? '?' : expected_build,
+          :sketchup => Sketchup.version,
+          :platform => Sketchup.platform,
+          :ruby => RUBY_VERSION,
+          :dir => PLUGIN_DIR
+        )
+        @updater.download_and_install(url.to_s, File.join(temp_dir, 'downloads'),
+          on_progress: lambda { |current, total|
             trigger_event('on_upgrade_progress', {
                 :current => current,
                 :total => total,
             })
-            last_progress = progress
-          end
-        end
-        request.start do |request, response|
-
-          timer_running = false
-          UI.start_timer(1, false) {
-
-            # Timer with modal bug workaround https://ruby.sketchup.com/UI.html#start_timer-class_method
-            return if timer_running
-            timer_running = true
-
-            # Prepare file
-            downloads_dir = File.join(temp_dir, 'downloads')
-            Dir.mkdir(downloads_dir) unless Dir.exist?(downloads_dir)
-            rbz_file = File.join(downloads_dir, 'ladb_opencutlist.rbz')
-
-            # Write result to file
-            File.open(rbz_file, 'wb') do |f|
-              f.write(response.body)
-            end
-
-            success = false
-
-            # Install the RBZ
-            begin
-              Sketchup.install_from_archive(rbz_file)
-              success = true
-            rescue Interrupt => e
-              trigger_event('on_upgrade_cancelled', {})
-            rescue Exception => e
-              UI.beep
-              UI.messagebox(get_i18n_string('core.upgrade.error.unzip') + "\n" + e.message)
-              trigger_event('on_upgrade_cancelled', {})
-            ensure
-
-              # Remove downloaded archive
-              File.unlink(rbz_file)
-
-            end
-
-            if success
-
-              # Reset active tool
-              Sketchup.active_model.select_tool(nil)
-
-              # Hide OCL dialog
-              hide_tabs_dialog
-
-              # Inform user to restart Sketchup
-              UI.messagebox(get_i18n_string('core.upgrade.success'))
-
-              # Flag as sleeping (need to restart SketchUp to wake up)
-              @zzz = true
-
-            end
-
           }
-
+        ) do |error|
+          puts @updater.log.map { |line| "Upgrade : #{line}" }.join("\n")
+          @updater = nil
+          _upgrade_done(error)
         end
 
       rescue Exception => e
@@ -1535,7 +1831,7 @@ module Ladb::OpenCutList
           :version => EXTENSION_VERSION,
           :build => EXTENSION_BUILD,
           :is_rbz => IS_RBZ,
-          :is_dev => IS_DEV,
+          :is_lab => IS_LAB,
           :sketchup_is_pro => Sketchup.is_pro?,
           :sketchup_version => Sketchup.version,
           :sketchup_version_number => Sketchup.version_number,
@@ -1543,6 +1839,7 @@ module Ladb::OpenCutList
           :chrome_version => defined?(UI::HtmlDialog::CHROME_VERSION) ? UI::HtmlDialog::CHROME_VERSION : nil,
           :platform_name => platform_name,
           :is_64bit => Sketchup.respond_to?(:is_64bit?) && Sketchup.is_64bit?,
+          :dialog_transport => local_http_server.running? ? 'http://' : 'file://',
           :locale => Sketchup.get_locale,
           :language => PLUGIN.language,
           :languages => PLUGIN.get_languages,
@@ -1634,8 +1931,26 @@ module Ladb::OpenCutList
       hide_tabs_dialog
     end
 
-    def modal_dialog_hide_command
-      hide_modal_dialog
+    # Called by the dialog when it finds itself outside the visible desktop, with
+    # a position it has already constrained to its own screen. The stored
+    # position is overwritten too : the point is that the next startup does not
+    # repeat the problem.
+    def tabs_dialog_set_position_command(left:, top:)
+      return unless @tabs_dialog
+      left = left.to_i
+      top = top.to_i
+      tabs_dialog_store_position(left, top)
+      tabs_dialog_set_position(left, top)
+      nil
+    end
+
+    def modal_dialog_hide_command(force: false)
+      hide_modal_dialog(nil, force)
+    end
+
+    def modal_dialog_set_guarded_command(guarded:)
+      @modal_dialog_guarded = guarded == true
+      nil
     end
 
     def open_external_file_command(path:)    # Expected params = { path: PATH_TO_FILE }
@@ -1653,7 +1968,8 @@ module Ladb::OpenCutList
 
     def zoom_extents_command
       unless (model = Sketchup.active_model).nil?
-        model.active_view.zoom_extents
+        require_relative './utils/view_utils'
+        ViewUtils.zoom_active_entities(model.active_view)
       end
     end
 
@@ -1678,10 +1994,10 @@ module Ladb::OpenCutList
         next unless string_length.is_a?(String)
         if string_length.index('x')
           # Convert string "size" to inch float array
-          float_lengths[key] = string_length.split('x').map { |v| DimensionUtils.d_to_ifloats(v).to_l.to_f }
+          float_lengths[key] = string_length.split('x').map { |v| DimensionUtils.d_to_ifloats(v).to_l.to_f.round(10) }  # Use round(10) as a workaround against the SU 2026 to_f precision change
         else
           # Convert string length to inch float
-          float_lengths[key] = DimensionUtils.d_to_ifloats(string_length).to_l.to_f
+          float_lengths[key] = DimensionUtils.d_to_ifloats(string_length).to_l.to_f.round(10) # Use round(10) as a workaround against the SU 2026 to_f precision change
         end
       end
       float_lengths
@@ -1722,6 +2038,59 @@ module Ladb::OpenCutList
       {
         :success => success
       }
+    end
+
+    def browse_file_command(title: '', file_path: '')
+      file_path = UI.openpanel(title, File.dirname(file_path), File.basename(file_path)).to_s
+      {
+        :file_path => file_path
+      }
+    end
+
+    # Same as browse_file_command, but the picked file is copied into the asset
+    # library and returned as a portable '$LIB/…' ref, so that the preset holding
+    # it stays valid on another machine.
+    # Falls back to the plain absolute path if the copy fails : the value keeps
+    # working locally, it is just not shareable.
+    def browse_library_file_command(title: '', file_path: '')
+
+      # Start the panel from the current value, or from the library itself
+      current_path = library_ref?(file_path) ? resolve_library_ref(file_path).to_s : file_path
+      if current_path.empty?
+        dir = begin
+          ensure_library_dir
+        rescue Exception => e
+          ''
+        end
+        basename = ''
+      else
+        dir = File.dirname(current_path)
+        basename = File.basename(current_path)
+      end
+
+      file_path = UI.openpanel(title, dir, basename).to_s
+      return { :file_path => '' } if file_path.empty?
+
+      begin
+        file_path = library_ref_from_path(copy_to_library(file_path, sub_dir: library_sub_dir_for(file_path)))
+      rescue Exception => e
+        dump_exception(e)
+      end
+
+      {
+        :file_path => file_path
+      }
+    end
+
+    def open_library_dir_command
+      begin
+        dir = ensure_library_dir
+      rescue Exception => e
+        dump_exception(e)
+        return { :errors => [ [ 'tab.settings.presets.error.failed_to_open_library_dir', { :error => e.message } ] ] }
+      end
+      open_dir(dir)
+      { :success => true }
     end
 
     def unload_c_lib_command(lib:)

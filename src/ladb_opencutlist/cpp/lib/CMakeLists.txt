@@ -27,3 +27,14 @@ add_subdirectory(Imagy)
 #                             Packy
 
 add_subdirectory(Packy)
+
+# -------------------------------------------------------------------
+#                             Meshy
+
+add_subdirectory(Meshy)
+
+# -------------------------------------------------------------------
+#                             Skpy
+
+add_subdirectory(Skpy)
+

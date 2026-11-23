@@ -8,17 +8,26 @@ module Ladb::OpenCutList
 
   class OutlinerNodeDef < DataContainer
 
-    TYPE_MODEL     = 0
-    TYPE_GROUP     = 1
-    TYPE_COMPONENT = 2
-    TYPE_PART      = 3
+    TYPE_MODEL          = 0
+    TYPE_GROUP          = 1
+    TYPE_COMPONENT      = 2
+    TYPE_PART           = 3
 
     PROPAGATION_SELF     = 1 << 1
     PROPAGATION_PARENT   = 1 << 2
     PROPAGATION_CHILDREN = 1 << 3
 
-    attr_accessor :default_name, :expanded, :child_active, :active, :selected, :parent
-    attr_reader :path, :id, :depth, :entity, :entity_id, :children
+    attr_accessor :type,
+                  :default_name,
+                  :expanded,
+                  :child_active, :active,
+                  :selected,
+                  :parent
+    attr_reader :path,
+                :id,
+                :depth,
+                :entity, :entity_id,
+                :children
 
     # -----
 
@@ -38,6 +47,8 @@ module Ladb::OpenCutList
       @id = OutlinerNodeDef::generate_node_id(path)
       @depth = @path.length
 
+      @type = native_type
+
       @default_name = nil
       @expanded = false
       @child_active = false
@@ -49,8 +60,12 @@ module Ladb::OpenCutList
 
     end
 
+    def native_type
+      -1
+    end
+
     def type
-      raise NotImplementedError
+      @type
     end
 
     def name
@@ -130,7 +145,7 @@ module Ladb::OpenCutList
 
   class OutlinerNodeModelDef < OutlinerNodeDef
 
-    def type
+    def native_type
       TYPE_MODEL
     end
 
@@ -149,7 +164,8 @@ module Ladb::OpenCutList
 
   class OutlinerNodeGroupDef < OutlinerNodeDef
 
-    attr_accessor :material_def, :layer_def
+    attr_accessor :layer_def,
+                  :material_def
 
     def initialize(path = [])
       super
@@ -159,15 +175,8 @@ module Ladb::OpenCutList
 
     end
 
-    def type
+    def native_type
       TYPE_GROUP
-    end
-
-    def material_def=(material_def)
-      return if @material_def === material_def
-      @material_def.remove_used_by_node_def(self) unless @material_def.nil?
-      @material_def = material_def
-      @material_def.add_used_by_node_def(self) unless @material_def.nil?
     end
 
     def layer_def=(layer_def)
@@ -175,6 +184,18 @@ module Ladb::OpenCutList
       @layer_def.remove_used_by_node_def(self) unless @layer_def.nil?
       @layer_def = layer_def
       @layer_def.add_used_by_node_def(self) unless @layer_def.nil?
+    end
+
+    def material_type
+      return @material_def.material_attributes.type if @material_def
+      MaterialAttributes::TYPE_UNKNOWN
+    end
+
+    def material_def=(material_def)
+      return if @material_def === material_def
+      @material_def.remove_used_by_node_def(self) unless @material_def.nil?
+      @material_def = material_def
+      @material_def.add_used_by_node_def(self) unless @material_def.nil?
     end
 
     def locked?
@@ -193,16 +214,54 @@ module Ladb::OpenCutList
 
     # -----
 
+    def description
+      return '' unless valid?
+      @entity.definition.description
+    end
+
+    # -----
+
+    def is2d?
+      return false unless valid?
+      @entity.definition.behavior.is2d?
+    end
+
+    def snapto
+      return false unless valid?
+      @entity.definition.behavior.snapto
+    end
+
+    def cuts_opening?
+      return false unless valid?
+      @entity.definition.behavior.cuts_opening?
+    end
+
+    def always_face_camera?
+      return false unless valid?
+      @entity.definition.behavior.always_face_camera?
+    end
+
+    def shadows_face_sun?
+      return false unless valid?
+      @entity.definition.behavior.shadows_face_sun?
+    end
+
+    def no_scale_mask?
+      return false unless valid?
+      @entity.definition.behavior.no_scale_mask?
+    end
+
+    # -----
+
     def get_hashable
-      @hashable = OutlinerNodeGroup.new(self) if @hashable.nil?
-      @hashable
+      @hashable ||= OutlinerNodeGroup.new(self)
     end
 
   end
 
   class OutlinerNodeComponentDef < OutlinerNodeGroupDef
 
-    def type
+    def native_type
       TYPE_COMPONENT
     end
 
@@ -215,34 +274,15 @@ module Ladb::OpenCutList
       @entity.definition.name
     end
 
-    def description
-      return '' unless valid?
-      @entity.definition.description
-    end
-
     def live_component?
-      !@entity.nil? && !@entity.deleted? && @entity.definition.respond_to?(:live_component?) && @entity.definition.live_component?
+      return false unless valid?
+      @entity.definition.respond_to?(:live_component?) && @entity.definition.live_component?
     end
 
     # -----
 
     def get_hashable
       @hashable = OutlinerNodeComponent.new(self) if @hashable.nil?
-      @hashable
-    end
-
-  end
-
-  class OutlinerNodePartDef < OutlinerNodeComponentDef
-
-    def type
-      TYPE_PART
-    end
-
-    # -----
-
-    def get_hashable
-      @hashable = OutlinerNodePart.new(self) if @hashable.nil?
       @hashable
     end
 

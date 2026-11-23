@@ -1,5 +1,6 @@
 module Ladb::OpenCutList
 
+  require 'CGI'
   require_relative '../../helper/bounding_box_helper'
   require_relative '../../model/attributes/definition_attributes'
   require_relative '../../utils/axis_utils'
@@ -12,19 +13,23 @@ module Ladb::OpenCutList
         :virtual,
         :definition_id,
         :name,
-        :is_dynamic_attributes_name,
+        :name_source,
         :material_name,
         :cumulable,
         :instance_count_by_part,
         :mass,
         :price,
         :thickness_layer_count,
+        :length_increase,
+        :width_increase,
+        :thickness_increase,
         :description,
         :url,
         :tags,
         :orientation_locked_on_axis,
         :symmetrical,
         :ignore_grain_direction,
+        :follow_grain_direction,
         :axes_order,
         :axes_origin_position,
         :edge_material_names,
@@ -45,34 +50,36 @@ module Ladb::OpenCutList
       @cutlist = cutlist
 
       @auto_orient = auto_orient
-      @parts_data = []
-
-      parts_data.each { |part_data|
-        @parts_data << PartData.new(
-            part_data.fetch('virtual'),
-            part_data.fetch('definition_id'),
-            part_data.fetch('name'),
-            part_data.fetch('is_dynamic_attributes_name'),
-            part_data.fetch('material_name'),
-            DefinitionAttributes.valid_cumulable(part_data.fetch('cumulable')),
-            part_data.fetch('instance_count_by_part'),
-            part_data.fetch('mass'),
-            part_data.fetch('price'),
-            part_data.fetch('thickness_layer_count'),
-            part_data.fetch('description'),
-            part_data.fetch('url'),
-            DefinitionAttributes.valid_tags(part_data.fetch('tags')),
-            part_data.fetch('orientation_locked_on_axis'),
-            part_data.fetch('symmetrical'),
-            part_data.fetch('ignore_grain_direction'),
-            part_data.fetch('axes_order', nil),
-            part_data.fetch('axes_origin_position', nil),
-            part_data.fetch('edge_material_names'),
-            part_data.fetch('edge_entity_ids'),
-            part_data.fetch('face_material_names'),
-            part_data.fetch('face_entity_ids'),
-            part_data.fetch('face_texture_angles'),
-            part_data.fetch('entity_ids')
+      @parts_data = parts_data.map { |part_data|
+        PartData.new(
+          part_data.fetch('virtual'),
+          _unescape_string(part_data.fetch('definition_id')),
+          _unescape_string(part_data.fetch('name')),
+          part_data.fetch('name_source'),
+          part_data.fetch('material_name'),
+          DefinitionAttributes.valid_cumulable(part_data.fetch('cumulable')),
+          part_data.fetch('instance_count_by_part'),
+          part_data.fetch('mass'),
+          part_data.fetch('price'),
+          part_data.fetch('thickness_layer_count'),
+          part_data.fetch('length_increase'),
+          part_data.fetch('width_increase'),
+          part_data.fetch('thickness_increase'),
+          _unescape_string(part_data.fetch('description')),
+          part_data.fetch('url'),
+          DefinitionAttributes.valid_tags(part_data.fetch('tags')),
+          part_data.fetch('orientation_locked_on_axis'),
+          part_data.fetch('symmetrical'),
+          part_data.fetch('ignore_grain_direction'),
+          part_data.fetch('follow_grain_direction') && !part_data.fetch('ignore_grain_direction') && part_data.fetch('thickness_layer_count').to_i == 1,
+          part_data.fetch('axes_order', nil),
+          part_data.fetch('axes_origin_position', nil),
+          part_data.fetch('edge_material_names'),
+          part_data.fetch('edge_entity_ids'),
+          part_data.fetch('face_material_names'),
+          part_data.fetch('face_entity_ids'),
+          part_data.fetch('face_texture_angles'),
+          part_data.fetch('entity_ids')
         )
       }
 
@@ -108,7 +115,7 @@ module Ladb::OpenCutList
           if definition
 
             # Update definition's name
-            if definition.name != part_data.name && !part_data.is_dynamic_attributes_name
+            if definition.name != part_data.name && part_data.name_source == InstanceInfo::NAME_SOURCE_DEFINITION
               definition.name = part_data.name
             end
 
@@ -125,9 +132,13 @@ module Ladb::OpenCutList
                 part_data.price != definition_attributes.price ||
                 part_data.url != definition_attributes.url ||
                 part_data.thickness_layer_count != definition_attributes.thickness_layer_count ||
+                part_data.length_increase != definition_attributes.length_increase ||
+                part_data.width_increase != definition_attributes.width_increase ||
+                part_data.thickness_increase != definition_attributes.thickness_increase ||
                 part_data.orientation_locked_on_axis != definition_attributes.orientation_locked_on_axis ||
                 part_data.symmetrical != definition_attributes.symmetrical ||
                 part_data.ignore_grain_direction != definition_attributes.ignore_grain_direction ||
+                part_data.follow_grain_direction != definition_attributes.follow_grain_direction ||
                 part_data.tags != definition_attributes.tags
               definition_attributes.cumulable = part_data.cumulable
               definition_attributes.instance_count_by_part = part_data.instance_count_by_part
@@ -135,14 +146,18 @@ module Ladb::OpenCutList
               definition_attributes.price = part_data.price
               definition_attributes.url = part_data.url
               definition_attributes.thickness_layer_count = part_data.thickness_layer_count
+              definition_attributes.length_increase = part_data.length_increase
+              definition_attributes.width_increase = part_data.width_increase
+              definition_attributes.thickness_increase = part_data.thickness_increase
               definition_attributes.tags = part_data.tags
               definition_attributes.orientation_locked_on_axis = part_data.orientation_locked_on_axis
               definition_attributes.symmetrical = part_data.symmetrical
               definition_attributes.ignore_grain_direction = part_data.ignore_grain_direction
+              definition_attributes.follow_grain_direction = part_data.follow_grain_direction
               definition_attributes.write_to_attributes
             end
 
-            # Transform part axes if axes order exist
+            # Transform part axes if axes order exists
             if part_data.axes_order.is_a?(Array) && part_data.axes_order.length == 3
 
               axes_convertor = {
@@ -171,7 +186,7 @@ module Ladb::OpenCutList
 
             end
 
-            # Manage origin if position exist
+            # Manage origin if position exists
             if part_data.axes_origin_position
 
               # Compute definition bounds
@@ -246,6 +261,11 @@ module Ladb::OpenCutList
     end
 
     # -----
+
+    def _unescape_string(string)
+      return string unless string.is_a?(String)
+      CGI.unescape(string)
+    end
 
     def _apply_material(material_name, entity_ids, model, removable_type = nil, angle = nil)  # angle in radians [0..2PI]
       return if entity_ids.nil?

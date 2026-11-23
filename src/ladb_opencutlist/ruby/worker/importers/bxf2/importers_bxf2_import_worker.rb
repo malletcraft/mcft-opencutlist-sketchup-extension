@@ -1,0 +1,1415 @@
+module Ladb::OpenCutList
+
+  require_relative '../../../lib/geometrix/geometrix'
+  require_relative '../../../lib/rubybxf/bxf'
+  require_relative '../../../model/attributes/instance_attributes'
+  require_relative '../../../model/attributes/material_attributes'
+  require_relative '../../../model/formula/formula_data'
+  require_relative '../../../worker/common/common_eval_formula_worker'
+  require_relative '../../../worker/common/common_drawing_decomposition_worker'
+  require_relative '../../../worker/common/common_solid_boolean_worker'
+  require_relative '../../../worker/common/common_solid_boolean_apply_worker'
+
+  class ImportersBxf2ImportWorker
+
+    NODE_UP_TRANSFORM = Geom::Transformation.rotation(ORIGIN, X_AXIS, 90.degrees)
+    COMPONENT_UP_TRANSFORM = Geom::Transformation.axes(ORIGIN, X_AXIS, Z_AXIS.reverse, Y_AXIS)
+
+    # Cabinet groups use SketchUp axes (Up = Z+) instead of BXF axes (Up = Y+)
+    CABINET_UP_TRANSFORM = COMPONENT_UP_TRANSFORM
+    CABINET_UP_TRANSFORM_INVERSE = CABINET_UP_TRANSFORM.inverse
+
+    # Function unit groups use SketchUp axes (Up = Z+) instead of BXF axes (Up = Y+)
+    FUNCTION_UNIT_UP_TRANSFORM = COMPONENT_UP_TRANSFORM
+    FUNCTION_UNIT_UP_TRANSFORM_INVERSE = FUNCTION_UNIT_UP_TRANSFORM.inverse
+
+    PART_FRONT_BACK_SWAP_TRANSFORM = Geom::Transformation.axes(ORIGIN, X_AXIS, Y_AXIS.reverse, Z_AXIS.reverse)
+    PART_FRONT_BACK_SWAP_TRANSFORM_INVERSE = PART_FRONT_BACK_SWAP_TRANSFORM.inverse
+
+    # Blum part model keys telling what a part is FOR (see DefinitionAttributes, ROLE) : any front ("H-FRON-Tuer",
+    # "H-FRON-Blende", "H-FRON-HK", ...) and the carcass back ("Korpusrueckwand"). A drawer back ("H-RUEW-*") belongs
+    # to its drawer box and has no role.
+    FRONT_PANEL_MODEL_KEY_PREFIX = 'H-FRON'.freeze
+    BACK_PANEL_MODEL_KEY = 'KRW'.freeze
+
+    BLUM_COLOR = Sketchup::Color.new('#ff671f').freeze
+    WOOD_MATERIAL_COLOR = Sketchup::Color.new(209, 197, 173).freeze
+    ALUMINIUM_MATERIAL_COLOR = Sketchup::Color.new(204, 204, 204).freeze
+    GLASS_MATERIAL_COLOR = Sketchup::Color.new(196, 232, 254, 0.5).freeze
+
+    # The part's machinings (own or inherited from a hardware component) that
+    # remove material along a panel edge or face : subtracted from the part
+    # when subtract_machinings is on. Drillings and glue are always drawn.
+    SUBTRACTABLE_MACHINING_CLASSES = [
+      Bxf::BxfMachiningGroove,
+      Bxf::BxfMachiningRoundedGroove,
+      Bxf::BxfMachiningRabbet,
+      Bxf::BxfMachiningChamfer
+    ].freeze
+
+    # Same reading as the Smart tools' booleans : container tree preserved,
+    # the part's drawn machinings (drillings…) left out of the operand.
+    SUBTRACT_DRAWING_DEF_PARAMETERS = {
+      ignore_surfaces: true,
+      ignore_faces: false,
+      ignore_edges: true,
+      ignore_soft_edges: true,
+      ignore_clines: true,
+      container_validator: CommonDrawingDecompositionWorker::CONTAINER_VALIDATOR_PART_WITHOUT_MACHININGS,
+      flatten: false
+    }.freeze
+
+    attr_reader :bxf_model
+
+    def initialize(bxf_model,
+
+                   parts_formula: '@part',
+                   part_wood_material_name: nil,
+                   part_aluminium_material_name: nil,
+                   part_glass_material_name: nil,
+                   front_part_layer_name: nil,
+                   back_part_layer_name: nil,
+
+                   machining_material_name: nil,
+                   machining_layer_name: nil,
+                   subtract_machinings: true,
+
+                   hardware_material_name: nil,
+                   hardware_layer_name: nil,
+
+                   dry_run: false
+
+    )
+
+      @bxf_model = bxf_model
+
+      @parts_formula = parts_formula
+      @part_wood_material_name = part_wood_material_name
+      @part_aluminium_material_name = part_aluminium_material_name
+      @part_glass_material_name = part_glass_material_name
+      @front_part_layer_name = front_part_layer_name
+      @back_part_layer_name = back_part_layer_name
+
+      @machining_material_name = machining_material_name.is_a?(String) && !machining_material_name.empty? ? machining_material_name : PLUGIN.get_i18n_string('tab.materials.type_7')
+      @machining_layer_name = machining_layer_name
+      @subtract_machinings = subtract_machinings != false
+
+      @hardware_material_name = hardware_material_name.is_a?(String) && !hardware_material_name.empty? ? hardware_material_name : PLUGIN.get_i18n_string('tab.materials.type_5')
+      @hardware_layer_name = hardware_layer_name
+
+      @dry_run = dry_run
+
+      # -- internals
+
+      @_cad_data_dir = nil
+      @_subtract_failed_part_names = []
+
+    end
+
+    # -----
+
+    def run
+
+      return { :errors => [ 'tab.importers.default.error.no_data' ] } unless @bxf_model.is_a?(Bxf::BxfModel)
+
+      model = Sketchup.active_model
+      return { :errors => [ 'tab.importers.default.error.no_model' ] } unless model
+
+      if @dry_run
+
+        @part_names_data = {}
+
+        begin
+
+          _process_model(nil)
+
+          preview = @part_names_data.to_a
+                            .map { |_, names| [ names.first.first, names.first.last, names.size ] }
+                            .sort_by! { |old, new| [ new.nil? || new.empty? ? 1 : 0, old ] }
+
+          return {
+            :preview => preview
+          }
+
+        rescue ImportersBxf2FormulaError => e
+          return { :errors => [ { :error => e.message, :error_type => e.error_type } ] }
+        rescue Exception => e
+          return { :errors => [ e.message ] }
+        end
+
+      else
+
+        model.select_tool(ImportersBxf2PlaceTool.new(@bxf_model) { |cancelled, transformation = IDENTITY|
+          if cancelled
+
+            # Deactivate tool
+            model.select_tool(nil)
+
+            # Invoke dialog callback
+            PLUGIN.execute_tabs_dialog_command_on_tab('importers_bxf2', 'import_callback', { cancelled: true }.to_json, nil, false)
+
+          else
+
+            # Process importation
+            _import_at(transformation) do |cancelled, errors, warnings = []|
+
+              # Deactivate tool
+              model.select_tool(nil)
+
+              # Invoke dialog callback (brought to front when there is something to tell)
+              PLUGIN.execute_tabs_dialog_command_on_tab('importers_bxf2', 'import_callback', { errors: errors, warnings: warnings }.to_json, nil, !cancelled && warnings.empty?)
+
+            end
+
+          end
+        })
+
+        # Give focus to SketchUp main window
+        Sketchup.focus if Sketchup.respond_to?(:focus)
+
+      end
+
+      {
+        :errors => []
+      }
+    end
+
+    # -----
+
+    private
+
+    def _import_at(transformation, &callback)
+
+      model = Sketchup.active_model
+      model.start_operation('Import BXF2', true)
+
+        begin
+
+          # 1. Extract DAE files from zip (if needed) to the temporary directory
+          bxf_model_file_path = File.expand_path(@bxf_model.path)
+          if File.extname(bxf_model_file_path).downcase == '.zip'
+
+            temp_cad_dir = File.join(PLUGIN.temp_dir, 'importers_bxf2')
+            Dir.mkdir(temp_cad_dir) unless File.exist?(temp_cad_dir)
+
+            require_relative '../../../lib/rubyzip/zip'
+
+            Zip::File.open(@bxf_model.path) do |zip_file|
+              zip_file.each do |entry|
+
+                # Finding DAE files in zip archive
+                if File.extname(entry.name).downcase == '.dae'
+                  entry.extract(File.basename(entry.name), destination_directory: temp_cad_dir)
+                end
+
+              end
+            end
+
+            @_cad_data_dir = temp_cad_dir
+
+          else
+            @_cad_data_dir = File.join(File.dirname(bxf_model_file_path), 'cadData')
+          end
+
+          # 2. Process model
+          _process_model(model.active_entities, transformation: transformation)
+
+        rescue Exception => e
+          PLUGIN.dump_exception(e)
+          model.abort_operation
+          callback.call(true, [ [ 'core.error.exception', { :error => e.message } ] ]) if callback
+          return
+        ensure
+
+          # Clear factories
+          _clear_factories
+
+          # Remove the temporary directory if defined and exists
+          if defined?(temp_cad_dir) && temp_cad_dir.is_a?(String) && !temp_cad_dir.empty? && File.exist?(temp_cad_dir)
+            FileUtils.remove_dir(temp_cad_dir, true) if Dir.exist?(temp_cad_dir)
+          end
+
+        end
+
+      model.commit_operation
+
+      warnings = []
+      warnings << [ 'tab.importers.bxf2.import.warning.subtract_machinings_failed', { :names => @_subtract_failed_part_names.uniq.join(', ') } ] unless @_subtract_failed_part_names.empty?
+
+      callback.call(false, [], warnings) if callback
+
+    end
+
+    # -----
+
+    def _clear_factories
+      @materials_factory = nil
+      @parts_factory = nil
+      @components_factory = nil
+      @machining_factory = nil
+    end
+
+    def _process_model(entities, transformation: IDENTITY)
+
+      @bxf_model.scene.nodes.each do |node|
+
+        t = transformation * node.transformations.to_t
+        project_wrapper = ImportersBxf2NodeFormulaWrapper.new(node)
+
+        _process_cabinet_group_links(node.cabinet_group_links, entities, transformation: t, project_wrapper: project_wrapper)
+        _process_cabinet_links(node.cabinet_links, entities, transformation: t, project_wrapper: project_wrapper)
+        _process_container_links(node.container_links, entities, transformation: t, project_wrapper: project_wrapper)
+        _process_function_unit_links(node.function_unit_links, entities, transformation: t, project_wrapper: project_wrapper)
+
+      end
+
+    end
+
+    def _process_cabinet_group_links(cabinet_group_links, entities, transformation: IDENTITY, project_wrapper: nil)
+
+      cabinet_group_links.each do |cabinet_group_link|
+
+        cabinet_group = cabinet_group_link.cabinet_group
+
+        if @dry_run
+          cabinet_group_links_entities = nil
+        else
+          cabinet_group_links_group = entities.add_group
+          cabinet_group_links_group.name = cabinet_group_link.description if cabinet_group_link.description
+          cabinet_group_links_group.transformation = transformation * cabinet_group_link.transformations.to_t * CABINET_UP_TRANSFORM
+          cabinet_group_links_entities = cabinet_group_links_group.entities
+        end
+
+        _process_cabinet_links(cabinet_group.cabinet_links, cabinet_group_links_entities, transformation: CABINET_UP_TRANSFORM_INVERSE, project_wrapper: project_wrapper)
+
+      end
+
+    end
+
+    def _process_cabinet_links(cabinet_links, entities, transformation: IDENTITY, project_wrapper: nil)
+
+      cabinet_links.each do |cabinet_link|
+
+        cabinet = cabinet_link.cabinet
+        cabinet_link_wrapper = ImportersBxf2CabinetLinkFormulaWrapper.new(cabinet_link)
+
+        # Cabinet local axes : Up = Z+ and origin moved from BXF back-left-bottom to front-left-bottom
+        cabinet_up_transform = Geom::Transformation.translation(Geom::Vector3d.new(0, 0, cabinet_link_wrapper.depth.to_f)) * CABINET_UP_TRANSFORM
+        cabinet_up_transform_inverse = cabinet_up_transform.inverse
+
+        if @dry_run
+          cabinet_links_entities = nil
+        else
+          cabinet_links_group = entities.add_group
+          cabinet_links_group.name = cabinet_link.description if cabinet_link.description
+          cabinet_links_group.transformation = transformation * cabinet_link.transformations.to_t * cabinet_up_transform
+          cabinet_links_entities = cabinet_links_group.entities
+        end
+
+        _process_part_links(cabinet.part_links, cabinet_links_entities, transformation: cabinet_up_transform_inverse, project_wrapper: project_wrapper, cabinet_link_wrapper: cabinet_link_wrapper)
+        _process_container_links(cabinet.container_links, cabinet_links_entities, transformation: cabinet_up_transform_inverse, project_wrapper: project_wrapper, cabinet_link_wrapper: cabinet_link_wrapper)
+        _process_function_unit_links(cabinet.function_unit_links, cabinet_links_entities, transformation: cabinet_up_transform_inverse, project_wrapper: project_wrapper, cabinet_link_wrapper: cabinet_link_wrapper)
+
+      end
+
+    end
+
+    def _process_part_links(part_links, entities, transformation: IDENTITY, project_wrapper: nil, cabinet_link_wrapper: nil, function_unit_wrapper: nil)
+
+      part_links.each do |part_link|
+
+        part = part_link.part
+
+        next if part.nil? || part.geometry.nil?
+
+        part_link_wrapper = ImportersBxf2PartLinkFormulaWrapper.new(part_link, function_unit_wrapper)
+
+        formula = @parts_formula.is_a?(String) && !@parts_formula.empty? ? @parts_formula : '@part'
+        data = ImportersBxf2PartData.new(
+
+          part: part_link_wrapper,
+          project: project_wrapper,
+          cabinet: cabinet_link_wrapper
+
+        )
+        part_name = CommonEvalFormulaWorker.new(formula: formula, data: data).run
+        raise ImportersBxf2FormulaError.new(part_name[:error], part_name[:error_type]) if part_name.is_a?(Hash) && part_name[:error]
+
+        if @dry_run
+
+          old_name = part_link_wrapper.to_s
+          new_name = part_name == old_name ? nil : part_name
+
+          (@part_names_data[[ part, part_name ]] ||= []) << [ old_name, new_name ]
+
+        else
+
+          part_name = PLUGIN.get_i18n_string('default.part_single').capitalize if part_name.nil? || part_name.strip.empty?
+
+          definition = (@parts_factory ||= {})[[ part, part_name ]] ||= begin
+
+                                                                          definition = Sketchup.active_model.definitions.add(part_name)
+
+                                                                          # Draw geometry
+                                                                          if part.geometry.is_a?(Bxf::BxfGeometryBox)
+                                                                            _draw_box(definition.entities, part.geometry.extent.to_b)
+                                                                          elsif part.geometry.is_a?(Bxf::BxfGeometryPrism)
+                                                                            _draw_prism(definition.entities, part.geometry)
+                                                                          elsif part.geometry.is_a?(Bxf::BxfGeometryCylinder)
+                                                                            _draw_cylinder(definition.entities, part.geometry)
+                                                                          end
+
+                                                                          da = DefinitionAttributes.new(definition)
+                                                                          da.orientation_locked_on_axis = true
+                                                                          da.role = _get_part_role(part)
+                                                                          da.write_to_attributes
+
+                                                                          # Process machinings : grooves, rabbets and chamfers are subtracted if possible
+                                                                          cut_defs = @subtract_machinings ? [] : nil
+                                                                          _process_inherited_machinings(part.inherited_machinings, definition.entities, cut_defs: cut_defs)
+                                                                          _process_machining_group_links(part.machining_group_links, definition.entities, cut_defs: cut_defs)
+                                                                          _process_machining_links(part.machining_links, definition.entities, cut_defs: cut_defs)
+                                                                          unless cut_defs.nil? || cut_defs.empty? || _subtract_machinings(definition, cut_defs)
+                                                                            # Fallback : keep the part intact and draw its machinings as usual
+                                                                            cut_defs.each { |bxf_machining, transformation, entities| _draw_machining(entities, bxf_machining, transformation) }
+                                                                            @_subtract_failed_part_names << part_name
+                                                                          end
+
+                                                                          # Transform definition's entities
+                                                                          definition.entities.transform_entities(PART_FRONT_BACK_SWAP_TRANSFORM_INVERSE, definition.entities.to_a)
+
+                                                                          definition
+                                                                        end
+
+          instance = entities.add_instance(definition, transformation * part_link.transformations.to_t * PART_FRONT_BACK_SWAP_TRANSFORM)
+          if (role = DefinitionAttributes.role_of(definition))
+            instance.layer = _get_front_part_layer if role == DefinitionAttributes::ROLE_FRONT_PANEL
+            instance.layer = _get_back_part_layer if role == DefinitionAttributes::ROLE_BACK_PANEL
+          end
+          instance.material = _get_part_material(part.material)
+
+        end
+
+      end
+
+    end
+
+    def _process_container_links(container_links, entities, transformation: IDENTITY, project_wrapper: nil, cabinet_link_wrapper: nil)
+
+      container_links.each do |container_link|
+
+        container = container_link.container
+
+        _process_function_unit_links(container.function_unit_links, entities, transformation: transformation * container_link.transformations.to_t, project_wrapper: project_wrapper, cabinet_link_wrapper: cabinet_link_wrapper)
+
+      end
+
+    end
+
+    def _process_function_unit_links(function_unit_links, entities, transformation: IDENTITY, project_wrapper: nil, cabinet_link_wrapper: nil)
+
+      function_unit_links.each do |function_unit_link|
+
+        function_unit = function_unit_link.function_unit
+
+        if @dry_run
+          function_unit_entities = nil
+        else
+          function_unit_group = entities.add_group
+          function_unit_group.name = "#{('A'..'Z').take(function_unit_link.zone.column + 1).last}/#{function_unit_link.zone.row + 1}"
+          function_unit_group.definition.description = function_unit.description if function_unit.description
+          function_unit_group.transformation = transformation * function_unit_link.transformations.to_t * FUNCTION_UNIT_UP_TRANSFORM
+          function_unit_entities = function_unit_group.entities
+        end
+
+        function_unit_wrapper = ImportersBxf2FunctionUnitLinkFormulaWrapper.new(function_unit_link)
+
+        _process_part_links(function_unit.part_links, function_unit_entities, transformation: FUNCTION_UNIT_UP_TRANSFORM_INVERSE, project_wrapper: project_wrapper, cabinet_link_wrapper: cabinet_link_wrapper, function_unit_wrapper: function_unit_wrapper)
+
+        unless @dry_run
+
+          article_entities_stacks = {}
+          function_unit.article_links.each do |article_link|
+
+            article = article_link.article
+
+            article_link.quantity.times do
+
+              article_group = function_unit_entities.add_group
+              article_group.name = article.article_number if article.article_number
+              article_group.definition.description = article.description if article.description
+              article_group.material = _get_hardware_material
+              article_entities = article_group.entities
+
+              article.component_numbers.each do |component_number|
+                (article_entities_stacks[component_number] ||= []) << article_entities
+              end
+
+            end
+
+          end
+
+          _process_component_links(function_unit.component_links, function_unit_entities, transformation: FUNCTION_UNIT_UP_TRANSFORM_INVERSE, article_entities_stacks: article_entities_stacks)
+
+        end
+
+      end
+
+    end
+
+    def _process_component_links(component_links, entities, transformation: IDENTITY, article_entities_stacks: {})
+
+      component_links.each do |component_link|
+
+        component = component_link.component
+        article = component.article
+
+        # Try to retrieve the entities from the stack of entities for the related article that is currently being processed
+        if (stack = article_entities_stacks[component.component_number]) && (article_entities = stack.first)
+          stack.rotate!(1)
+          component_entities = article_entities
+        else
+          component_entities = entities
+        end
+
+        definition = (@components_factory ||= {})[component] ||= begin
+
+                                                                   definitions = Sketchup.active_model.definitions
+                                                                   component_name = "#{"#{article.article_number}_" if article}#{component.component_number}"
+                                                                   definition_name = "BLUM_#{component_name}"
+                                                                   definition = definitions[definition_name]
+                                                                   if definition.nil?
+
+                                                                     # base_path = File.dirname(File.expand_path(@bxf_model.path.to_s))
+                                                                     cad_data_path = @_cad_data_dir
+                                                                     file_name = "#{component_name}.dae"
+                                                                     file_path = File.join(cad_data_path, file_name)
+                                                                     file_path = File.join(cad_data_path, " #{file_name}") unless File.exist?(file_path) # Workaround for configurator bug with space on some files
+
+                                                                     fn_create_fake_component = lambda do
+
+                                                                       # Create a simple box instead of the component
+                                                                       definition = definitions.add(definition_name)
+                                                                       _draw_box(definition.entities, Geom::BoundingBox.new.add(
+                                                                         [-10.mm, -10.mm, -10.mm],
+                                                                         [10.mm, 10.mm, 10.mm]
+                                                                       ))
+
+                                                                     end
+
+                                                                     if definitions.respond_to?(:import)  # Backward compatibility with prior to SketchUp 2021.1
+                                                                       begin
+
+                                                                         # Load component from local DAE file
+                                                                         definition = definitions.import(file_path, {
+                                                                           validate_dae: true,
+                                                                           merge_coplanar_faces: true
+                                                                         })
+                                                                         definition.name = definition_name
+
+                                                                       rescue Exception => e
+
+                                                                         puts "Error loading component: #{file_path} #{e.message}"
+                                                                         fn_create_fake_component.call
+
+                                                                       end
+                                                                     else
+                                                                       fn_create_fake_component.call
+                                                                     end
+
+                                                                     # Process machinings
+                                                                     _process_machining_group_links(component.machining_group_links, definition.entities)
+                                                                     _process_machining_links(component.machining_links, definition.entities)
+
+                                                                     # Set description if available
+                                                                     definition.description = component.description if component.description
+
+                                                                   end
+
+                                                                   definition
+                                                                 end
+
+        t = transformation * component_link.transformations.to_t
+
+        # Special case for "Cut" machining that is applyed as scale transformation on the instance
+        if (cut_machining_link = component.machining_links.find { |link| link.machining.is_a?(Bxf::BxfMachiningCut) })
+
+          cut_machining = cut_machining_link.machining
+
+          orientation_v = cut_machining.orientation.to_v.normalize!
+          original_size = cut_machining.original_size.to_l
+          final_size = cut_machining.final_size.to_l
+
+          factor = (original_size - final_size) / original_size
+          scale_x = 1.0 - (orientation_v.x * factor).abs
+          scale_y = 1.0 - (orientation_v.y * factor).abs
+          scale_z = 1.0 - (orientation_v.z * factor).abs
+
+          t *= cut_machining_link.transformations.to_t * Geom::Transformation.scaling(scale_x, scale_y, scale_z)
+
+        else
+
+          # Flag component for "no-scale"
+          definition.behavior.no_scale_mask = 0b1111111 # 0b1111111 = 127 (all disabld)
+
+        end
+
+        instance = component_entities.add_instance(definition, t * COMPONENT_UP_TRANSFORM)
+        instance.layer = _get_hardware_layer
+        instance.material = _get_hardware_material
+
+      end
+
+    end
+
+    def _process_article_links(article_links, entities)
+
+      article_links.each do |article_link|
+      end
+
+    end
+
+    def _process_inherited_machinings(inherited_machinings, entities, cut_defs: nil)
+
+      inherited_machinings.each do |inherited_machining|
+
+        component_link = inherited_machining.component_link
+        component = component_link.component
+
+        machining_group_links = inherited_machining.machining_group_link_references.map { |reference| component.related_machining_group_links.find { |link| link.id == reference.reference_id } }
+        _process_machining_group_links(machining_group_links, entities, transformation: component_link.transformations.to_t, cut_defs: cut_defs)
+
+        machining_links = inherited_machining.machining_link_references.map { |reference| component.related_machining_links.find { |link| link.id == reference.reference_id } }
+        _process_machining_links(machining_links, entities, transformation: component_link.transformations.to_t, cut_defs: cut_defs)
+
+      end
+
+    end
+
+    def _process_machining_group_links(machining_group_links, entities, transformation: IDENTITY, cut_defs: nil)
+
+      machining_group_links.each do |machining_group_link|
+
+        machining_group = machining_group_link.machining_group
+
+        machining_group_links_group = entities.add_group
+        machining_group_links_group.name = machining_group.model_key if machining_group.model_key
+        machining_group_links_group.material = _get_machining_material
+        machining_group_links_entities = machining_group_links_group.entities
+
+        if machining_group.is_a?(Bxf::BxfGridMachining)
+
+          column_count = machining_group.column_count
+          column_distance = machining_group.column_distance.to_l
+          row_count = machining_group.row_count
+          row_distance = machining_group.row_distance.to_l
+
+          t0 = transformation * machining_group_link.transformations.to_t
+
+          column_count.times do |column_index|
+
+            x = column_index * column_distance
+
+            row_count.times do |row_index|
+
+              y = row_index * row_distance
+              t1 = Geom::Transformation.translation(Geom::Vector3d.new(x, y, 0))
+
+              _process_machining_links(machining_group.machining_links, machining_group_links_entities, transformation: t0 * t1, cut_defs: cut_defs)
+
+            end
+
+          end
+
+        else
+
+          _process_machining_links(machining_group.machining_links, machining_group_links_entities, transformation: transformation * machining_group_link.transformations.to_t, cut_defs: cut_defs)
+
+        end
+
+        # All the group's machinings went to the cuts : drop the empty group, a failed subtraction draws them in the parent entities
+        if machining_group_links_entities.length == 0
+          cut_defs.each { |cut_def| cut_def[2] = entities if cut_def[2] == machining_group_links_entities } unless cut_defs.nil?
+          machining_group_links_group.erase!
+        end
+
+      end
+
+    end
+
+    def _process_machining_links(machining_links, entities, transformation: IDENTITY, cut_defs: nil)
+
+      machining_links.each do |machining_link|
+        t = transformation * machining_link.transformations.to_t
+        if !cut_defs.nil? && SUBTRACTABLE_MACHINING_CLASSES.any? { |clazz| machining_link.machining.is_a?(clazz) }
+          cut_defs << [ machining_link.machining, t, entities ]
+        else
+          _draw_machining(entities, machining_link.machining, t)
+        end
+      end
+
+    end
+
+    # Subtracts the given machinings from the part +definition+ (still in its
+    # BXF local space). The operation runs on a temporary instance of the
+    # definition at the model root, with one temporary cut group per machining,
+    # rebuilding the definition in place (make_unique: false). Answers true on
+    # success ; on failure the definition is left untouched.
+    def _subtract_machinings(definition, cut_defs)
+
+      entities = Sketchup.active_model.entities
+      part_instance = entities.add_instance(definition, IDENTITY)
+      cut_groups = cut_defs.map { |bxf_machining, transformation, _|
+        group = entities.add_group
+        group.transformation = transformation
+        _draw_machining_content(group, bxf_machining)
+        group
+      }
+
+      begin
+
+        src_drawing_defs = [ CommonDrawingDecompositionWorker.new([ Sketchup::InstancePath.new([ part_instance ]) ], **SUBTRACT_DRAWING_DEF_PARAMETERS).run ]
+        cut_drawing_defs = cut_groups.map { |group| CommonDrawingDecompositionWorker.new([ Sketchup::InstancePath.new([ group ]) ], **SUBTRACT_DRAWING_DEF_PARAMETERS).run }
+        return false unless (src_drawing_defs + cut_drawing_defs).all? { |drawing_def| drawing_def.is_a?(DrawingDef) }
+
+        result_def = CommonSolidBooleanApplyWorker.new(
+          src_drawing_defs,
+          cut_drawing_defs,
+          operation: CommonSolidBooleanWorker::OPERATION_SUBTRACTION,
+          make_unique: false,
+          wrap_operation: false
+        ).run
+
+        result_def.success?
+
+      rescue Exception => e
+        PLUGIN.dump_exception(e)
+        false
+      ensure
+        cut_groups.each { |group| group.erase! if group.valid? }
+        part_instance.erase! if part_instance.valid?
+      end
+
+    end
+
+    # -- Drawing --
+
+    def _draw_box(entities, bounds)
+
+      kb = Kuix::Bounds3d.new.copy!(bounds)
+      kb.get_sliced_quads.each do |quad|
+        entities.add_face(quad)
+      end
+
+    end
+
+    def _draw_prism(entities, bxf_prism)
+
+      z_value = bxf_prism.z_value.to_l
+
+      btm_pts = bxf_prism.base_points.map(&:to_p)
+      top_pts = bxf_prism.base_points.map { |p| p.to_p.offset(Z_AXIS, z_value) }
+
+      entities.add_face(btm_pts)
+      entities.add_face(top_pts)
+
+      btm_pts.zip(top_pts).each do |btm_pt, top_pt|
+        edge = entities.add_line(btm_pt, top_pt)
+        edge.find_faces if edge
+      end
+
+    end
+
+    def _draw_cylinder(entities, bxf_cylinder)
+
+      radius = bxf_cylinder.radius.to_l
+      z_value = bxf_cylinder.z_value.to_l
+
+      num_segments = Geometrix::ArcUtils.num_segments_by_radius(radius)
+
+      b_edges = entities.add_circle(ORIGIN, Z_AXIS, radius, num_segments)
+      z_edges = entities.add_circle(ORIGIN.offset(Z_AXIS, z_value), Z_AXIS, radius, num_segments)
+
+      b_face = group.entities.add_face(b_edges)
+      b_face.reverse! if b_face.normal.samedirection?(Z_AXIS)
+      z_face = group.entities.add_face(z_edges)
+      z_face.reverse! unless z_face.normal.samedirection?(Z_AXIS)
+
+      b_edges.zip(z_edges).each do |b_edge, z_edge|
+        edge = entities.add_line(b_edge.start.position, z_edge.start.position)
+        if edge
+          edge.smooth = edge.soft = true
+          edge.find_faces
+        end
+      end
+
+    end
+
+    def _draw_machining(entities, bxf_machining, transformation = IDENTITY)
+
+      if (ref_group = (@machining_factory ||= {})[bxf_machining]).nil?
+
+        group = entities.add_group
+        group.transformation = transformation
+        group.layer = _get_machining_layer
+        group.material = _get_machining_material
+
+        # Keep group as reference
+        @machining_factory[bxf_machining] = group
+
+        # Draw content
+        _draw_machining_content(group, bxf_machining)
+
+      else
+        group = entities.add_instance(ref_group.definition, transformation)
+        group.name = ref_group.name
+        group.layer = ref_group.layer
+        group.material = ref_group.material
+      end
+
+    end
+
+    def _draw_machining_content(group, bxf_machining)
+
+      if bxf_machining.is_a?(Bxf::BxfMachiningDrilling)
+
+        group.name = 'MACHINING-DRILLING'
+
+        radius = bxf_machining.radius.to_l
+        depth = bxf_machining.depth.to_l
+
+        depth_v = bxf_machining.depth_orientation.to_v
+
+        num_segments = Geometrix::ArcUtils.num_segments_by_radius(radius, max_num_segments: 12)
+
+        b_edges = group.entities.add_circle(ORIGIN, depth_v, radius, num_segments)
+        z_edges = group.entities.add_circle(ORIGIN.offset(depth_v, depth), depth_v, radius, num_segments)
+
+        b_face = group.entities.add_face(b_edges)
+        b_face.reverse! if b_face.normal.samedirection?(depth_v)
+        z_face = group.entities.add_face(z_edges)
+        z_face.reverse! unless z_face.normal.samedirection?(depth_v)
+
+        b_edges.zip(z_edges).each do |b_edge, z_edge|
+          edge = group.entities.add_line(b_edge.start.position, z_edge.start.position)
+          if edge
+            edge.smooth = edge.soft = true
+            edge.find_faces
+          end
+        end
+
+      elsif bxf_machining.is_a?(Bxf::BxfMachiningRounding)
+
+        # TODO : Currently invalid in the input BXF2 file
+
+        # group.name = 'MACHINING-ROUNDING'
+        #
+        # radius = bxf_machining.radius.to_l
+        # length = bxf_machining.length.to_l
+        #
+        # length_v = bxf_machining.length_orientation.to_v
+        #
+        # num_segments = Geometrix::ArcUtils.num_segments_by_radius(radius, min_num_segments: 4, max_num_segments: 12, arc_angle: Geometrix::HALF_PI)
+        #
+        # btm_arc_origin = ORIGIN
+        #                    .offset(X_AXIS, -radius)
+        #                    .offset(Z_AXIS, -radius)
+        # top_arc_origin = btm_arc_origin.offset(length_v, length)
+        # btm_corner = ORIGIN
+        # top_corner = ORIGIN.offset(length_v, length)
+        #
+        # btm_edge1, _ = group.entities.add_arc(btm_arc_origin, X_AXIS, length_v, radius, -Geometrix::HALF_PI, 0, num_segments)
+        # top_edge1, _ = group.entities.add_arc(top_arc_origin, X_AXIS, length_v, radius, -Geometrix::HALF_PI, 0, num_segments)
+        #
+        # btn_vertices = btm_edge1.curve.vertices
+        # top_vertices = top_edge1.curve.vertices
+        #
+        # group.entities.add_face(btn_vertices.map(&:position) + [ btm_corner ])
+        # group.entities.add_face(top_vertices.map(&:position) + [ top_corner ]).reverse!
+        # group.entities.add_line(btm_corner, top_corner)
+        #
+        # last_index = btn_vertices.size - 1
+        # btn_vertices.each_with_index do |btm_vertex, index|
+        #   top_vertex = top_vertices[index]
+        #   smooth_soft = index > 0 && index < last_index
+        #   edge = group.entities.add_line(btm_vertex.position, top_vertex.position)
+        #   if edge
+        #     edge.smooth = edge.soft = smooth_soft
+        #     edge.find_faces
+        #   end
+        # end
+
+      elsif bxf_machining.is_a?(Bxf::BxfMachiningRabbet)
+
+        group.name = 'MACHINING-RABBET'
+
+        radius = bxf_machining.radius.to_l
+        length = bxf_machining.length.to_l
+        depth = bxf_machining.depth.to_l
+
+        length_v = bxf_machining.length_orientation.to_v
+        depth_v = bxf_machining.depth_orientation.to_v
+        width_v = length_v.cross(depth_v)
+
+        bounds = Geom::BoundingBox.new
+        bounds.add(
+          ORIGIN.offset(width_v, -radius), # P0
+          ORIGIN.offset(width_v, radius)
+                .offset(depth_v, depth)
+                .offset(length_v, length)  # P2+Z
+        )
+
+        _draw_box(group.entities, bounds)
+
+      elsif bxf_machining.is_a?(Bxf::BxfMachiningGroove)
+
+        group.name = 'MACHINING-GROOVE'
+
+        length_v = bxf_machining.length_orientation.to_v
+        depth_v = bxf_machining.depth_orientation.to_v
+        width_v = length_v.cross(depth_v)
+
+        bounds = Geom::BoundingBox.new
+        bounds.add(
+          ORIGIN.offset(width_v, -bxf_machining.radius.to_l), # P0
+          ORIGIN.offset(width_v, bxf_machining.radius.to_l)
+                .offset(depth_v, bxf_machining.depth.to_l)
+                .offset(length_v, bxf_machining.length.to_l)  # P2+Z
+        )
+
+        _draw_box(group.entities, bounds)
+
+      elsif bxf_machining.is_a?(Bxf::BxfMachiningRoundedGroove)
+
+        # TODO : Create a real rounded groove
+
+        group.name = 'MACHINING-ROUNDED-GROOVE'
+
+        length_v = bxf_machining.length_orientation.to_v
+        depth_v = bxf_machining.depth_orientation.to_v
+        width_v = length_v.cross(depth_v)
+
+        bounds = Geom::BoundingBox.new
+        bounds.add(
+          ORIGIN.offset(width_v, -bxf_machining.radius.to_l), # P0
+          ORIGIN.offset(width_v, bxf_machining.radius.to_l)
+                .offset(depth_v, bxf_machining.depth.to_l)
+                .offset(length_v, bxf_machining.length.to_l)  # P2+Z
+        )
+
+        _draw_box(group.entities, bounds)
+
+      elsif bxf_machining.is_a?(Bxf::BxfMachiningGlue)
+
+        group.name = 'MACHINING-GLUE'
+
+        length_v = bxf_machining.length_orientation.to_v
+        thickness_v = bxf_machining.thickness_orientation.to_v
+        width_v = length_v.cross(thickness_v)
+
+        radius = bxf_machining.width.to_l / 2
+
+        bounds = Geom::BoundingBox.new
+        bounds.add(
+          ORIGIN.offset(width_v, -radius), # P0
+          ORIGIN.offset(width_v, radius)
+                .offset(thickness_v, bxf_machining.thickness.to_l)
+                .offset(length_v, bxf_machining.length.to_l)  # P2+Z
+        )
+
+        _draw_box(group.entities, bounds)
+
+      elsif bxf_machining.is_a?(Bxf::BxfMachiningChamfer)
+
+        group.name = 'MACHINING-CHAMFER'
+
+        length_v = bxf_machining.length_orientation.to_v
+        length = bxf_machining.length.to_l
+
+        pts0 = [
+          ORIGIN,
+          ORIGIN.offset(bxf_machining.distance1_orientation.to_v, bxf_machining.distance1.to_l),
+          ORIGIN.offset(bxf_machining.distance2_orientation.to_v, bxf_machining.distance2.to_l)
+        ]
+        pts1 = pts0.map { |pt| pt.offset(length_v, length) }
+
+        group.entities.add_face(pts0)
+        group.entities.add_face(pts1)
+        pts0.zip(pts1).each { |pt0, pt1| group.entities.add_edges(pt0, pt1).each(&:find_faces) }
+
+      end
+
+    end
+
+    # -- Materials --
+
+    def _get_part_material(bxf_material)
+      return nil unless bxf_material.is_a?(Bxf::BxfMaterial)
+      case bxf_material.name
+      when 'wood'
+        name = @part_wood_material_name
+        color = WOOD_MATERIAL_COLOR
+        grained = bxf_material.is_a?(Bxf::BxfWoodMaterial) && bxf_material.grain_direction.to_v.valid?   # Not implemented yet in Blum configurators
+      when 'aluminium'
+        name = @part_aluminium_material_name
+        color = ALUMINIUM_MATERIAL_COLOR
+        grained = false
+      when 'glass'
+        name = @part_glass_material_name
+        color = GLASS_MATERIAL_COLOR
+        grained = false
+      else
+        name = nil
+        color = nil
+        grained = false
+      end
+      return nil unless name.is_a?(String) && !name.empty?
+      material = Sketchup.active_model.materials[name]
+      if material.nil?
+
+        # Create a new TYPE_SHEET_GOOD material for the part
+        material = Sketchup.active_model.materials.add(name)
+        material.color = color
+        material.alpha = color.alpha / 255.0  if color
+
+        ma = MaterialAttributes.new(material, false, MaterialAttributes::TYPE_SHEET_GOOD)
+        ma.grained = grained
+        ma.write_to_attributes
+
+      end
+      material
+    end
+
+    def _get_machining_material
+      return nil unless @machining_material_name.is_a?(String) && !@machining_material_name.empty?
+      material = Sketchup.active_model.materials[@machining_material_name]
+      if material.nil?
+
+        # Create a new TYPE_MACHINING material for the machining
+        material = Sketchup.active_model.materials.add(@machining_material_name)
+        material.color = '#0068ff'
+        ma = MaterialAttributes.new(material)
+        ma.type = MaterialAttributes::TYPE_MACHINING
+        ma.write_to_attributes
+
+      end
+      material
+    end
+
+    def _get_hardware_material
+      return nil unless @hardware_material_name.is_a?(String) && !@hardware_material_name.empty?
+      material = Sketchup.active_model.materials[@hardware_material_name]
+      if material.nil?
+
+        # Create a new TYPE_HARWARE material for the component
+        material = Sketchup.active_model.materials.add(@hardware_material_name)
+        material.color = BLUM_COLOR
+        ma = MaterialAttributes.new(material)
+        ma.type = MaterialAttributes::TYPE_HARDWARE
+        ma.write_to_attributes
+
+      end
+      material
+    end
+
+    # -- Roles --
+
+    def _get_part_role(part)
+      model_key = part.model_key.to_s
+      return DefinitionAttributes::ROLE_FRONT_PANEL if model_key.start_with?(FRONT_PANEL_MODEL_KEY_PREFIX)
+      return DefinitionAttributes::ROLE_BACK_PANEL if model_key == BACK_PANEL_MODEL_KEY
+      nil
+    end
+
+    # -- Layers --
+
+    def _get_front_part_layer
+      return nil unless @front_part_layer_name.is_a?(String) && !@front_part_layer_name.empty?
+      layer = Sketchup.active_model.layers[@front_part_layer_name]
+      if layer.nil?
+
+        layer = Sketchup.active_model.layers.add(@front_part_layer_name)
+        layer.color = '#05d6a0'
+
+      end
+      layer
+    end
+
+    def _get_back_part_layer
+      return nil unless @back_part_layer_name.is_a?(String) && !@back_part_layer_name.empty?
+      layer = Sketchup.active_model.layers[@back_part_layer_name]
+      if layer.nil?
+
+        layer = Sketchup.active_model.layers.add(@back_part_layer_name)
+        layer.color = '#9b59b6'
+
+      end
+      layer
+    end
+
+    def _get_machining_layer
+      return nil unless @machining_layer_name.is_a?(String) && !@machining_layer_name.empty?
+      layer = Sketchup.active_model.layers[@machining_layer_name]
+      if layer.nil?
+
+        layer = Sketchup.active_model.layers.add(@machining_layer_name)
+        layer.color = '#0068ff'
+
+      end
+      layer
+    end
+
+    def _get_hardware_layer
+      return nil unless @hardware_layer_name.is_a?(String) && !@hardware_layer_name.empty?
+      layer = Sketchup.active_model.layers[@hardware_layer_name]
+      if layer.nil?
+
+        layer = Sketchup.active_model.layers.add(@hardware_layer_name)
+        layer.color = BLUM_COLOR
+
+      end
+      layer
+    end
+
+  end
+
+  # -----
+
+  class ImportersBxf2FormulaWrapper < FormulaWrapper
+
+    def initialize(bxf_object)
+
+      @bxf_object = bxf_object
+
+    end
+
+    def description
+      @bxf_object.description.to_s
+    end
+
+    def +(value)
+      if value.is_a?(String)
+        self.to_s + value
+      end
+    end
+
+    def to_s
+      return '' if @bxf_object.nil?
+      self.description
+    end
+
+    protected
+
+    def _get_parameter_integer(bxf_parameter)
+      return nil unless bxf_parameter.is_a?(Bxf::BxfParameter)
+      bxf_parameter.value.to_i
+    end
+
+    def _get_parameter_length(bxf_parameter)
+      return nil unless bxf_parameter.is_a?(Bxf::BxfParameter)
+      Bxf::BxfLength.new(bxf_parameter.model)
+                    .read(bxf_parameter.value.to_s)
+                    .to_l
+    end
+
+  end
+
+  class ImportersBxf2NodeFormulaWrapper < ImportersBxf2FormulaWrapper
+
+    def initialize(bxf_node)
+      super
+    end
+
+  end
+
+  class ImportersBxf2ZonableFormulaWrapper < ImportersBxf2FormulaWrapper
+
+    def initialize(bxf_node)
+      super
+    end
+
+    def zone
+      column = nil
+      row = nil
+      if @bxf_object.respond_to?(:zone) && @bxf_object.zone.is_a?(Bxf::BxfZone) && @bxf_object.zone.valid?
+        # Extracted from <zone> tag
+        column = "#{('A'..'Z').take(@bxf_object.zone.column + 1).last}"
+        row = "#{@bxf_object.zone.row + 1}"
+      else
+        if (zone = _get_parameter_integer(@bxf_object.parameters['zone']))
+          # Extracted from <parameter> tag
+          column = "#{('A'..'Z').take(zone).last}"
+        end
+        if (zone_position = _get_parameter_integer(@bxf_object.parameters['zonePosition']))
+          # Extracted from <parameter> tag
+          row = "#{zone_position}"
+        end
+      end
+      if column && row
+        return ImportersBxf2ZoneFormulaWrapper.new(column, row)
+      end
+      nil
+    end
+
+  end
+
+  class ImportersBxf2CabinetLinkFormulaWrapper < ImportersBxf2FormulaWrapper
+
+    def initialize(bxf_cabinet_link)
+      super
+    end
+
+    def width
+      width = _get_parameter_length(@bxf_object.parameters['outerwidth'])
+      LengthFormulaWrapper.new(width ? width : 0)
+    end
+
+    def height
+      height = _get_parameter_length(@bxf_object.parameters['height'])
+      LengthFormulaWrapper.new(height ? height : 0)
+    end
+
+    def depth
+      depth = _get_parameter_length(@bxf_object.parameters['depth'])
+      LengthFormulaWrapper.new(depth ? depth : 0)
+    end
+
+  end
+
+  class ImportersBxf2PartLinkFormulaWrapper < ImportersBxf2ZonableFormulaWrapper
+
+    def initialize(bxf_part_link, function_unit_wrapper)
+      super(bxf_part_link)
+      @function_unit_wrapper = function_unit_wrapper
+    end
+
+    def model_key
+      if (part = @bxf_object.part).is_a?(Bxf::BxfPart)
+        part.model_key.to_s
+      end
+    end
+
+    def front?
+      model_key.to_s.start_with?(ImportersBxf2ImportWorker::FRONT_PANEL_MODEL_KEY_PREFIX)
+    end
+
+    def function_unit
+      @function_unit_wrapper
+    end
+
+  end
+
+  class ImportersBxf2FunctionUnitLinkFormulaWrapper < ImportersBxf2ZonableFormulaWrapper
+
+    def initialize(bxf_function_unit_link)
+      super
+    end
+
+    def to_s
+      return '' if @bxf_object.nil?
+      zone.to_s
+    end
+
+  end
+
+  class ImportersBxf2ZoneFormulaWrapper < FormulaWrapper
+
+    def initialize(column, row)
+      super()
+      @column = column
+      @row = row
+    end
+
+    def column
+      @column
+    end
+
+    def row
+      @row
+    end
+
+    def to_s
+      "#{@column}/#{@row}"
+    end
+
+  end
+
+  class ImportersBxf2PartData < FormulaData
+
+    def initialize(
+
+      part:,
+      project:,
+      cabinet:
+
+    )
+
+      @part = part
+      @project = project
+      @cabinet = cabinet
+
+    end
+
+  end
+
+  require_relative '../../../tool/smart_tool'
+
+  class ImportersBxf2PlaceTool < SmartTool
+
+    ACTION_PLACE = 0
+
+    ACTIONS = [
+      {
+        :action => ACTION_PLACE,
+      }
+    ].freeze
+
+    attr_reader :bxf_model, :callback
+
+    def initialize(bxf_model, &callback)
+      super()
+
+      @bxf_model = bxf_model
+      @callback = callback
+
+    end
+
+    def get_stripped_name
+      'importers_bxf2'
+    end
+
+    # -- Actions --
+
+    def get_action_defs
+      ACTIONS
+    end
+
+    # -- Events --
+
+    def onActionChanged(action)
+
+      case action
+      when ACTION_PLACE
+        set_action_handler(ImportersBxf2PlaceActionHandler.new(self))
+
+      end
+
+      super
+    end
+
+    def onViewChanged(view)
+      super
+      refresh
+    end
+
+    def onTransactionUndo(model)
+      super
+      refresh
+    end
+
+  end
+
+  class ImportersBxf2PlaceActionHandler < SmartActionHandler
+
+    def initialize(tool)
+      super(ImportersBxf2PlaceTool::ACTION_PLACE, tool)
+
+      @mouse_ip = SmartInputPoint.new(tool)
+
+      @box_bounds = tool.bxf_model.bounds
+
+    end
+
+    # -- STATE --
+
+    def get_state_status(state)
+      PLUGIN.get_i18n_string("tool.smart_#{@tool.get_stripped_name}.action_#{@action}_status") + '.'
+    end
+
+    # -----
+
+    def onToolCancel(tool, reason, view)
+      super
+      tool.callback.call(true, nil)
+    end
+
+    def onToolMouseMove(tool, flags, x, y, view)
+      return true if super
+
+      @mouse_ip.pick(view, x, y)
+
+      tool.clear_all_3d
+
+      _preview(view)
+
+      view.tooltip = @mouse_ip.tooltip
+      view.invalidate
+
+    end
+
+    def onToolMouseLeave(tool, view)
+      tool.clear_all_3d
+      @mouse_ip.clear
+      view.tooltip = ''
+      super
+    end
+
+    def onToolLButtonUp(tool, flags, x, y, view)
+      t = _get_transformation
+      tool.callback.call(false, t * Geom::Transformation.translation(@mouse_ip.position.transform(t.inverse)))
+    end
+
+    # -----
+
+    def draw(view)
+      super
+      @mouse_ip.draw(view) if @mouse_ip.valid?
+    end
+
+    # -----
+
+    private
+
+    def _get_transformation
+      Geom::Transformation.axes(ORIGIN.transform(_get_edit_transformation), _get_active_x_axis, _get_active_y_axis, _get_active_z_axis) * ImportersBxf2ImportWorker::NODE_UP_TRANSFORM
+    end
+
+    def _preview(view)
+
+      t = _get_transformation
+      ti = t.inverse
+
+      p = @mouse_ip.position.transform(ti)
+
+      k_box = Kuix::BoxMotif3d.new
+      k_box.bounds.copy!(@box_bounds)
+      k_box.bounds.translate!(*p)
+      k_box.line_width = 1.0
+      k_box.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
+      k_box.color = Kuix::COLOR_BLACK
+      k_box.transformation = t
+      @tool.append_3d(k_box)
+
+      k_box = Kuix::BoxFillMotif3d.new
+      k_box.bounds.copy!(@box_bounds)
+      k_box.bounds.origin.translate!(*p)
+      k_box.color = ColorUtils.color_translucent(ImportersBxf2ImportWorker::BLUM_COLOR, 0.3)
+      k_box.transformation = t
+      @tool.append_3d(k_box)
+
+    end
+
+  end
+
+  class ImportersBxf2FormulaError < StandardError
+
+    attr_reader :error_type
+
+    def initialize(message, error_type = nil)
+      super(message)
+      @error_type = error_type
+    end
+
+  end
+
+end

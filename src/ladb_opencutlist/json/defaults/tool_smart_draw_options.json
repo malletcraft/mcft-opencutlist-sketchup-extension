@@ -1,6 +1,10 @@
 {
   "_preprocessors": {
-    "shape_offset": 5 /* PRESETS_PREPROCESSOR_D_NEGATIVE_ALLOWED */
+    "thickness": 1, /* PRESETS_PREPROCESSOR_D */
+    "shape_offset": 5, /* PRESETS_PREPROCESSOR_D_NEGATIVE_ALLOWED */
+    "front_panel_offset": 1, /* PRESETS_PREPROCESSOR_D */
+    "groove_depth": 1, /* PRESETS_PREPROCESSOR_D */
+    "groove_setback": 1 /* PRESETS_PREPROCESSOR_D */
   },
   "action_0": { /* ACTION_DRAW_RECTANGLE */
     "shape_offset": "0",
@@ -8,6 +12,8 @@
     "rectangle_centered": false,
     "measure_from_vertex": false,
     "pull_centered": false,
+    "draw_in": false,
+    "pick_material": false,
     "ask_name": false
   },
   "action_1": { /* ACTION_DRAW_CIRCLE */
@@ -18,6 +24,8 @@
     "measure_from_vertex": false,
     "measure_from_diameter": false,
     "pull_centered": false,
+    "draw_in": false,
+    "pick_material": false,
     "ask_name": false
   },
   "action_2": { /* ACTION_DRAW_POLYGON */
@@ -26,6 +34,8 @@
     "measure_from_vertex": false,
     "measure_reversed": false,
     "pull_centered": false,
+    "draw_in": false,
+    "pick_material": false,
     "ask_name": false
   }
 }

@@ -248,7 +248,7 @@
                         return false;
                     })
                     .on('contextmenu', function (e) {
-                        if (node.type > 0) {    // > TYPE_MODEL
+                        if (node.native_type > 0) {    // > TYPE_MODEL
                             $editedRow = $row;
                             fnMouseEnter();
                             let items = [];
@@ -340,7 +340,10 @@
                                                     { name: 'layer', type: 'string' },
                                                     { name: 'component_definition', type: 'component_definition' },
                                                     { name: 'component_instance', type: 'component_instance' },
-                                                ])
+                                                ]),
+                                                snippetDefs: [
+                                                    { name: i18next.t('tab.outliner.snippet.name_size'), value: '@name + " - " + @bbox_length + " x " + @bbox_width' },
+                                                ]
                                             })
                                             .on('change', function () {
 
@@ -660,6 +663,13 @@
                 if (JSON.stringify(editedNode.material) !== JSON.stringify(editedNodes[i].material)) {
                     editedNode.material = MULTIPLE_VALUE;
                 }
+                if (editedNode.type !== 0) {   // 0 = TYPE_MODEL
+                    if (editedNode.is_grain_group !== editedNodes[i].is_grain_group) {
+                        editedNode.is_grain_group = MULTIPLE_VALUE
+                    }
+                } else {
+                    delete editedNode.is_grain_group;
+                }
                 if (editedNode.type === 2 && editedNodes[i].type === 2 || editedNode.type === 3 && editedNodes[i].type === 3) {   // 2 = TYPE_COMPONENT, 3 = TYPE_PART
                     if (editedNode.definition_name !== editedNodes[i].definition_name) {
                         delete editedNode.definition_name;
@@ -679,6 +689,33 @@
                     delete editedNode.description;
                     delete editedNode.url;
                     delete editedNode.tags;
+                }
+                if (editedNode.type !== 0) {    // 0 = TYPE_MODEL
+                    if (editedNode.is2d !== editedNodes[i].is2d) {
+                        editedNode.is2d = MULTIPLE_VALUE;
+                    }
+                    if (editedNode.snapto !== editedNodes[i].snapto) {
+                        editedNode.snapto = MULTIPLE_VALUE;
+                    }
+                    if (editedNode.always_face_camera !== editedNodes[i].always_face_camera) {
+                        editedNode.always_face_camera = MULTIPLE_VALUE;
+                    }
+                    if (editedNode.cuts_opening !== editedNodes[i].cuts_opening) {
+                        editedNode.cuts_opening = MULTIPLE_VALUE;
+                    }
+                    if (editedNode.shadows_face_sun !== editedNodes[i].shadows_face_sun) {
+                        editedNode.shadows_face_sun = MULTIPLE_VALUE;
+                    }
+                    if (editedNode.no_scale_mask !== editedNodes[i].no_scale_mask) {
+                        editedNode.no_scale_mask = MULTIPLE_VALUE;
+                    }
+                } else {
+                    delete editedNode.is2d;
+                    delete editedNode.snapto;
+                    delete editedNode.always_face_camera;
+                    delete editedNode.cuts_opening;
+                    delete editedNode.shadows_face_sun;
+                    delete editedNode.no_scale_mask;
                 }
             }
 
@@ -713,11 +750,18 @@
                 const $tabs = $('.modal-header a[data-toggle="tab"]', $modal);
                 const $inputName = $('#ladb_outliner_node_input_name', $modal);
                 const $selectMaterialName = $('#ladb_outliner_node_select_material_name', $modal);
+                const $inputIsGrainGroup = $('#ladb_outliner_node_input_is_grain_group', $modal);
                 const $inputDefinitionName = $('#ladb_outliner_node_input_definition_name', $modal);
                 const $inputLayerName = $('#ladb_outliner_node_input_layer_name', $modal);
                 const $inputDescription = $('#ladb_outliner_node_input_description', $modal);
                 const $inputUrl = $('#ladb_outliner_node_input_url', $modal);
                 const $inputTags = $('#ladb_outliner_node_input_tags', $modal);
+                const $selectSnapto = $('#ladb_outliner_node_select_snapto', $modal);
+                const $inputCutsOpening = $('#ladb_outliner_node_input_cuts_opening', $modal);
+                const $inputAlwaysFaceCamera = $('#ladb_outliner_node_input_always_face_camera', $modal);
+                const $inputShadowsFaceSun = $('#ladb_outliner_node_input_shadows_face_sun', $modal);
+                const $inputsNoScaleMask = Array.from(Array(7).keys()).map(function (i) { return $('#ladb_outliner_node_input_no_scale_mask_' + i, $modal); })
+                const $btnsModalFooterCollapseHandle = $('.modal-footer-collapse-handle-btn', $modal)
                 const $btnErase = $('#ladb_outliner_node_erase', $modal);
                 const $btnExplode = $('#ladb_outliner_node_explode', $modal);
                 const $btnUpdate = $('#ladb_outliner_node_update', $modal);
@@ -731,10 +775,39 @@
                     }
                     return false;
                 };
+                const fnUpdateBehaviorFields = function() {
+                    const is2d = $selectSnapto.val() !== '';
+                    const isAlwaysFaceCamera = $inputAlwaysFaceCamera.is(':checked');
+                    $inputCutsOpening.prop('disabled', !is2d);
+                    if (!is2d) $inputCutsOpening.prop('checked', false);
+                    $inputAlwaysFaceCamera.prop('disabled', is2d);
+                    if (is2d) $inputAlwaysFaceCamera.prop('checked', false);
+                    $inputShadowsFaceSun.prop('disabled', is2d || !isAlwaysFaceCamera);
+                    if (is2d || !isAlwaysFaceCamera) $inputShadowsFaceSun.prop('checked', false);
+                }
 
                 // Bind tabs
                 $tabs.on('shown.bs.tab', function (e) {
                     that.lastEditNodeTab = $(e.target).attr('href').substring('#tab_edit_node_'.length);
+                });
+
+                // Bind collapses
+                $btnsModalFooterCollapseHandle.each(function () {
+                    const $btn = $(this);
+                    $('#' + $btn.data('collapse-id'))
+                        .on('shown.bs.collapse', function () {
+                            $('i', $btn)
+                                .removeClass('ladb-opencutlist-icon-arrow-down')
+                                .addClass('ladb-opencutlist-icon-arrow-up')
+                            ;
+                        })
+                        .on('hidden.bs.collapse', function () {
+                            $('i', $btn)
+                                .addClass('ladb-opencutlist-icon-arrow-down')
+                                .removeClass('ladb-opencutlist-icon-arrow-up')
+                            ;
+                        })
+                    ;
                 });
 
                 // Bind input
@@ -758,18 +831,34 @@
                 $inputTags.ladbTextinputTokenfield({
                     unique: true
                 });
+                $inputAlwaysFaceCamera
+                    .on('change', function() { fnUpdateBehaviorFields(); });
 
                 // Bind select
                 if (editedNode.material) {
                     $selectMaterialName.val(editedNode.material === MULTIPLE_VALUE ? MULTIPLE_VALUE : editedNode.material.name);
                 }
                 $selectMaterialName
-                    .selectpicker(SELECT_PICKER_OPTIONS)
+                    .selectpicker(SELECT_PICKER_TABS_OPTIONS)
                     .on('changed.bs.select', function (e, clickedIndex, isSelected, previousValue) {
                         fnNewCheck($(this));
                     });
+                if (editedNode.is2d) {
+                    $selectSnapto.val(editedNode.snapto === MULTIPLE_VALUE ? MULTIPLE_VALUE : editedNode.snapto);
+                }
+                $selectSnapto
+                    .selectpicker(SELECT_PICKER_TABS_OPTIONS)
+                    .on('changed.bs.select', function (e, clickedIndex, isSelected, previousValue) {
+                        fnUpdateBehaviorFields();
+                    });
+
+                fnUpdateBehaviorFields();
 
                 // Bind buttons
+                $btnsModalFooterCollapseHandle.on('click', function () {
+                    $('#' + $(this).data('collapse-id')).collapse('toggle');
+                    $(this).blur();
+                });
                 $btnErase.on('click', function () {
                     that.eraseNode(editedNode, function () {
 
@@ -814,6 +903,9 @@
                                 nodeData.material_name = editedNodes[i].material_name;
                             }
                         }
+                        if ($inputIsGrainGroup.length > 0) {
+                            nodeData.is_grain_group = $inputIsGrainGroup.is(':checked');
+                        }
                         if ($inputDefinitionName.length > 0) {
                             if(!$inputDefinitionName.ladbTextinputText('isMultiple')) {
                                 nodeData.definition_name = $inputDefinitionName.val();
@@ -840,6 +932,36 @@
                                 return !editedNode.tags.includes(tag)
                             });
                             nodeData.tags = untouchTags.concat($inputTags.tokenfield('getTokensList').split(';'));
+                        }
+
+                        if ($selectSnapto.length > 0) {
+                            if ($selectSnapto.val() !== MULTIPLE_VALUE) {
+                                if ($selectSnapto.val() === '') {
+                                    nodeData.is2d = false;
+                                    nodeData.snapto = 0;
+                                } else {
+                                    nodeData.is2d = true;
+                                    nodeData.snapto = parseInt($selectSnapto.val());
+                                }
+                            } else {
+                                nodeData.snapto = editedNodes[i].snapto;
+                            }
+                        }
+                        if ($inputCutsOpening.length > 0) {
+                            nodeData.cuts_opening = $inputCutsOpening.is(':checked');
+                        }
+                        if ($inputAlwaysFaceCamera.length > 0) {
+                            nodeData.always_face_camera = $inputAlwaysFaceCamera.is(':checked');
+                        }
+                        if ($inputShadowsFaceSun.length > 0) {
+                            nodeData.shadows_face_sun = $inputShadowsFaceSun.is(':checked');
+                        }
+                        if ($inputsNoScaleMask.length > 0) {
+                            let no_scale_mask = [];
+                            Array.from(Array(7).keys()).forEach(function (i) {
+                                no_scale_mask.push(!$inputsNoScaleMask[i].is(':checked'));
+                            });
+                            nodeData.no_scale_mask = no_scale_mask;
                         }
 
                     }
@@ -1183,7 +1305,7 @@
         this.$element
             .on('shown.ladb.tab', function () {
                 rubyCallCommand('outliner_start_observing');
-                if (this.rootNode != null) {
+                if (that.rootNode != null) {
                     that.generateOutliner();
                 }
             })

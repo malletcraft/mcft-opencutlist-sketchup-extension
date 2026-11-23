@@ -55,10 +55,10 @@
                 fnFetchOptions: fnFetchOptions,
                 fnFillInputs: fnFillInputs
             });
-            $selectFileFormat.selectpicker(SELECT_PICKER_OPTIONS);
-            $selectUnit.selectpicker(SELECT_PICKER_OPTIONS);
-            $selectAnchor.selectpicker(SELECT_PICKER_OPTIONS);
-            $selectSwitchYZ.selectpicker(SELECT_PICKER_OPTIONS);
+            $selectFileFormat.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
+            $selectUnit.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
+            $selectAnchor.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
+            $selectSwitchYZ.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
 
             fnFillInputs(options);
 
@@ -86,14 +86,14 @@
     function Plugin(option, params) {
         return this.each(function () {
             const $this = $(this);
-            let data = $this.data('ladb.tab.plugin');
+            let data = $this.data('ladb.modal.plugin');
             const options = $.extend({}, LadbModalSmartExportToolAction0.DEFAULTS, $this.data(), typeof option === 'object' && option);
 
             if (!data) {
                 if (undefined === options.dialog) {
                     throw 'dialog option is mandatory.';
                 }
-                $this.data('ladb.tab.plugin', (data = new LadbModalSmartExportToolAction0(this, options, options.dialog)));
+                $this.data('ladb.modal.plugin', (data = new LadbModalSmartExportToolAction0(this, options, options.dialog)));
             }
             if (typeof option === 'string') {
                 data[option].apply(data, Array.isArray(params) ? params : [ params ])

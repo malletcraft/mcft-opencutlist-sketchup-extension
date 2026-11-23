@@ -30,6 +30,8 @@
             // Fetch UI elements
             const $widgetPreset = $('.ladb-widget-preset', that.$element);
             const $selectFileFormat = $('#ladb_select_file_format', that.$element);
+            const $formGroupDxf = $('.ladb-form-group-dxf', that.$element);
+            const $selectDxfDepthToZ = $('#ladb_select_dxf_depth_to_z', that.$element);
             const $selectUnit = $('#ladb_select_unit', that.$element);
             const $selectFaces = $('#ladb_select_faces', that.$element);
             const $selectAnchor = $('#ladb_select_anchor', that.$element);
@@ -52,6 +54,7 @@
 
             const fnFetchOptions = function (options) {
                 options.file_format = $selectFileFormat.val();
+                options.dxf_depth_to_z = $selectDxfDepthToZ.val() === '1';
                 options.unit = parseInt($selectUnit.val());
                 options.faces = parseInt($selectFaces.val());
                 options.anchor = $selectAnchor.val() === '1';
@@ -70,6 +73,7 @@
             };
             const fnFillInputs = function (options) {
                 $selectFileFormat.selectpicker('val', options.file_format);
+                $selectDxfDepthToZ.selectpicker('val', options.dxf_depth_to_z ? '1' : '0');
                 $selectUnit.selectpicker('val', options.unit);
                 $selectFaces.selectpicker('val', options.faces);
                 $selectAnchor.selectpicker('val', options.anchor ? '1' : '0');
@@ -91,6 +95,7 @@
                 const isDxf = $selectFileFormat.val() === 'dxf';
                 const isMergeHoles = $selectMergeHoles.val() === '1';
                 const isIncludePaths = $selectIncludePaths.val() === '1';
+                if (isDxf) $formGroupDxf.show(); else $formGroupDxf.hide();
                 if (isMergeHoles) $formGroupMergeHolesOverflow.show(); else $formGroupMergeHolesOverflow.hide();
                 if (!isMergeHoles) $formGroupPartsHoles.hide(); else $formGroupPartsHoles.show();
                 if (!isIncludePaths) $formGroupPartsPaths.hide(); else $formGroupPartsPaths.show();
@@ -111,20 +116,21 @@
                 fnFillInputs: fnFillInputs
             });
             $selectFileFormat
-                .selectpicker(SELECT_PICKER_OPTIONS)
+                .selectpicker(SELECT_PICKER_MODAL_OPTIONS)
                 .on('changed.bs.select', fnUpdateFieldsVisibility)
             ;
-            $selectUnit.selectpicker(SELECT_PICKER_OPTIONS);
-            $selectFaces.selectpicker(SELECT_PICKER_OPTIONS);
-            $selectAnchor.selectpicker(SELECT_PICKER_OPTIONS);
-            $selectSmoothing.selectpicker(SELECT_PICKER_OPTIONS);
+            $selectDxfDepthToZ.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
+            $selectUnit.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
+            $selectFaces.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
+            $selectAnchor.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
+            $selectSmoothing.selectpicker(SELECT_PICKER_MODAL_OPTIONS);
             $selectMergeHoles
-                .selectpicker(SELECT_PICKER_OPTIONS)
+                .selectpicker(SELECT_PICKER_MODAL_OPTIONS)
                 .on('changed.bs.select', fnUpdateFieldsVisibility)
             ;
             $inputMergeHolesOverflow.ladbTextinputDimension();
             $selectIncludePaths
-                .selectpicker(SELECT_PICKER_OPTIONS)
+                .selectpicker(SELECT_PICKER_MODAL_OPTIONS)
                 .on('changed.bs.select', fnUpdateFieldsVisibility)
             ;
             $inputPartsStrokeColor.ladbTextinputColor(TEXTINPUT_COLOR_OPTIONS);
@@ -162,14 +168,14 @@
     function Plugin(option, params) {
         return this.each(function () {
             const $this = $(this);
-            let data = $this.data('ladb.tab.plugin');
+            let data = $this.data('ladb.modal.plugin');
             const options = $.extend({}, LadbModalSmartExportToolAction1.DEFAULTS, $this.data(), typeof option === 'object' && option);
 
             if (!data) {
                 if (undefined === options.dialog) {
                     throw 'dialog option is mandatory.';
                 }
-                $this.data('ladb.tab.plugin', (data = new LadbModalSmartExportToolAction1(this, options, options.dialog)));
+                $this.data('ladb.modal.plugin', (data = new LadbModalSmartExportToolAction1(this, options, options.dialog)));
             }
             if (typeof option === 'string') {
                 data[option].apply(data, Array.isArray(params) ? params : [ params ])

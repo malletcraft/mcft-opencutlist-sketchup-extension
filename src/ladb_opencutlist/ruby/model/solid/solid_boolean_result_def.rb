@@ -1,0 +1,861 @@
+module Ladb::OpenCutList
+
+  require_relative '../data_container'
+  require_relative 'solid_mesh_def'
+
+  # Result of a boolean operation : fragments on success, i18n error tuples otherwise.
+  class SolidBooleanResultDef < DataContainer
+
+    attr_reader :errors,              # Array of i18n tuples [ key, vars ] ; empty on success
+                :error_drawing_defs,  # Array<DrawingDef> the operands held responsible for the errors, deduplicated ; empty when no error is attributable to one
+                :fragment_defs,       # Array<SolidFragmentDef>
+                :curve_info_defs,     # Array<SolidCurveInfoDef> collected from all operands
+                :created_entities     # Entities holding the result, filled by the apply phase
+
+    def initialize
+      @errors = []
+      @error_drawing_defs = []
+      @fragment_defs = []
+      @curve_info_defs = []
+      @created_entities = []
+    end
+
+    def success?
+      @errors.empty?
+    end
+
+    # Appends the errors of a raw Meshy output as i18n tuples : the native
+    # exception if any, otherwise the structured per-operand validation
+    # errors. Returns true when this result carries errors (including ones
+    # appended before this call).
+    #
+    # Each validation error names the operand it was found on - "role", the
+    # Meshy input list it belongs to ("src" or "cut"), and "index", its
+    # position in that list. The given block resolves that pair to the
+    # DrawingDef the operand was built from, or nil when it is not one (a
+    # computed operand such as the cavity worker's envelope, or an unvalidated
+    # pass whose lists no longer match the caller's drawing defs). A resolved
+    # culprit lands in #error_drawing_defs, and its name in the message.
+    #
+    # The operand identity cannot be read off the error's position in the
+    # array : a valid operand appends nothing, so the errors are an arbitrary
+    # subset of the inputs.
+    def append_meshy_errors(output)
+
+      if output['error']
+        @errors << [ 'core.error.exception', { :error => output['error'] } ]
+        return true
+      end
+
+      if output['errors'].is_a?(Array)
+        output['errors'].each do |error|
+
+          drawing_def = block_given? ? yield(error['role'], error['index']) : nil
+          @error_drawing_defs << drawing_def unless drawing_def.nil? || @error_drawing_defs.include?(drawing_def)
+
+          vars = {}
+          vars[:count] = error['count'] if error['count']
+          name = _operand_display_name(drawing_def)
+          vars[:name] = name unless name.nil?
+
+          # The _named variants say the same thing about a designated operand ;
+          # an operand with no name of its own (or none at all) keeps the plain
+          # message rather than pointing at an empty string
+          key = "core.solid.error.#{error['code']}#{name.nil? ? '' : '_named'}"
+          @errors << (vars.empty? ? [ key ] : [ key, vars ])
+
+        end
+      end
+
+      !@errors.empty?
+    end
+
+    # Fragments bounded by the given ORIGINAL source face, addressed by its
+    # full occurrence path (Array of instances, model root first, face last -
+    # as returned by a SketchUp pick). The path's prefix is compared to the
+    # container_def's own occurrence path : only a root DrawingDef carries one
+    # (drawing_def.rb#container_path), which is exactly the container_def of
+    # any real panel face - the only nested containers are glued machining
+    # ones (virtual), which never match. Two instances of the same component
+    # share the same face persistent_id, so it alone cannot tell them apart.
+    # A face separating two fragments (e.g. a divider between two cavities)
+    # bounds both, hence an Array.
+    def fragment_defs_for_face(face_path)
+      return [] if face_path.nil? || face_path.empty?
+      face = face_path.last
+      return [] unless face.is_a?(Sketchup::Face)
+
+      persistent_id = face.persistent_id
+      container_path = face_path[0...-1]
+      fragment_defs.select do |fragment_def|
+        next false if fragment_def.face_ids.nil?
+        fragment_def.face_ids.uniq.any? do |id|
+          face_info_def = fragment_def.face_info_defs[id]
+          face_info_def && face_info_def.face_id == persistent_id &&
+            face_info_def.container_def.respond_to?(:container_path) && face_info_def.container_def.container_path == container_path
+        end
+      end
+    end
+
+    # Fragments that include the given point (WORLD coordinates), inside
+    # their volume or within +tolerance+ of their surface - see
+    # SolidFragmentDef#contains_point?.
+    def fragment_defs_for_point(point, tolerance: SolidMeshDef::TOLERANCE)
+      fragment_defs.select { |fragment_def| fragment_def.contains_point?(point, tolerance: tolerance) }
+    end
+
+    # -----
+
+    private
+
+    # Name identifying the given operand in an error message - its instance
+    # name, falling back to its definition name - or nil when there is no
+    # nameable container behind it (no drawing def, the model root, a deleted
+    # instance, or an unnamed group).
+    def _operand_display_name(drawing_def)
+      return nil if drawing_def.nil? || !drawing_def.respond_to?(:container)
+      container = drawing_def.container
+      return nil unless container.is_a?(Sketchup::Group) || container.is_a?(Sketchup::ComponentInstance)
+      return nil if container.deleted?
+      name = container.name.to_s
+      name = container.definition.name.to_s if name.empty? && container.respond_to?(:definition)
+      name.empty? ? nil : name
+    end
+
+  end
+
+  # One resulting solid body, in WORLD coordinates.
+  # Manifold may output several disjoint bodies (e.g. a subtraction that splits
+  # the source in two) : one SolidFragmentDef each.
+  class SolidFragmentDef < DataContainer
+
+    attr_reader :vertices,        # Array<Float> flat [ x, y, z, ... ]
+                :face_indices,    # Array<Integer> flat, 3 per triangle
+                :face_ids,        # Array<Integer> 1 per triangle -> index in @face_info_defs, or nil if no provenance
+                :face_info_defs,  # Array<SolidFaceInfoDef> shared registry of the operation
+                :src_indices      # Array<Integer> indices (in the operation src list) of the sources this fragment comes from ; empty if unknown
+
+    # Two triangles lie on the SAME plane when their unit normals differ by
+    # less than this (dot >= 1 - PLANE_NORMAL_TOLERANCE, i.e. ~0.08°) and
+    # their signed offsets by less than SolidMeshDef::TOLERANCE - see
+    # #_each_triangle_plane. Coplanar triangles of a Manifold output agree far
+    # closer than that (their normals match to the last float digits), so this
+    # stays clear of merging planes that are genuinely distinct.
+    PLANE_NORMAL_TOLERANCE = 1e-6
+
+    # Below this, the determinant of a Moller-Trumbore crossing reads the ray
+    # as PARALLEL to the triangle's plane. An absolute threshold on a quantity
+    # that scales as an area (inches squared, times the sine of the incidence)
+    # : it only has to stand clear of the float noise, a grazing hit being of
+    # no use to a picker anyway - the triangle next to it is hit square.
+    RAY_PARALLEL_TOLERANCE = 1e-12
+
+    # Slack on the barycentric coordinates of a crossing, so that a ray
+    # passing exactly on the edge shared by two triangles hits BOTH rather
+    # than slipping between them. Unitless, hence absolute.
+    RAY_BARYCENTRIC_TOLERANCE = 1e-9
+
+    # Bucketing quantum of the plane normal components : plane candidates are
+    # indexed by their coarsely rounded normal so the matching above stays
+    # local on a fragment carrying many distinct planes - see
+    # #_triangle_plane_index.
+    PLANE_BUCKET_QUANTUM = 0.01
+
+    def initialize(vertices, face_indices, face_ids, face_info_defs, src_indices: [])
+      @vertices = vertices
+      @face_indices = face_indices
+      @face_ids = face_ids.is_a?(Array) && face_ids.length == face_indices.length / 3 ? face_ids : nil
+      @face_info_defs = face_info_defs
+      @src_indices = src_indices
+    end
+
+    # -----
+
+    def empty?
+      @face_indices.nil? || @face_indices.empty?
+    end
+
+    def triangle_count
+      @face_indices.length / 3
+    end
+
+    def vertex_count
+      @vertices.length / 3
+    end
+
+    def points
+      @points ||= @vertices.each_slice(3).map { |coords| Geom::Point3d.new(coords) }
+    end
+
+    # Axis aligned bounds of the fragment (WORLD coordinates). Memoized.
+    def bounds
+      @bounds ||= begin
+        bounds = Geom::BoundingBox.new
+        points.each { |point| bounds.add(point) }
+        bounds
+      end
+    end
+
+    # Unit normal of one triangle (WORLD coordinates), as the winding gives it
+    # - outward on a Manifold output. nil on a degenerate triangle.
+    def triangle_normal(triangle_index)
+      a, b, c = @face_indices[triangle_index * 3, 3]
+      return nil if a.nil? || b.nil? || c.nil?
+      ax, ay, az = @vertices[a * 3], @vertices[a * 3 + 1], @vertices[a * 3 + 2]
+      bx, by, bz = @vertices[b * 3], @vertices[b * 3 + 1], @vertices[b * 3 + 2]
+      cx, cy, cz = @vertices[c * 3], @vertices[c * 3 + 1], @vertices[c * 3 + 2]
+      normal = Geom::Vector3d.new(
+        (by - ay) * (cz - az) - (bz - az) * (cy - ay),
+        (bz - az) * (cx - ax) - (bx - ax) * (cz - az),
+        (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+      )
+      normal.valid? ? normal.normalize : nil
+    end
+
+    # The face id of one triangle - the index in #face_info_defs of the source
+    # face it comes from, 0 being the reserved entry of the geometry no source
+    # face stands behind (the envelope caps of a cavity, see
+    # CommonSolidFindCavitiesWorker). nil when the fragment carries no ids.
+    def triangle_face_id(triangle_index)
+      return nil unless @face_ids.is_a?(Array)
+      @face_ids[triangle_index]
+    end
+
+    # Where the given ray crosses the fragment's triangles, NEAREST FIRST :
+    # [ [ distance, Geom::Point3d, triangle_index ], ... ], empty when it
+    # misses. Reads +origin+ / +direction+ in the fragment's own space - the
+    # world, for anything the solid workers produce - and only looks FORWARD :
+    # a ray starting inside the volume reports what lies ahead of it, never
+    # what it has left behind.
+    #
+    # Every crossed triangle is reported, and what a crossing MEANS is left to
+    # the caller : which of them is a wall and which is an opening cap is read
+    # off #triangle_face_id, and only the caller knows what it is after.
+    #
+    # Moller-Trumbore, on the flat arrays directly (no Point3d per vertex) :
+    # this runs on every mouse move of a tool that picks in a cavity.
+    def ray_hits(origin, direction)
+      o = origin.is_a?(Geom::Point3d) ? origin.to_a : origin
+      d = direction.is_a?(Geom::Vector3d) ? direction.to_a : direction
+
+      length = Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+      return [] if length == 0.0
+      dx = d[0] / length ; dy = d[1] / length ; dz = d[2] / length
+
+      # Whole fragment rejected on its bounds first : a tool picking in a
+      # carcass sweeps every compartment on every move, and the ray misses all
+      # but one of them.
+      return [] unless _ray_crosses_bounds?(o, [ dx, dy, dz ])
+
+      hits = []
+      @face_indices.each_slice(3).with_index do |(a, b, c), triangle_index|
+
+        ax, ay, az = @vertices[a * 3], @vertices[a * 3 + 1], @vertices[a * 3 + 2]
+        e1x = @vertices[b * 3] - ax ; e1y = @vertices[b * 3 + 1] - ay ; e1z = @vertices[b * 3 + 2] - az
+        e2x = @vertices[c * 3] - ax ; e2y = @vertices[c * 3 + 1] - ay ; e2z = @vertices[c * 3 + 2] - az
+
+        px = dy * e2z - dz * e2y
+        py = dz * e2x - dx * e2z
+        pz = dx * e2y - dy * e2x
+
+        det = e1x * px + e1y * py + e1z * pz
+        next if det.abs < RAY_PARALLEL_TOLERANCE   # Ray parallel to the triangle's plane
+        inv_det = 1.0 / det
+
+        tx = o[0] - ax ; ty = o[1] - ay ; tz = o[2] - az
+
+        u = (tx * px + ty * py + tz * pz) * inv_det
+        next if u < -RAY_BARYCENTRIC_TOLERANCE || u > 1.0 + RAY_BARYCENTRIC_TOLERANCE
+
+        qx = ty * e1z - tz * e1y
+        qy = tz * e1x - tx * e1z
+        qz = tx * e1y - ty * e1x
+
+        v = (dx * qx + dy * qy + dz * qz) * inv_det
+        next if v < -RAY_BARYCENTRIC_TOLERANCE || u + v > 1.0 + RAY_BARYCENTRIC_TOLERANCE
+
+        distance = (e2x * qx + e2y * qy + e2z * qz) * inv_det
+        next if distance < 0.0
+
+        hits << [ distance, Geom::Point3d.new(o[0] + dx * distance, o[1] + dy * distance, o[2] + dz * distance), triangle_index ]
+
+      end
+
+      hits.sort_by { |hit| hit[0] }
+    end
+
+    # This fragment with every edge shorter than +tolerance+ COLLAPSED - or the
+    # fragment itself when it has none.
+    #
+    # Manifold keeps vertices a hair apart that SketchUp cannot : a cut whose
+    # face lies exactly in the plane of a void already cut in the part (a
+    # groove run on into another groove) is imprinted where its edges cross
+    # the TRIANGULATION of that plane, and such a crossing can fall 0.007 mm
+    # from a real corner. The mesh is sound ; SketchUp welds the two vertices
+    # as it builds the faces, and the shell comes out non manifold.
+    #
+    # Collapsed here on the index mesh instead, where it can be done keeping the
+    # shell closed : the two triangles along the edge go, and the dropped vertex
+    # is replaced by the kept one everywhere else. The KEPT vertex is the one
+    # standing on more planes - a corner over a crease, a crease over the
+    # middle of a face - so that the features of the part do not move. Skipped,
+    # and left as it was, when a collapse would pinch the shell (link
+    # condition), turn a triangle over, or move a vertex farther than
+    # +tolerance+ from where it was.
+    #
+    # The vertices array is kept whole : a dropped vertex is simply no longer
+    # indexed.
+    def collapse_short_edges(tolerance)
+      return self if empty?
+
+      vertices = @vertices
+      tolerance2 = tolerance * tolerance
+
+      fn_distance2 = lambda { |a, b|
+        dx = vertices[a * 3] - vertices[b * 3]
+        dy = vertices[a * 3 + 1] - vertices[b * 3 + 1]
+        dz = vertices[a * 3 + 2] - vertices[b * 3 + 2]
+        dx * dx + dy * dy + dz * dz
+      }
+
+      # Cheap reject first : the vast majority of fragments has no such edge
+      short = false
+      @face_indices.each_slice(3) do |a, b, c|
+        next unless fn_distance2.call(a, b) < tolerance2 || fn_distance2.call(b, c) < tolerance2 || fn_distance2.call(c, a) < tolerance2
+        short = true
+        break
+      end
+      return self unless short
+
+      # Unnormalized normal of three vertex indices
+      fn_cross = lambda { |a, b, c|
+        ux = vertices[b * 3] - vertices[a * 3] ; uy = vertices[b * 3 + 1] - vertices[a * 3 + 1] ; uz = vertices[b * 3 + 2] - vertices[a * 3 + 2]
+        vx = vertices[c * 3] - vertices[a * 3] ; vy = vertices[c * 3 + 1] - vertices[a * 3 + 1] ; vz = vertices[c * 3 + 2] - vertices[a * 3 + 2]
+        [ uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx ]
+      }
+
+      # Whether a triangle is wide enough for its normal to mean anything
+      fn_sound = lambda { |a, b, c, cross|
+        longest2 = [ fn_distance2.call(a, b), fn_distance2.call(b, c), fn_distance2.call(c, a) ].max
+        area2 = cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]
+        longest2 > 0 && area2 >= tolerance2 * longest2   # altitude >= tolerance
+      }
+
+      triangles = @face_indices.each_slice(3).to_a
+      vertex_triangles = Hash.new { |hash, key| hash[key] = [] }
+      triangles.each_with_index { |triangle, index| triangle.each { |vertex| vertex_triangles[vertex] << index } }
+      merged = Hash.new { |hash, key| hash[key] = [] }   # kept vertex -> the vertices collapsed onto it
+
+      fn_neighbours = lambda { |vertex| vertex_triangles[vertex].flat_map { |index| triangles[index] }.uniq - [ vertex ] }
+
+      # The distinct planes [ unit normal, offset ] of the sound triangles
+      # around the given vertices, out to their neighbours. Around them and not
+      # only AT them : the triangles a crease vertex has on one of its two
+      # planes may all be the very needles being collapsed.
+      fn_planes = lambda { |seeds|
+        planes = []
+        (seeds + seeds.flat_map { |vertex| fn_neighbours.call(vertex) }).uniq.flat_map { |vertex| vertex_triangles[vertex] }.uniq.each do |index|
+          a, b, c = triangles[index]
+          cross = fn_cross.call(a, b, c)
+          next unless fn_sound.call(a, b, c, cross)
+          length = Math.sqrt(cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2])
+          normal = cross.map { |value| value / length }
+          offset = normal[0] * vertices[a * 3] + normal[1] * vertices[a * 3 + 1] + normal[2] * vertices[a * 3 + 2]
+          next if planes.any? { |other, other_offset| normal[0] * other[0] + normal[1] * other[1] + normal[2] * other[2] >= 1.0 - PLANE_NORMAL_TOLERANCE && (offset - other_offset).abs < tolerance }
+          planes << [ normal, offset ]
+        end
+        planes
+      }
+
+      # How many of the given planes a vertex lies ON - far closer than the
+      # tolerance, which is the scale of the very imprints told apart here
+      fn_plane_count = lambda { |vertex, planes|
+        x, y, z = vertices[vertex * 3], vertices[vertex * 3 + 1], vertices[vertex * 3 + 2]
+        planes.count { |normal, offset| (normal[0] * x + normal[1] * y + normal[2] * z - offset).abs < tolerance * 1e-3 }
+      }
+
+      fn_collapse = lambda { |a, b|
+        shared = vertex_triangles[a] & vertex_triangles[b]
+        return false unless shared.length == 2   # Not an edge between two triangles
+
+        # Link condition : the only vertices a and b both see are the apexes of
+        # the two triangles along their edge, or the collapse pinches the shell
+        apexes = shared.map { |index| (triangles[index] - [ a, b ]).first }
+        return false unless (fn_neighbours.call(a) & fn_neighbours.call(b)).sort == apexes.sort
+
+        planes = fn_planes.call([ a, b ])
+        keep, drop = fn_plane_count.call(b, planes) > fn_plane_count.call(a, planes) ? [ b, a ] : [ a, b ]
+        return false unless ([ drop ] + merged[drop]).all? { |vertex| fn_distance2.call(vertex, keep) < tolerance2 }
+
+        moved = vertex_triangles[drop] - shared
+        moved.each do |index|
+          triangle = triangles[index]
+          old_cross = fn_cross.call(*triangle)
+          next unless fn_sound.call(*triangle, old_cross)
+          new_cross = fn_cross.call(*triangle.map { |vertex| vertex == drop ? keep : vertex })
+          return false unless old_cross[0] * new_cross[0] + old_cross[1] * new_cross[1] + old_cross[2] * new_cross[2] > 0
+        end
+
+        shared.each do |index|
+          triangles[index].each { |vertex| vertex_triangles[vertex].delete(index) }
+          triangles[index] = nil
+        end
+        moved.each do |index|
+          triangles[index] = triangles[index].map { |vertex| vertex == drop ? keep : vertex }
+          vertex_triangles[keep] << index
+        end
+        vertex_triangles.delete(drop)
+        merged[keep].concat([ drop ] + (merged.delete(drop) || []))
+        true
+      }
+
+      collapsed = false
+      loop do
+        changed = false
+        triangles.each_index do |index|
+          3.times do |edge|
+            triangle = triangles[index]
+            break if triangle.nil?
+            a, b = triangle[edge], triangle[(edge + 1) % 3]
+            next unless fn_distance2.call(a, b) < tolerance2
+            changed = true if fn_collapse.call(a, b)
+          end
+        end
+        break unless changed
+        collapsed = true
+      end
+      return self unless collapsed
+
+      face_indices = []
+      face_ids = @face_ids.nil? ? nil : []
+      triangles.each_with_index do |triangle, index|
+        next if triangle.nil?
+        face_indices.concat(triangle)
+        face_ids << @face_ids[index] unless face_ids.nil?
+      end
+
+      SolidFragmentDef.new(@vertices, face_indices, face_ids, @face_info_defs, src_indices: @src_indices)
+    end
+
+    # Enclosed volume in cubic inches, by the divergence theorem over the
+    # triangles. Meaningful on a closed, consistently wound fragment (always
+    # true of Manifold output).
+    def volume
+      @volume ||= @face_indices.each_slice(3).inject(0.0) { |sum, (a, b, c)|
+        ax, ay, az = @vertices[a * 3], @vertices[a * 3 + 1], @vertices[a * 3 + 2]
+        bx, by, bz = @vertices[b * 3], @vertices[b * 3 + 1], @vertices[b * 3 + 2]
+        cx, cy, cz = @vertices[c * 3], @vertices[c * 3 + 1], @vertices[c * 3 + 2]
+        sum + (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6.0
+      }.abs
+    end
+
+    # Volume-weighted centroid (WORLD coordinates), by the divergence theorem
+    # over the triangles : independent of the tessellation density, unlike the
+    # vertex average. Same closedness requirement as #volume. nil when the
+    # enclosed volume is degenerate.
+    def centroid
+      return @centroid if defined?(@centroid)
+      det_sum = 0.0
+      x_sum = y_sum = z_sum = 0.0
+      @face_indices.each_slice(3) do |a, b, c|
+        ax, ay, az = @vertices[a * 3], @vertices[a * 3 + 1], @vertices[a * 3 + 2]
+        bx, by, bz = @vertices[b * 3], @vertices[b * 3 + 1], @vertices[b * 3 + 2]
+        cx, cy, cz = @vertices[c * 3], @vertices[c * 3 + 1], @vertices[c * 3 + 2]
+        det = ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)
+        det_sum += det
+        x_sum += det * (ax + bx + cx)
+        y_sum += det * (ay + by + cy)
+        z_sum += det * (az + bz + cz)
+      end
+      @centroid = det_sum == 0 ? nil : Geom::Point3d.new(x_sum / (4.0 * det_sum), y_sum / (4.0 * det_sum), z_sum / (4.0 * det_sum))
+    end
+
+    # True when the given point (WORLD coordinates) lies within +tolerance+
+    # of the fragment's surface (touching) or strictly inside its volume.
+    # Touch test : point-to-triangle distance (Ericson, "Real-Time Collision
+    # Detection", closest point on triangle), the exact counterpart of the
+    # tolerance a Manifold boolean itself snaps to (SolidMeshDef::TOLERANCE).
+    # Inside test : generalized winding number (Jacobson et al.) - robust on
+    # this closed, consistently wound mesh (see #volume) without needing a
+    # ray direction and its degenerate grazing cases.
+    def contains_point?(point, tolerance: SolidMeshDef::TOLERANCE)
+      p = point.is_a?(Geom::Point3d) ? point.to_a : point
+      tolerance_sq = tolerance * tolerance
+
+      winding = 0.0
+      @face_indices.each_slice(3) do |ia, ib, ic|
+        a = [ @vertices[ia * 3], @vertices[ia * 3 + 1], @vertices[ia * 3 + 2] ]
+        b = [ @vertices[ib * 3], @vertices[ib * 3 + 1], @vertices[ib * 3 + 2] ]
+        c = [ @vertices[ic * 3], @vertices[ic * 3 + 1], @vertices[ic * 3 + 2] ]
+
+        return true if _sq_dist_point_triangle(p, a, b, c) <= tolerance_sq
+
+        winding += _triangle_solid_angle(p, a, b, c)
+      end
+
+      (winding / (4.0 * Math::PI)).abs > 0.5
+    end
+
+    # Net boundary segments of the fragment, coplanar triangles merged : an
+    # edge shared by two triangles lying on the same plane (matched with
+    # tolerance, see #_each_triangle_plane)
+    # is interior (traversed once in each direction, it cancels out), the
+    # surviving edges draw the face contours. An edge between two planes is
+    # kept by each of them, as the two adjacent face contours overlap there,
+    # so it appears TWICE (once per plane, endpoints in reverse order) : fine
+    # for a solid wireframe, but see #unique_boundary_segments for a dashed
+    # one. Returns a flat Array<Geom::Point3d> of segment point pairs, ready
+    # for Kuix::Segments#add_segments. Memoized.
+    def boundary_segments
+      @boundary_segments ||= _flatten_edge_counts_by_plane(unique: false)
+    end
+
+    # Same net boundary as #boundary_segments, with each physical edge kept
+    # only once regardless of how many planes it borders between : the
+    # duplicate #boundary_segments keeps for an edge between two planes (same
+    # segment, endpoints reversed) makes a dash pattern restart from each end,
+    # which reads as a doubled or broken stipple. Returns a flat
+    # Array<Geom::Point3d> of segment point pairs, ready for
+    # Kuix::Segments#add_segments. Memoized.
+    def unique_boundary_segments
+      @unique_boundary_segments ||= _flatten_edge_counts_by_plane(unique: true)
+    end
+
+    private
+
+    # Whether the ray (unit +d+) crosses the fragment's #bounds, grown by the
+    # boolean tolerance - the cheap reject #ray_hits opens with. Slab method,
+    # the axes the ray is parallel to tested apart so no division by zero
+    # turns into a NaN comparison.
+    def _ray_crosses_bounds?(o, d)
+      min = bounds.min.to_a ; max = bounds.max.to_a
+      tolerance = SolidMeshDef::TOLERANCE
+      near = 0.0
+      far = nil
+      (0..2).each do |axis|
+        low = min[axis] - tolerance
+        high = max[axis] + tolerance
+        if d[axis].abs < RAY_PARALLEL_TOLERANCE
+          return false if o[axis] < low || o[axis] > high
+          next
+        end
+        first = (low - o[axis]) / d[axis]
+        second = (high - o[axis]) / d[axis]
+        first, second = second, first if first > second
+        near = first if first > near
+        far = second if far.nil? || second < far
+        return false if near > far
+      end
+      true
+    end
+
+    # Signed solid angle (steradians) subtended by triangle a-b-c as seen
+    # from p, via Van Oosterom & Strackee's formula. Summed over a closed,
+    # consistently wound mesh, this totals ±4π when p is inside, ~0 outside -
+    # see #contains_point?.
+    def _triangle_solid_angle(p, a, b, c)
+      ax, ay, az = a[0] - p[0], a[1] - p[1], a[2] - p[2]
+      bx, by, bz = b[0] - p[0], b[1] - p[1], b[2] - p[2]
+      cx, cy, cz = c[0] - p[0], c[1] - p[1], c[2] - p[2]
+
+      la = Math.sqrt(ax * ax + ay * ay + az * az)
+      lb = Math.sqrt(bx * bx + by * by + bz * bz)
+      lc = Math.sqrt(cx * cx + cy * cy + cz * cz)
+      return 0.0 if la == 0 || lb == 0 || lc == 0 # p coincides with a vertex : covered by the touch test
+
+      numerator = ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx) # a . (b x c)
+      denominator = la * lb * lc + (ax * bx + ay * by + az * bz) * lc + (bx * cx + by * cy + bz * cz) * la + (cx * ax + cy * ay + cz * az) * lb
+      2.0 * Math.atan2(numerator, denominator)
+    end
+
+    # Squared distance from p to its closest point on triangle a-b-c
+    # (Ericson, "Real-Time Collision Detection", closest point on triangle by
+    # Voronoi region of the barycentric coordinates).
+    def _sq_dist_point_triangle(p, a, b, c)
+      ab = [ b[0] - a[0], b[1] - a[1], b[2] - a[2] ]
+      ac = [ c[0] - a[0], c[1] - a[1], c[2] - a[2] ]
+      ap = [ p[0] - a[0], p[1] - a[1], p[2] - a[2] ]
+      d1 = _dot3(ab, ap)
+      d2 = _dot3(ac, ap)
+      return _sq_dist3(p, a) if d1 <= 0 && d2 <= 0 # Vertex region a
+
+      bp = [ p[0] - b[0], p[1] - b[1], p[2] - b[2] ]
+      d3 = _dot3(ab, bp)
+      d4 = _dot3(ac, bp)
+      return _sq_dist3(p, b) if d3 >= 0 && d4 <= d3 # Vertex region b
+
+      vc = d1 * d4 - d3 * d2
+      if vc <= 0 && d1 >= 0 && d3 <= 0 # Edge region ab
+        v = d1 / (d1 - d3)
+        return _sq_dist3(p, [ a[0] + v * ab[0], a[1] + v * ab[1], a[2] + v * ab[2] ])
+      end
+
+      cp = [ p[0] - c[0], p[1] - c[1], p[2] - c[2] ]
+      d5 = _dot3(ab, cp)
+      d6 = _dot3(ac, cp)
+      return _sq_dist3(p, c) if d6 >= 0 && d5 <= d6 # Vertex region c
+
+      vb = d5 * d2 - d1 * d6
+      if vb <= 0 && d2 >= 0 && d6 <= 0 # Edge region ac
+        w = d2 / (d2 - d6)
+        return _sq_dist3(p, [ a[0] + w * ac[0], a[1] + w * ac[1], a[2] + w * ac[2] ])
+      end
+
+      va = d3 * d6 - d5 * d4
+      if va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0 # Edge region bc
+        w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        return _sq_dist3(p, [ b[0] + w * (c[0] - b[0]), b[1] + w * (c[1] - b[1]), b[2] + w * (c[2] - b[2]) ])
+      end
+
+      # Face region : orthogonal projection onto the triangle plane
+      denom = 1.0 / (va + vb + vc)
+      v = vb * denom
+      w = vc * denom
+      _sq_dist3(p, [ a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w ])
+    end
+
+    def _dot3(u, v)
+      u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+    end
+
+    def _sq_dist3(p, q)
+      dx = p[0] - q[0] ; dy = p[1] - q[1] ; dz = p[2] - q[2]
+      dx * dx + dy * dy + dz * dz
+    end
+
+    # Yields [ plane index, triangle index, a, b, c, doubled area ] for each
+    # non degenerate triangle of the fragment, the plane index identifying
+    # the plane it lies on among the fragment's planes, discovered as they
+    # come. Two triangles share a plane index when their SIGNED plane matches
+    # within PLANE_NORMAL_TOLERANCE / SolidMeshDef::TOLERANCE - signed, so
+    # that two opposite coplanar faces (e.g. the two sides of a zero
+    # thickness membrane) stay distinct planes, as their contours are
+    # traversed in opposite directions.
+    #
+    # Matching within a tolerance, and not by an exact key : quantizing the
+    # vertices to the mesh tolerance and keying on the resulting exact
+    # integer normal only holds for a plane aligned with that grid. An
+    # OBLIQUE plane - anything in a rotated assembly - sees its rounded
+    # vertices leave the plane, every one of its triangles ends up on a plane
+    # of its own, and whatever the grouping serves (edge cancellation,
+    # per-plane area) breaks down : the tessellation shows through the
+    # merged contours (#boundary_segments) and one flat opening counts as
+    # many (SolidCavityFragmentDef#opening_plane_count).
+    #
+    # The triangle's own unit normal is yielded last, after the doubled area :
+    # every triangle sharing a plane index agrees with it to
+    # PLANE_NORMAL_TOLERANCE (the matching is signed), so it doubles as the
+    # plane's normal — see SolidCavityFragmentDef#enclosed_by_walls?.
+    #
+    # The walk itself is memoized : a cavity asks it again and again (walls,
+    # caps, openings, wall faces, wall loops...) and the plane matching is
+    # the dearest part of it on a mesh of many planes. Safe as long as the
+    # fragment's arrays are never touched after construction, which they are
+    # not — the vertex restorations all run on the raw Meshy output, before
+    # any fragment def is built from it.
+    def _each_triangle_plane
+      entries = _triangle_plane_entries
+      index = 0
+      length = entries.length
+      while index < length
+        yield entries[index], entries[index + 1], entries[index + 2], entries[index + 3], entries[index + 4], entries[index + 5], entries[index + 6], entries[index + 7], entries[index + 8]
+        index += 9
+      end
+    end
+
+    # What #_each_triangle_plane yields, flattened 9 values per triangle.
+    # Memoized.
+    def _triangle_plane_entries
+      @triangle_plane_entries ||= begin
+        min_area2 = SolidMeshDef::TOLERANCE * SolidMeshDef::TOLERANCE
+
+        entries = []
+        planes = []                   # [ [ normal, d ], ... ], index = plane index
+        plane_indices_by_bucket = {}  # coarse normal key -> Array of plane indices
+
+        @face_indices.each_slice(3).with_index do |(a, b, c), triangle_index|
+          ax, ay, az = @vertices[a * 3], @vertices[a * 3 + 1], @vertices[a * 3 + 2]
+          bx, by, bz = @vertices[b * 3], @vertices[b * 3 + 1], @vertices[b * 3 + 2]
+          cx, cy, cz = @vertices[c * 3], @vertices[c * 3 + 1], @vertices[c * 3 + 2]
+          ux = bx - ax ; uy = by - ay ; uz = bz - az
+          vx = cx - ax ; vy = cy - ay ; vz = cz - az
+          nx = uy * vz - uz * vy
+          ny = uz * vx - ux * vz
+          nz = ux * vy - uy * vx
+          area2 = Math.sqrt(nx * nx + ny * ny + nz * nz)
+          # A triangle thinner than the tolerance has no plane of its own worth
+          # trusting (its normal is pure numerical noise) : skipped
+          next if area2 <= min_area2
+          nx /= area2 ; ny /= area2 ; nz /= area2
+          d = nx * ax + ny * ay + nz * az
+
+          entries.push(_triangle_plane_index(planes, plane_indices_by_bucket, nx, ny, nz, d), triangle_index, a, b, c, area2, nx, ny, nz)
+        end
+
+        entries
+      end
+    end
+
+    # Index of the plane matching the given unit normal and signed offset in
+    # the given registry, appended to it (and indexed in its normal bucket)
+    # on first sight. The 26 neighbor buckets are probed too : two matching
+    # normals may well round to either side of a bucket boundary.
+    def _triangle_plane_index(planes, plane_indices_by_bucket, nx, ny, nz, d)
+      qx = (nx / PLANE_BUCKET_QUANTUM).round
+      qy = (ny / PLANE_BUCKET_QUANTUM).round
+      qz = (nz / PLANE_BUCKET_QUANTUM).round
+
+      min_dot = 1.0 - PLANE_NORMAL_TOLERANCE
+      tolerance = SolidMeshDef::TOLERANCE
+      (-1..1).each do |ox|
+        (-1..1).each do |oy|
+          (-1..1).each do |oz|
+            plane_indices = plane_indices_by_bucket[[ qx + ox, qy + oy, qz + oz ]]
+            next if plane_indices.nil?
+            plane_indices.each do |plane_index|
+              normal, plane_d = planes[plane_index]
+              next if normal[0] * nx + normal[1] * ny + normal[2] * nz < min_dot
+              next if (plane_d - d).abs > tolerance
+              return plane_index
+            end
+          end
+        end
+      end
+
+      planes << [ [ nx, ny, nz ], d ]
+      plane_index = planes.length - 1
+      (plane_indices_by_bucket[[ qx, qy, qz ]] ||= []) << plane_index
+      plane_index
+    end
+
+    # Canonical vertex index of every vertex : two indices whose points lie
+    # within SolidMeshDef::TOLERANCE of each other both map to the first of
+    # them. Same tolerance grid + neighbor cell probe doctrine as
+    # SolidMeshDef#_vertex_index, with a real distance gate so that two
+    # vertices farther than TOLERANCE never weld. Memoized.
+    #
+    # A Manifold output may well carry SEVERAL vertices at what is, at the
+    # mesh tolerance, the same point : an OBLIQUE assembly (anything in a
+    # rotated model) sees its near tangential intersections land a few 1e-7
+    # inch apart — distinct indices on geometrically identical corners.
+    # Cancelling interior edges by vertex INDEX then breaks down : two
+    # triangles meeting on such a corner traverse their shared edge as, say,
+    # [ a, b ] and [ b', a' ], which never match, and both survive. The
+    # merged quad they form draws with its diagonal — a flat face reading as
+    # its two triangles. Welding first lets the cancellation see the
+    # geometry rather than the indexing.
+    def _welded_vertex_indices
+      @welded_vertex_indices ||= begin
+
+        tolerance = SolidMeshDef::TOLERANCE
+        welded_vertex_indices = Array.new(vertex_count)
+        indices_by_cell = {}
+
+        (0...vertex_count).each do |index|
+          x, y, z = @vertices[index * 3], @vertices[index * 3 + 1], @vertices[index * 3 + 2]
+          cell = [ (x / tolerance).round, (y / tolerance).round, (z / tolerance).round ]
+
+          welded_index = nil
+          (-1..1).each do |dx|
+            (-1..1).each do |dy|
+              (-1..1).each do |dz|
+                candidate_indices = indices_by_cell[[ cell[0] + dx, cell[1] + dy, cell[2] + dz ]]
+                next if candidate_indices.nil?
+                candidate_indices.each do |candidate_index|
+                  ux = @vertices[candidate_index * 3] - x
+                  uy = @vertices[candidate_index * 3 + 1] - y
+                  uz = @vertices[candidate_index * 3 + 2] - z
+                  next if ux * ux + uy * uy + uz * uz > tolerance * tolerance
+                  welded_index = candidate_index
+                  break
+                end
+                break unless welded_index.nil?
+              end
+              break unless welded_index.nil?
+            end
+            break unless welded_index.nil?
+          end
+
+          if welded_index.nil?
+            (indices_by_cell[cell] ||= []) << index
+            welded_vertex_indices[index] = index
+          else
+            welded_vertex_indices[index] = welded_vertex_indices[welded_index]
+          end
+        end
+
+        welded_vertex_indices
+      end
+    end
+
+    # Net boundary edges of the fragment, grouped by plane : for each plane,
+    # an edge traversed once in each direction by two of its triangles is
+    # interior and cancels out, the surviving edges draw that plane's face
+    # contour. Edges are keyed on WELDED vertex indices (see
+    # #_welded_vertex_indices), the only identity the cancellation can trust ;
+    # an edge whose two ends weld together is shorter than the mesh tolerance
+    # and draws nothing, dropped. Memoized.
+    def _edge_counts_by_plane
+      @edge_counts_by_plane ||= begin
+
+        welded_vertex_indices = _welded_vertex_indices
+
+        edge_counts_by_plane = {}
+        _each_triangle_plane do |plane_index, _triangle_index, a, b, c, _area2|
+          wa, wb, wc = welded_vertex_indices[a], welded_vertex_indices[b], welded_vertex_indices[c]
+          edge_counts = (edge_counts_by_plane[plane_index] ||= Hash.new(0))
+          [ [ wa, wb ], [ wb, wc ], [ wc, wa ] ].each do |index_a, index_b|
+            next if index_a == index_b
+            if edge_counts[[ index_b, index_a ]] > 0
+              edge_counts[[ index_b, index_a ]] -= 1
+            else
+              edge_counts[[ index_a, index_b ]] += 1
+            end
+          end
+        end
+
+        edge_counts_by_plane
+      end
+    end
+
+    # Turns #_edge_counts_by_plane into a flat Array<Geom::Point3d> of segment
+    # point pairs. unique: true keeps a single segment per unordered vertex
+    # pair, dropping the reversed duplicate an edge between two planes would
+    # otherwise contribute from its second plane.
+    def _flatten_edge_counts_by_plane(unique:)
+      pts = points
+      segments = []
+      seen = unique ? {} : nil
+      _edge_counts_by_plane.each_value do |edge_counts|
+        edge_counts.each do |(index_a, index_b), count|
+          next if count == 0
+          if unique
+            key = index_a < index_b ? [ index_a, index_b ] : [ index_b, index_a ]
+            next if seen[key]
+            seen[key] = true
+            segments << pts[index_a] << pts[index_b]
+          else
+            count.times { segments << pts[index_a] << pts[index_b] }
+          end
+        end
+      end
+      segments
+    end
+
+    public
+
+    # Yields [ SolidFaceInfoDef or nil, Array of triangles (Array<Geom::Point3d>) ],
+    # one batch per original face. Triangles without provenance are batched under nil.
+    def each_triangle_batch
+      pts = points
+      batches = {}
+      @face_indices.each_slice(3).with_index do |indices, triangle_index|
+        face_info_def = @face_ids.nil? ? nil : @face_info_defs[@face_ids[triangle_index]]
+        (batches[face_info_def] ||= []) << indices.map { |index| pts[index] }
+      end
+      batches.each { |face_info_def, triangles| yield face_info_def, triangles }
+    end
+
+  end
+
+end

@@ -1,6 +1,7 @@
 module Ladb::OpenCutList
 
   require 'securerandom'
+  require_relative '../../utils/file_path_utils'
 
   class MaterialsImportFromSkmWorker
 
@@ -20,7 +21,7 @@ module Ladb::OpenCutList
       # Fetch material
       materials = model.materials
 
-      last_dir = PLUGIN.read_default(Plugin::SETTINGS_KEY_MATERIALS_LAST_DIR, nil)
+      last_dir = FilePathUtils.sanitize_file_path(PLUGIN.read_default(Plugin::SETTINGS_KEY_MATERIALS_LAST_DIR, nil))
       if last_dir && File.exist?(last_dir) && File.directory?(last_dir)
         dir = last_dir
       else
@@ -51,7 +52,7 @@ module Ladb::OpenCutList
         end
 
         # Save last dir
-        PLUGIN.write_default(Plugin::SETTINGS_KEY_MATERIALS_LAST_DIR, File.dirname(path))
+        PLUGIN.write_default(Plugin::SETTINGS_KEY_MATERIALS_LAST_DIR, FilePathUtils.sanitize_fucking_windows_backslashes(File.dirname(path)))
 
         if Sketchup.version_number > 1800000000 # RubyZip is not compatible with SU 18-
 
@@ -62,7 +63,7 @@ module Ladb::OpenCutList
             # Try to extract material data
             Zip::File.open(path, create: false) do |zipfile|
 
-              require "rexml/document"
+              require 'rexml/document'
 
               xml = zipfile.read('document.xml')
 

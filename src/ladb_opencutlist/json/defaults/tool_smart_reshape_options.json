@@ -1,7 +1,43 @@
 {
+  "_preprocessors": {
+    "thickness": 1 /* PRESETS_PREPROCESSOR_D */
+  },
   "action_0": { /* ACTION_STRETCH */
     "stretch_measure_type": "outside",
     "axes": "entity",
+    "centered": false,
     "make_unique": true
+  },
+  "action_1": { /* ACTION_PANELING */
+    "thickness": { "metric": "18mm", "imperial": "1/2\"" },
+    "paneling_direction": "inward",
+    "paneling_joint_type": "flat",
+    "reuse_definition": true,
+    "reuse_definition_mirrored": true
+  },
+  "action_2": { /* ACTION_SOLID_UNITE */
+    "keep_a": false,
+    "keep_b": false,
+    "make_unique": true,
+    "remove_unused_definitions": true
+  },
+  "action_3": { /* ACTION_SOLID_SUBTRACT */
+    "keep_a": false,
+    "keep_b": false,
+    "make_unique": true,
+    "remove_unused_definitions": true
+  },
+  "action_4": { /* ACTION_SOLID_INTERSECT */
+    "keep_a": false,
+    "keep_b": false,
+    "make_unique": true,
+    "remove_unused_definitions": true
+  },
+  "action_5": { /* ACTION_SLICE */
+    "slice_mode": "slice",
+    "slice_reference": "face",
+    "axes": "entity",
+    "make_unique": true,
+    "reuse_definition": true
   }
 }

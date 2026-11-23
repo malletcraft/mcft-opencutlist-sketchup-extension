@@ -1,0 +1,22 @@
+{% extends 'core/_modal.twig' %}
+
+{% set id = 'ladb_modal_'~modalName %}
+{% set title = ('tool.smart_build.action_'~action)|i18next %}
+
+{% block headerToolsInner %}
+    {% include 'components/_widget-preset.twig' %}
+    <button class="btn btn-default btn-xs" data-help-page="tool.smart-build"><i class="ladb-opencutlist-icon-help"></i> {{ 'default.help'|i18next }}</button>
+{% endblock %}
+
+{% block bodyInner %}
+    <div class="tab-content">
+        <div class="form form-horizontal" style="margin-top: 15px;">
+            {% block formInner %}{% endblock %}
+        </div>
+    </div>
+{% endblock %}
+
+{% block footerRightInner %}
+    <button class="btn btn-default" data-dismiss="modal">{{ 'default.cancel'|i18next }}</button>
+    <button class="btn btn-primary btn-validate-modal" id="ladb_btn_validate">{{ 'default.validate'|i18next }}</button>
+{% endblock %}

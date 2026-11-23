@@ -38,7 +38,7 @@ DLL_EXPORTS char* c_optimize_start(
 
     // Define run future
     run.optimize_future = std::async(std::launch::async, [s_input, &run]() {
-        json j_ouput = json{
+        json j_output = json{
             {"run_id", run.id}
         };
 
@@ -62,18 +62,18 @@ DLL_EXPORTS char* c_optimize_start(
             run.last_send_solution_pos = 0;
 
             // Run!
-            j_ouput["solution"] = solver.optimize();
+            j_output["solution"] = solver.optimize();
 
         } catch (const std::exception& e) {
-            j_ouput["error"] = e.what();
+            j_output["error"] = e.what();
         } catch (...) {
-            j_ouput["error"] = "Unknown Error";
+            j_output["error"] = "Unknown Error";
         }
 
         // Reset solver ptr
         run.solver_ptr = nullptr;
 
-        return std::move(j_ouput);
+        return std::move(j_output);
     }).share();
 
     str_output_ = json{
@@ -103,7 +103,7 @@ DLL_EXPORTS char* c_optimize_advance(
         if (status == std::future_status::ready) {
             if (run.optimize_cancelled && run.last_send_solution_pos == 0) {
 
-                // Run is cancelled, notify it in the returned output
+                // Run is canceled, notify it in the returned output
                 str_output_ = json{
                     {"cancelled", true},
                     {"run_id", run_id}
@@ -126,9 +126,9 @@ DLL_EXPORTS char* c_optimize_advance(
                 {"run_id", run_id}
             };
             if (run.solver_ptr != nullptr) {
-                size_t solutions_size = (*run.solver_ptr).solutions_size();
+                size_t solutions_size = (*run.solver_ptr).solutions_count();
                 if (solutions_size > run.last_send_solution_pos) {
-                    j_output["solution"] = (*run.solver_ptr).solutions_back();
+                    j_output["solution"] = (*run.solver_ptr).last_solution();
                     run.last_send_solution_pos = solutions_size;
                 }
             }

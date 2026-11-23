@@ -1,0 +1,45 @@
+{
+  "format": "ocl-hardware",
+  "version": 1,
+  "id": "7e8d61fc-b9ef-458d-9463-068ee7f2a0ec",
+  "type": "fitting",
+  "length_unit": "mm",
+  "name": "Angle bracket 40x40",
+  "variables": {
+    "hole_distance": { "value": "25", "label": "Hole distance" },
+    "bracket_thickness": "2"
+  },
+  "components": {
+    "a": {
+      "hardware": {
+        "body": {
+          "prisms": [ { "axis": "x", "from": -20, "to": 20, "outline": [
+            { "y": "-40", "z": 0 },
+            { "y": 0, "z": 0 },
+            { "y": 0, "z": "40" },
+            { "y": "-@bracket_thickness", "z": "40" },
+            { "y": "-@bracket_thickness", "z": "@bracket_thickness" },
+            { "y": "-40", "z": "@bracket_thickness" }
+          ] } ]
+        },
+        "screws": {
+          "use": "connectors/generic/screws/screw-4x16.json", "host": "a",
+          "measures": { "thickness_b": "@bracket_thickness" },
+          "variables": { "embed_min": { "value": "10" } },
+          "at": [ { "y": "-@hole_distance" } ]
+        }
+      }
+    },
+    "b": {
+      "hardware": {
+        "screws": {
+          "use": "connectors/generic/screws/screw-4x16.json", "host": "a",
+          "measures": { "thickness_b": "@bracket_thickness" },
+          "variables": { "embed_min": { "value": "10" } },
+          "at": [ { "y": "@hole_distance" } ]
+        }
+      }
+    }
+  },
+  "options": { "start_offset": "50", "end_offset": "50", "min_spacing": "0", "max_spacing": "400" }
+}

@@ -279,6 +279,7 @@ module Ladb::OpenCutList
 
     DXF_LINE_TYPE_CONTINUOUS = 'CONTINUOUS'.freeze
     DXF_LINE_TYPE_DOT2 = 'DOT2'.freeze
+    DXF_LINE_TYPE_DASHED2 = 'DASHED2'.freeze
 
     def _dxf_get_unit_factor(su_unit)
 
@@ -346,8 +347,22 @@ module Ladb::OpenCutList
       @_dxf_current_id.to_s(16).upcase
     end
 
+    # ID / Text
+
     def _dxf_sanitize_identifier(name)
-      name
+      _dxf_text_to_ascii(name)
+        .gsub(/[\n]+/, '')  # Remove new lines
+        .gsub(/[\s<>\/\\“:;?*|=‘.]/, '_')
+        .upcase
+    end
+
+    def _dxf_sanitize_text(text)
+      _dxf_text_to_ascii(text)
+        .gsub(/[\n]+/, '')  # Remove new lines
+    end
+
+    def _dxf_text_to_ascii(text)
+      text
         .to_s
         .tr(
           "ÀÁÂÃÄÅàáâãäåĀāĂăĄąÇçĆćĈĉĊċČčÐðĎďĐđÈÉÊËèéêëĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħÌÍÎÏìíîïĨĩĪīĬĭĮįİıĴĵĶķĸĹĺĻļĽľĿŀŁłÑñŃńŅņŇňŉŊŋÒÓÔÕÖØòóôõöøŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšſŢţŤťŦŧÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲųŴŵÝýÿŶŷŸŹźŻżŽž",
@@ -358,8 +373,6 @@ module Ladb::OpenCutList
           :replace           => '',        # Use a blank for those replacements
           :universal_newline => true       # Always break lines with \n
         )
-        .gsub(/[\s<>\/\\“:;?*|=‘.]/, '_')
-        .upcase
     end
 
     # -----
@@ -369,7 +382,7 @@ module Ladb::OpenCutList
       if value.is_a?(Integer)
         file.puts(value.to_s.rjust(code >= 90 && code <= 99 ? 9 : 6))
       elsif value.is_a?(Float)
-        value = value.round(11)
+        value = value.round(6)  # Round to 6 by convention in AutoCAD
         value = 0.0 if value == 0 # Avoid -0.0
         file.puts(value.to_s)
       else
@@ -421,6 +434,8 @@ module Ladb::OpenCutList
 
     def _dxf_write_section_header(file, su_unit, min = Geom::Point3d.new, max = Geom::Point3d.new(1000.0, 1000.0, 1000.0))
 
+      # https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-A85E8E67-27CD-4C59-BE61-4DC9FADBE74A
+
       _dxf_write_section(file, 'HEADER') do
 
         _dxf_write_header_value(file, '$ACADVER', 1, 'AC1014')
@@ -430,16 +445,16 @@ module Ladb::OpenCutList
                                 20, 0.0,
                                 30, 0.0)
         _dxf_write_header_value(file, '$INSUNITS', 70, _dxf_convert_unit(su_unit))
-        _dxf_write_header_value(file, '$EXTMIN', 10, min.x.to_f,
-                                20, min.y.to_f,
-                                30, min.z.to_f)
-        _dxf_write_header_value(file, '$EXTMAX', 10, max.x.to_f,
-                                20, max.y.to_f,
-                                30, max.z.to_f)
-        _dxf_write_header_value(file, '$LIMMIN', 10, min.x.to_f,
-                                20, min.y.to_f)
-        _dxf_write_header_value(file, '$LIMMAX', 10, max.x.to_f,
-                                20, max.y.to_f)
+        _dxf_write_header_value(file, '$EXTMIN', 10, min.x,
+                                20, min.y,
+                                30, min.z)
+        _dxf_write_header_value(file, '$EXTMAX', 10, max.x,
+                                20, max.y,
+                                30, max.z)
+        _dxf_write_header_value(file, '$LIMMIN', 10, min.x,
+                                20, min.y)
+        _dxf_write_header_value(file, '$LIMMAX', 10, max.x,
+                                20, max.y)
         _dxf_write_header_value(file, '$ORTHOMODE', 70, 0)
         _dxf_write_header_value(file, '$REGENMODE', 70, 1)
         _dxf_write_header_value(file, '$FILLMODE', 70, 1)
@@ -594,12 +609,12 @@ module Ladb::OpenCutList
                                 20, 0.0,
                                 30, 0.0)
         _dxf_write_header_value(file, '$PLIMCHECK', 70, 0)
-        _dxf_write_header_value(file, '$PEXTMIN', 10, '1.000000000000000E+20',
-                                20, '1.000000000000000E+20',
-                                30, '1.000000000000000E+20')
-        _dxf_write_header_value(file, '$PEXTMAX', 10, '-1.000000000000000E+20',
-                                20, '-1.000000000000000E+20',
-                                30, '-1.000000000000000E+20')
+        _dxf_write_header_value(file, '$PEXTMIN', 10, min.x,
+                                20, min.y,
+                                30, min.z)
+        _dxf_write_header_value(file, '$PEXTMAX', 10, max.x,
+                                20, max.y,
+                                30, max.z)
         _dxf_write_header_value(file, '$PLIMMIN', 10, 0.0,
                                 20, 0.0)
         _dxf_write_header_value(file, '$PLIMMAX', 10, 12.0,
@@ -653,12 +668,12 @@ module Ladb::OpenCutList
           _dxf_write_sub_classes(file, [ 'AcDbSymbolTableRecord', 'AcDbViewportTableRecord' ])
           _dxf_write(file, 2, '*ACTIVE')
           _dxf_write(file, 70, 0)
-          _dxf_write(file, 10, vport_min.x.to_f)
-          _dxf_write(file, 20, vport_min.y.to_f)
-          _dxf_write(file, 11, vport_max.x.to_f)
-          _dxf_write(file, 21, vport_max.y.to_f)
-          _dxf_write(file, 12, vport_center.x.to_f)
-          _dxf_write(file, 22, vport_center.y.to_f)
+          _dxf_write(file, 10, vport_min.x)
+          _dxf_write(file, 20, vport_min.y)
+          _dxf_write(file, 11, vport_max.x)
+          _dxf_write(file, 21, vport_max.y)
+          _dxf_write(file, 12, vport_center.x)
+          _dxf_write(file, 22, vport_center.y)
           _dxf_write(file, 13, 0.0)
           _dxf_write(file, 23, 0.0)
           _dxf_write(file, 14, 0.5)
@@ -745,7 +760,22 @@ module Ladb::OpenCutList
           _dxf_write(file, 49, -3.175)
           _dxf_write(file, 74, 0)
 
-          available_line_types = %w[CONTINUOUS DOT2]
+          _dxf_write(file, 0, 'LTYPE')
+          _dxf_write_id(file)
+          _dxf_write_owner_id(file, id)
+          _dxf_write_sub_classes(file, [ 'AcDbSymbolTableRecord', 'AcDbLinetypeTableRecord' ])
+          _dxf_write(file, 2, 'DASHED2')
+          _dxf_write(file, 70, 0)
+          _dxf_write(file, 3, 'Dashed (.5x) _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _')
+          _dxf_write(file, 72, 65)
+          _dxf_write(file, 73, 2)
+          _dxf_write(file, 40, 9.524999999999999)
+          _dxf_write(file, 49, 6.35)
+          _dxf_write(file, 74, 0)
+          _dxf_write(file, 49, -3.175)
+          _dxf_write(file, 74, 0)
+
+          available_line_types = %w[CONTINUOUS DOT2 DASHED2]
 
         _dxf_write(file, 0, 'ENDTAB')
 
@@ -1023,9 +1053,13 @@ module Ladb::OpenCutList
 
     # -- BASE GEOMETRY
 
-    def _dxf_write_point(file, x, y, layer = '0')
+    def _dxf_write_point(file, x, y, z, layer = '0')
 
       # Docs : https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-FCEF5726-53AE-4C43-B4EA-C84EB8686A66
+
+      x = x
+      y = y
+      z = z
 
       _dxf_write(file, 0, 'POINT')
       _dxf_write_id(file)
@@ -1035,13 +1069,20 @@ module Ladb::OpenCutList
       _dxf_write_sub_classes(file, [ 'AcDbPoint' ])
       _dxf_write(file, 10, x)
       _dxf_write(file, 20, y)
-      _dxf_write(file, 30, 0.0)
+      _dxf_write(file, 30, z)
 
     end
 
-    def _dxf_write_line(file, x1, y1, x2, y2, layer = '0')
+    def _dxf_write_line(file, x1, y1, z1, x2, y2, z2, layer = '0')
 
       # Docs : https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-FCEF5726-53AE-4C43-B4EA-C84EB8686A66
+
+      x1 = x1
+      y1 = y1
+      z1 = z1
+      x2 = x2
+      y2 = y2
+      z2 = z2
 
       _dxf_write(file, 0, 'LINE')
       _dxf_write_id(file)
@@ -1051,16 +1092,21 @@ module Ladb::OpenCutList
       _dxf_write_sub_classes(file, [ 'AcDbLine' ])
       _dxf_write(file, 10, x1)
       _dxf_write(file, 20, y1)
-      _dxf_write(file, 30, 0.0)
+      _dxf_write(file, 30, z1)
       _dxf_write(file, 11, x2)
       _dxf_write(file, 21, y2)
-      _dxf_write(file, 31, 0.0)
+      _dxf_write(file, 31, z2)
 
     end
 
-    def _dxf_write_arc(file, cx, cy, r, as = 0, ae = Geometrix::TWO_PI, layer = '0')
+    def _dxf_write_arc(file, cx, cy, cz, r, as = 0, ae = Geometrix::TWO_PI, layer = '0')
 
       # Docs : https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-0B14D8F1-0EBA-44BF-9108-57D8CE614BC8
+
+      cx = cx
+      cy = cy
+      cz = cz
+      r = r
 
       _dxf_write(file, 0, 'ARC')
       _dxf_write_id(file)
@@ -1070,7 +1116,7 @@ module Ladb::OpenCutList
       _dxf_write_sub_classes(file, [ 'AcDbCircle' ])
       _dxf_write(file, 10, cx)
       _dxf_write(file, 20, cy)
-      _dxf_write(file, 30, 0.0)
+      _dxf_write(file, 30, cz)
       _dxf_write(file, 40, r)
       _dxf_write_sub_classes(file, [ 'AcDbArc' ])
       _dxf_write(file, 50, as)
@@ -1081,9 +1127,14 @@ module Ladb::OpenCutList
 
     end
 
-    def _dxf_write_circle(file, cx, cy, r, layer = '0')
+    def _dxf_write_circle(file, cx, cy, cz, r, layer = '0')
 
       # Docs : https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-8663262B-222C-414D-B133-4A8506A27C18
+
+      cx = cx
+      cy = cy
+      cz = cz
+      r = r
 
       _dxf_write(file, 0, 'CIRCLE')
       _dxf_write_id(file)
@@ -1093,18 +1144,24 @@ module Ladb::OpenCutList
       _dxf_write_sub_classes(file, [ 'AcDbCircle' ])
       _dxf_write(file, 10, cx)
       _dxf_write(file, 20, cy)
-      _dxf_write(file, 30, 0.0)
+      _dxf_write(file, 30, cz)
       _dxf_write(file, 40, r)
 
     end
 
-    def _dxf_write_ellipse(file, cx, cy, vx, vy, vr, as = 0, ae = Geometrix::TWO_PI, layer = '0')
+    def _dxf_write_ellipse(file, cx, cy, cz, vx, vy, vr, as = 0, ae = Geometrix::TWO_PI, layer = '0')
 
       # Docs : https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-107CB04F-AD4D-4D2F-8EC9-AC90888063AB
 
       if as > ae && ae < 0
         ae = ae + Geometrix::TWO_PI  # Force end angle to be greater than start angle. Some DXF readers prefer that.
       end
+
+      cx = cx
+      cy = cy
+      cz = cz
+      vx = vx
+      vy = vy
 
       _dxf_write(file, 0, 'ELLIPSE')
       _dxf_write_id(file)
@@ -1114,7 +1171,7 @@ module Ladb::OpenCutList
       _dxf_write_sub_classes(file, [ 'AcDbEllipse' ])
       _dxf_write(file, 10, cx)
       _dxf_write(file, 20, cy)
-      _dxf_write(file, 30, 0.0)
+      _dxf_write(file, 30, cz)
       _dxf_write(file, 11, vx)
       _dxf_write(file, 21, vy)
       _dxf_write(file, 31, 0.0)
@@ -1127,7 +1184,7 @@ module Ladb::OpenCutList
 
     end
 
-    def _dxf_write_polyline(file, vertices, closed = false, layer = '0')  # vertices = Array of DxfVertexDef
+    def _dxf_write_polyline(file, vertices, elevation = 0.0, closed = false, layer = '0')  # vertices = Array of DxfVertexDef
 
       # Docs : https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-748FC305-F3F2-4F74-825A-61F04D757A50
 
@@ -1139,18 +1196,23 @@ module Ladb::OpenCutList
       _dxf_write_sub_classes(file, [ 'AcDbPolyline' ])
       _dxf_write(file, 90, vertices.length) # Vertex count
       _dxf_write(file, 70, closed ? 1 : 0) # 1 = Closed
+      _dxf_write(file, 38, elevation)
 
       vertices.each do |vertex|
 
-        _dxf_write(file, 10, vertex.x)
-        _dxf_write(file, 20, vertex.y)
-        _dxf_write(file, 42, vertex.bulge)
+        x = vertex.x
+        y = vertex.y
+        bulge = vertex.bulge
+
+        _dxf_write(file, 10, x)
+        _dxf_write(file, 20, y)
+        _dxf_write(file, 42, bulge)
 
       end
 
     end
 
-    def _dxf_write_polygon(file, points, layer = '0')
+    def _dxf_write_polygon(file, points, elevation = 0.0, layer = '0')
 
       # Docs : https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-748FC305-F3F2-4F74-825A-61F04D757A50
 
@@ -1162,17 +1224,21 @@ module Ladb::OpenCutList
       _dxf_write_sub_classes(file, [ 'AcDbPolyline' ])
       _dxf_write(file, 90, points.length) # Vertex count
       _dxf_write(file, 70, 1) # 1 = Closed
+      _dxf_write(file, 38, elevation)
 
       points.each do |point|
 
-        _dxf_write(file, 10, point.x.to_f)
-        _dxf_write(file, 20, point.y.to_f)
+        x = point.x
+        y = point.y
+
+        _dxf_write(file, 10, x)
+        _dxf_write(file, 20, y)
 
       end
 
     end
 
-    def _dxf_write_rect(file, x, y, width, height, layer = '0')
+    def _dxf_write_rect(file, x, y, elevation, width, height, layer = '0')
 
       points = [
         Geom::Point3d.new(x, y),
@@ -1181,13 +1247,19 @@ module Ladb::OpenCutList
         Geom::Point3d.new(x, y + height),
       ]
 
-      _dxf_write_polygon(file, points, layer)
+      _dxf_write_polygon(file, points, elevation, layer)
 
     end
 
-    def _dxf_write_text(file, x, y, height, text, ar = 0, halign = DXF_TEXT_HALIGN_LEFT, valign = DXF_TEXT_VALIGN_BASE_LINE, layer = '0')
+    def _dxf_write_text(file, x, y, z, height, text, ar = 0, halign = DXF_TEXT_HALIGN_LEFT, valign = DXF_TEXT_VALIGN_BASE_LINE, layer = '0')
 
       # Docs : https://help.autodesk.com/view/OARXMAC/2024/FRA/?guid=GUID-62E5383D-8A14-47B4-BFC4-35824CAE8363
+
+      x = x
+      y = y
+      z = z
+      height = height
+      text = _dxf_sanitize_text(text)
 
       _dxf_write(file, 0, 'TEXT')
       _dxf_write_id(file)
@@ -1196,29 +1268,31 @@ module Ladb::OpenCutList
       _dxf_write_sub_classes(file, [ 'AcDbText' ])
       _dxf_write(file, 10, x)
       _dxf_write(file, 20, y)
-      _dxf_write(file, 30, 0.0)
+      _dxf_write(file, 30, z)
       _dxf_write(file, 40, height)
       _dxf_write(file, 50, ar)
-      _dxf_write(file, 1, text.to_s)
+      _dxf_write(file, 1, text)
       _dxf_write(file, 72, halign)
       _dxf_write(file, 11, x)
       _dxf_write(file, 21, y)
-      _dxf_write(file, 31, 0.0)
+      _dxf_write(file, 31, z)
       _dxf_write_sub_classes(file, [ 'AcDbText' ])
       _dxf_write(file, 73, valign)
 
     end
 
-    def _dxf_write_label(file, rx, ry, rw, rh, text, tw, th, tx = 0, ty = 0, angle = 0, layer = nil)
-      text = text.to_s
+    def _dxf_write_label(file, rx, ry, rz, rw, rh, text, tw, th, tx = 0, ty = 0, angle = 0, layer = nil)
+
+      text = _dxf_sanitize_text(text)
       return unless text.length > 0
 
       tx = rx + rw / 2.0 + tx
       ty = ry + rh / 2.0 + ty
+      tz = rz
       theight = [ 60.0, th / 2, tw / text.length ].min
       angle = angle % 180
 
-      _dxf_write_text(file, tx , ty, theight, text, angle, DXF_TEXT_HALIGN_CENTER, DXF_TEXT_VALIGN_MIDDLE, layer)
+      _dxf_write_text(file, tx , ty, tz, theight, text, angle, DXF_TEXT_HALIGN_CENTER, DXF_TEXT_VALIGN_MIDDLE, layer)
 
     end
 
@@ -1255,6 +1329,7 @@ module Ladb::OpenCutList
       a << 'OUTER' if layer_def.type_outer?
       a << 'HOLES' if layer_def.type_holes?
       a << 'PATHS' if layer_def.type_paths?
+      a << 'MACHININGS' if layer_def.type_machinings?
       a << layer_def.name if layer_def.has_name?
       _dxf_sanitize_identifier(a.compact.join('_'))
     end
@@ -1275,9 +1350,10 @@ module Ladb::OpenCutList
       projection_def.layer_defs.each do |layer_def|
 
         layer_name = _dxf_get_projection_layer_def_identifier(layer_def, unit_transformation, prefix)
-        if layer_def.type_paths?
+        through_part_colored = layer_def.type_machinings? && !layer_def.material_colored? && layer_def.depth >= projection_def.max_depth
+        if layer_def.type_paths? || layer_def.type_machinings? && layer_def.material_colored?
           layer_color = layer_def.has_color? ? layer_def.color : paths_color
-        elsif layer_def.type_holes?
+        elsif layer_def.type_holes? || through_part_colored  # Machinings not colored by their material take the colors of what they cut : holes when through, depths otherwise
           layer_color = holes_color
         elsif layer_def.type_outer?
           layer_color = color
@@ -1310,6 +1386,7 @@ module Ladb::OpenCutList
                                         smoothing: false,
                                         transformation: IDENTITY,
                                         unit_transformation: IDENTITY,
+                                        depth_to_z: true,
                                         layer: '0')
 
       require_relative '../model/drawing/drawing_projection_def'
@@ -1321,6 +1398,7 @@ module Ladb::OpenCutList
                                            smoothing: smoothing,
                                            transformation: transformation,
                                            unit_transformation: unit_transformation,
+                                           depth_to_z: depth_to_z,
                                            layer: layer)
         yield if block_given?
       end
@@ -1331,16 +1409,18 @@ module Ladb::OpenCutList
                                            smoothing: false,
                                            transformation: IDENTITY,
                                            unit_transformation: IDENTITY,
+                                           depth_to_z: true,
                                            layer: '0')
 
       require_relative '../model/drawing/drawing_projection_def'
 
       return unless projection_def.is_a?(DrawingProjectionDef)
 
-      projection_def.layer_defs.sort_by { |v| [v.type_paths? ? 1 : 0, -v.depth ] }.each do |layer_def| # Path's layers always on top
+      projection_def.layer_defs.sort_by { |v| [ v.type_paths? || v.type_machinings? ? 1 : 0, -v.depth ] }.each do |layer_def| # Path's and machining's layers always on top
         _dxf_write_projection_layer_def_geometry(file, layer_def,
                                                  smoothing: smoothing,
                                                  transformation: transformation,
+                                                 depth_to_z: depth_to_z,
                                                  layer: _dxf_get_projection_layer_def_identifier(layer_def, unit_transformation, layer))
       end
 
@@ -1349,6 +1429,7 @@ module Ladb::OpenCutList
     def _dxf_write_projection_layer_def_geometry(file, layer_def,
                                                  smoothing: false,
                                                  transformation: IDENTITY,
+                                                 depth_to_z: true,
                                                  layer: '0')
 
       require_relative '../model/drawing/drawing_projection_def'
@@ -1358,6 +1439,12 @@ module Ladb::OpenCutList
       require_relative '../utils/transformation_utils'
 
       flipped = TransformationUtils.flipped?(transformation)
+
+      if depth_to_z
+        z = -Geom::Vector3d.new(layer_def.depth, 0, 0).transform(transformation).length
+      else
+        z = 0
+      end
 
       layer_def.poly_defs.each do |poly_def|
 
@@ -1371,11 +1458,11 @@ module Ladb::OpenCutList
             center = portion.ellipse_def.center.transform(transformation)
             radius = Geom::Vector3d.new(portion.ellipse_def.xradius, 0, 0).transform(transformation).length
 
-            cx = center.x.to_f
-            cy = center.y.to_f
-            r = radius.to_f
+            cx = center.x
+            cy = center.y
+            r = radius
 
-            _dxf_write_circle(file, cx, cy, r, layer)
+            _dxf_write_circle(file, cx, cy, z, r, layer)
 
           elsif poly_def.curve_def.ellipse?
 
@@ -1385,15 +1472,15 @@ module Ladb::OpenCutList
             center = portion.ellipse_def.center.transform(transformation)
             xaxis = portion.ellipse_def.xaxis.transform(transformation)
 
-            cx = center.x.to_f
-            cy = center.y.to_f
-            vx = xaxis.x.to_f
-            vy = xaxis.y.to_f
+            cx = center.x
+            cy = center.y
+            vx = xaxis.x
+            vy = xaxis.y
             vr = portion.ellipse_def.yradius / portion.ellipse_def.xradius
             as = 0.0
             ae = 2.0 * Math::PI
 
-            _dxf_write_ellipse(file, cx, cy, vx, vy, vr, as, ae, layer)
+            _dxf_write_ellipse(file, cx, cy, z, vx, vy, vr, as, ae, layer)
 
           else
 
@@ -1404,8 +1491,8 @@ module Ladb::OpenCutList
 
               start_point = portion.start_point.transform(transformation)
 
-              x = start_point.x.to_f
-              y = start_point.y.to_f
+              x = start_point.x
+              y = start_point.y
 
               if portion.is_a?(Geometrix::ArcCurvePortionDef)
 
@@ -1464,8 +1551,8 @@ module Ladb::OpenCutList
                       vertices << DxfVertexDef.new(x, y, bulge)
 
                       # Prepare for the next vertex
-                      x = apx_end_point.x.to_f
-                      y = apx_end_point.y.to_f
+                      x = apx_end_point.x
+                      y = apx_end_point.y
 
                     end
 
@@ -1487,21 +1574,21 @@ module Ladb::OpenCutList
 
               end_point = poly_def.curve_def.portions.last.end_point.transform(transformation)
 
-              x = end_point.x.to_f
-              y = end_point.y.to_f
+              x = end_point.x
+              y = end_point.y
 
               vertices << DxfVertexDef.new(x, y, 0)
 
             end
 
-            _dxf_write_polyline(file, vertices, poly_def.curve_def.closed?, layer)
+            _dxf_write_polyline(file, vertices, z, poly_def.curve_def.closed?, layer)
 
           end
 
         else
 
           # Extract loop points from vertices (quicker)
-          _dxf_write_polyline(file, poly_def.points.map { |point| point.transform(transformation) }.map { |point| DxfVertexDef.new(point.x.to_f, point.y.to_f, 0) }, poly_def.curve_def.closed?, layer)
+          _dxf_write_polyline(file, poly_def.points.map { |point| point.transform(transformation) }.map { |point| DxfVertexDef.new(point.x, point.y, 0) }, z, poly_def.curve_def.closed?, layer)
 
         end
 

@@ -1,0 +1,593 @@
+#include "solver.hpp"
+
+#include "preprocessor.hpp"
+
+#include <manifold/manifold.h>
+#include <nlohmann/json.hpp>
+
+#include <cstdint>
+#include <fstream>
+#include <istream>
+#include <ostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+
+namespace Meshy {
+
+    using json = nlohmann::json;
+
+    std::istream& operator>>(
+            std::istream& in,
+            Operation& operation)
+    {
+        std::string token;
+        in >> token;
+        if (token == "union") {
+            operation = Operation::Union;
+        } else if (token == "subtraction") {
+            operation = Operation::Subtraction;
+        } else if (token == "intersection") {
+            operation = Operation::Intersection;
+        } else  {
+            in.setstate(std::ios_base::failbit);
+        }
+        return in;
+    }
+
+    std::ostream& operator<<(
+            std::ostream &os,
+            Operation operation)
+    {
+        switch (operation) {
+            case Operation::Union: {
+                os << "union";
+                break;
+            }
+            case Operation::Subtraction: {
+                os << "subtraction";
+                break;
+            }
+            case Operation::Intersection: {
+                os << "intersection";
+                break;
+            }
+        }
+        return os;
+    }
+
+    namespace {
+
+        void read_mesh(
+                const json& j,
+                manifold::MeshGL64& mesh
+        ) {
+
+            // Vertices
+            const auto& verts = j.at("vertices");
+            if (verts.size() % 3 != 0) {
+                throw std::runtime_error("'vertices' must contain a multiple of 3 values");
+            }
+
+            mesh.vertProperties.resize(verts.size());
+            for (std::size_t i = 0; i < verts.size(); ++i) {
+                mesh.vertProperties[i] = verts[i].get<double>();
+            }
+
+            mesh.numProp = 3; // x, y, z
+
+            // Triangles
+            const auto& tris = j.at("face_indices");
+            if (tris.size() % 3 != 0) {
+                throw std::runtime_error("'face_indices' must contain a multiple of 3 indices");
+            }
+
+            mesh.triVerts.resize(tris.size());
+            for (std::size_t i = 0; i < tris.size(); ++i) {
+                mesh.triVerts[i] = tris[i].get<uint32_t>();
+            }
+
+            // Tolerance
+            // Geometric features smaller than this are considered coincident : lets the
+            // boolean absorb near-coplanar faces instead of leaving sliver residues.
+            if (j.contains("tolerance")) {
+                mesh.tolerance = j.at("tolerance").get<double>();
+            }
+
+            // FaceIds
+            if (j.contains("face_ids")) {
+                const auto& ids = j.at("face_ids");
+
+                mesh.faceID.resize(ids.size());
+                for (std::size_t i = 0; i < ids.size(); ++i) {
+                    mesh.faceID[i] = ids[i].get<uint32_t>();
+                }
+            }
+
+        }
+
+        // Writes one fragment from the shells of ONE body : its outer surface
+        // first, then the inner shells of its internal voids (inward wound),
+        // merged into a single indexed mesh so hollow bodies survive the JSON
+        // round-trip.
+        void write_fragment(
+                json& j,
+                const std::vector<manifold::MeshGL64>& meshes
+        ) {
+
+            j["vertices"] = json::array();
+            j["face_indices"] = json::array();
+            j["face_ids"] = json::array();
+
+            std::size_t vertex_offset = 0;
+            std::size_t face_count = 0;
+            for (const auto& mesh : meshes) {
+
+                // Vertices
+                const std::size_t stride = mesh.numProp;
+                const std::size_t vertex_count = mesh.vertProperties.size() / stride;
+                for (std::size_t v = 0; v < vertex_count; ++v) {
+                    j["vertices"].push_back(mesh.vertProperties[v * stride]);
+                    j["vertices"].push_back(mesh.vertProperties[v * stride + 1]);
+                    j["vertices"].push_back(mesh.vertProperties[v * stride + 2]);
+                }
+
+                // Triangles
+                for (uint32_t idx : mesh.triVerts) {
+                    j["face_indices"].push_back(idx + vertex_offset);
+                }
+
+                // FaceID
+                for (uint32_t id : mesh.faceID) {
+                    j["face_ids"].push_back(id);
+                }
+
+                vertex_offset += vertex_count;
+                face_count += mesh.triVerts.size() / 3;
+            }
+
+            j["num_vertices"] = vertex_offset;
+            j["num_faces"] = face_count;
+
+        }
+
+    }
+
+    Solver Solver::build(
+            const std::string& filepath
+    ) {
+
+        std::ifstream ifs(filepath);
+        if (!ifs.good()) {
+            throw std::runtime_error("Unable to open file path \"" + filepath + "\".");
+        }
+
+        return build(ifs);
+    }
+
+    Solver Solver::build(
+            std::istream& is
+    ) {
+
+        json j;
+        is >> j;
+
+        Solver solver;
+        solver.read(j);
+
+        return solver;
+    }
+
+    void Solver::read(
+            const json& j
+    ) {
+
+        if (j.contains("operation")) {
+            std::stringstream ss(j.value("operation", "union"));
+            ss >> operation_;
+        }
+
+        if (j.contains("validate")) {
+            validate_ = j.at("validate").get<bool>();
+        }
+
+        if (j.contains("tolerance")) {
+            tolerance_ = j.at("tolerance").get<double>();
+        }
+
+        if (j.contains("src_meshes")) {
+            for (auto& j_item: j["src_meshes"].items()) {
+                auto& j_item_value = j_item.value();
+                read_mesh(j_item_value, src_meshes_.emplace_back());
+            }
+        }
+
+        if (j.contains("cut_meshes")) {
+            for (auto& j_item: j["cut_meshes"].items()) {
+                auto& j_item_value = j_item.value();
+                read_mesh(j_item_value, cut_meshes_.emplace_back());
+            }
+        }
+
+    }
+
+    json Solver::operate() {
+
+        // Validation : structured errors, one at most per mesh, src meshes first.
+        //
+        // Each error carries the OPERAND it was found on ("role" : "src" or
+        // "cut", "index" : position in that input list), so the caller can name
+        // the culprit rather than just the defect. Position in the error array
+        // could never say it : a valid mesh appends nothing, so the array is an
+        // arbitrary subset of the operands.
+
+        if (validate_) {
+            json j_errors = json::array();
+            auto fn_append_errors = [&j_errors](manifold::MeshGL64& mesh, const char* role, std::size_t index) {
+                std::vector<ValidationError> errors = validate_mesh(mesh);
+                // A lone non_manifold_edges verdict may be a seam between two
+                // (or more) otherwise-manifold shells pinched together at a
+                // vertex or edge (zero-width contact, no geometry change
+                // needed) rather than a genuine defect : try to split it into
+                // several manifold shells within the same buffer before
+                // giving up on the mesh. See split_non_manifold_shells for
+                // what it does and does not handle.
+                if (errors.size() == 1 && errors[0].code == "non_manifold_edges" && split_non_manifold_shells(mesh)) {
+                    errors.clear();
+                }
+                for (const auto& error : errors) {
+                    json j_error;
+                    j_error["code"] = error.code;
+                    if (error.count > 0) {
+                        j_error["count"] = error.count;
+                    }
+                    j_error["role"] = role;
+                    j_error["index"] = index;
+                    j_errors.push_back(j_error);
+                }
+            };
+            for (std::size_t i = 0; i < src_meshes_.size(); ++i) fn_append_errors(src_meshes_[i], "src", i);
+            for (std::size_t i = 0; i < cut_meshes_.size(); ++i) fn_append_errors(cut_meshes_[i], "cut", i);
+            if (!j_errors.empty()) {
+                json output;
+                output["errors"] = j_errors;
+                return output;
+            }
+        }
+
+        // Manifold interprets winding as defining solidity : make sure normals point outward.
+
+        for (auto& mesh : src_meshes_) ensure_outward_winding(mesh);
+        for (auto& mesh : cut_meshes_) ensure_outward_winding(mesh);
+
+        // Snap every vertex of every operand onto a canonical plane set built from all
+        // their faces : each face becomes exactly planar, and faces meant to be coplanar
+        // (or edges/vertices meant to lie on a face of the other operand) become exactly
+        // so. Otherwise, the boolean would leave epsilon-thin residues (closed cavities,
+        // slivers) between nearly coincident geometry.
+
+        std::vector<manifold::MeshGL64*> all_meshes;
+        all_meshes.reserve(src_meshes_.size() + cut_meshes_.size());
+        for (auto& mesh : src_meshes_) all_meshes.push_back(&mesh);
+        for (auto& mesh : cut_meshes_) all_meshes.push_back(&mesh);
+
+        const std::vector<Plane> planes = canonical_planes(all_meshes, tolerance_);
+        for (auto* mesh : all_meshes) snap_to_planes(*mesh, planes, tolerance_);
+
+        // Exact coplanarity is only achievable in doubles on the exact-axis planes :
+        // on a tilted plane, snapped vertices keep ~1e-15 inconsistent residues that
+        // Manifold's exact arithmetic resolves into epsilon-thin residues (closed
+        // pockets under the surviving face, sliver flaps along the seams). So every
+        // tilted plane shared by two operands that get booleaned together has the
+        // coincidence broken into a CLEAR transversal configuration by nudging
+        // vertices along the plane normal, by ONE AND THE SAME
+        // SHARED_PLANE_OFFSET for every operand. Then the nudged meshes are
+        // re-snapped onto the axis planes the nudge may have dragged them off.
+        //
+        // The offset used to be STAGGERED — each operand got its own multiple
+        // of it, (position in the pool + 1) — so that no two operands stayed
+        // tied with each other on the plane. That was the defect, not a
+        // precaution. The multiple decides how far each operand retreats from
+        // a shared plane, so where two operands meet at an edge through
+        // DIFFERENT planes their retreats point different ways and differ in
+        // length : whichever retreats LESS leaves the other's face uncovered,
+        // and the stagger OPENS a ~1e-6 gap exactly where it was supposed to
+        // close one. The boolean then resolves that gap into a zero-thickness
+        // fin reaching through the panel, welding the compartments on either
+        // side of it into one.
+        //
+        // Expanding every operand by the same amount cannot do that : two
+        // faces flush against each other both move ACROSS their shared plane,
+        // so they can only ever overlap. The tie the stagger was there to
+        // break — two coplanar faces still coplanar after the nudge — is
+        // harmless, being the exact coplanarity the canonicalization above has
+        // just established on purpose.
+        //
+        // Measured on a seven panel cabinet, over all 5040 permutations of its
+        // panels : staggered, 5040 DISTINCT output meshes, only 2004 of them
+        // free of T-vertices ; uniform, ONE output mesh, free of T-vertices in
+        // every permutation.
+        //
+        // - Union merges everything : every operand with a face on a shared tilted
+        //   plane is expanded across it along its own outward normal, so seams
+        //   become robust overlaps.
+        // - Subtraction / intersection : the cuts are chained together first, then
+        //   applied to each src. A plane shared with a src face keeps the historic
+        //   intent — all cuts are pushed toward the src exterior (the cut cleanly
+        //   swallows or stops at the src face). A plane shared between cuts only is
+        //   handled like the union case (their chaining is a union) — except for
+        //   intersection, whose cut chaining shrinks, so cuts contract instead.
+
+        {
+            std::vector<manifold::MeshGL64*> nudge_pool;
+            if (operation_ == Operation::Union) {
+                nudge_pool = all_meshes;
+            } else {
+                for (auto& mesh : cut_meshes_) nudge_pool.push_back(&mesh);
+            }
+
+            // The offsets are first COLLECTED per operand, then applied in a
+            // single per-vertex simultaneous solve : a vertex at a corner
+            // where several nudged planes meet must honor all its offsets at
+            // once — see nudge_vertices_to_offset_planes.
+            std::vector<std::vector<std::pair<const Plane*, double>>> pool_offsets(nudge_pool.size());
+            for (const auto& plane : planes) {
+                if (is_axis_plane(plane)) continue;
+
+                std::vector<double> pool_signs(nudge_pool.size());
+                std::size_t faces_on_plane = 0;
+                for (std::size_t k = 0; k < nudge_pool.size(); ++k) {
+                    pool_signs[k] = outward_sign_on_plane(*nudge_pool[k], plane, tolerance_);
+                    if (pool_signs[k] != 0.0) ++faces_on_plane;
+                }
+
+                double src_sign = 0.0;
+                if (operation_ != Operation::Union) {
+                    for (auto& mesh : src_meshes_) {
+                        src_sign = outward_sign_on_plane(mesh, plane, tolerance_);
+                        if (src_sign != 0.0) break;
+                    }
+                }
+
+                if (src_sign != 0.0 && faces_on_plane > 0) {
+                    // src face on the plane : every cut (even one only touching the
+                    // plane through an edge or vertex) moves to the src exterior.
+                    for (std::size_t k = 0; k < nudge_pool.size(); ++k) {
+                        pool_offsets[k].emplace_back(&plane, src_sign * SHARED_PLANE_OFFSET);
+                    }
+                } else if (faces_on_plane >= 2) {
+                    // plane shared between chained operands only : expand each face
+                    // across it (contract for intersection chaining).
+                    const double dir = (operation_ == Operation::Intersection ? -1.0 : 1.0);
+                    for (std::size_t k = 0; k < nudge_pool.size(); ++k) {
+                        if (pool_signs[k] == 0.0) continue;
+                        pool_offsets[k].emplace_back(&plane, dir * pool_signs[k] * SHARED_PLANE_OFFSET);
+                    }
+                }
+            }
+            // The axis planes are never nudged, but a vertex sitting on one
+            // must not LEAVE it either : they join the constraint list with a
+            // ZERO offset, so the nudge holds the vertex on them while it
+            // clears the tilted ones — it SLIDES along its axis planes instead
+            // of being pushed off them.
+            //
+            // Re-snapping onto the axis planes AFTERWARDS, as a separate pass,
+            // cannot do this : a plain projection along the axis normal knows
+            // nothing of the offsets just imposed, so at every corner where a
+            // nudged tilted plane meets an axis plane it dragged the vertex
+            // back and destroyed them — measured on a mitred cabinet corner,
+            // 50 % to 92 % of the offset lost, by an amount that differs per
+            // operand and per rank. That left the very coincidences the nudge
+            // exists to break, and left them ORDER-DEPENDENTLY : the boolean
+            // then grew a zero-thickness fin into the joint for some input
+            // orders and not others.
+            //
+            // The holds come AFTER the offsets : the solve honors at most 3
+            // independent constraints per vertex, and the offsets are what
+            // break the degeneracy — the holds then spend whatever freedom is
+            // left keeping the vertex on its axis planes. Tried the other way
+            // round, and it is measurably worse : giving the holds priority
+            // starves the offsets on exactly the crowded corner vertices that
+            // need them, and the fin comes back.
+            //
+            // Only the operands that are actually nudged get the holds : one
+            // with no offset at all has not moved, and is still exactly on the
+            // axis planes snap_to_planes put it on above.
+            //
+            // And an operand is only held on the axis planes it has a FACE on :
+            // that is the coplanarity the hold exists to preserve. Holding a
+            // vertex on a plane its own mesh merely TOUCHES (an edge, or a
+            // single corner) preserves nothing of its own, and forces the
+            // displacement to be tangential — it slides ALONG that plane. When
+            // the plane happens to be the exactly coincident interface between
+            // two OTHER operands (an axis plane is never nudged, so two flush
+            // faces on it stay bit-identical), the slide plants a T-vertex in
+            // the middle of that coincident face pair, and the union can no
+            // longer cancel the two faces against each other : it leaves a
+            // zero-thickness crack, which the subtraction behind it inflates
+            // into a fin reaching through the panel. Seen on a cabinet whose
+            // bottom and top are NOTCHED flush with a divider's side face
+            // (their notch face and the divider's face share the axis plane)
+            // while the divider is MITRED to a second panel : the mitre is
+            // tilted, so it nudges, and the corner vertex it moves is the one
+            // touching the notch interface.
+            for (std::size_t k = 0; k < nudge_pool.size(); ++k) {
+                if (pool_offsets[k].empty()) continue;
+                for (const auto& plane : planes) {
+                    if (!is_axis_plane(plane)) continue;
+                    if (outward_sign_on_plane(*nudge_pool[k], plane, tolerance_) == 0.0) continue;
+                    pool_offsets[k].emplace_back(&plane, 0.0);
+                }
+            }
+
+            for (std::size_t k = 0; k < nudge_pool.size(); ++k) {
+                if (pool_offsets[k].empty()) continue;
+                nudge_vertices_to_offset_planes(*nudge_pool[k], pool_offsets[k], tolerance_);
+            }
+        }
+
+        // Build Manifolds
+
+        std::vector<manifold::Manifold> src_manifolds;
+        for (auto& mesh : src_meshes_) {
+            manifold::Manifold& manifold = src_manifolds.emplace_back(mesh);
+            if (manifold.Status() != manifold::Manifold::Error::NoError) {
+                throw std::runtime_error("Mesh is not a valid manifold");
+            }
+        }
+
+        std::vector<manifold::Manifold> cut_manifolds;
+        for (auto& mesh : cut_meshes_) {
+            manifold::Manifold& manifold = cut_manifolds.emplace_back(mesh);
+            if (manifold.Status() != manifold::Manifold::Error::NoError) {
+                throw std::runtime_error("Mesh is not a valid manifold");
+            }
+        }
+
+        // Boolean operations
+        //
+        // Subtraction and intersection are applied to EACH src independently
+        // (against the cuts combined) : srcs are never merged together, so
+        // touching or overlapping srcs keep their own identity and every
+        // result body is attributable to a single src. Union is the one
+        // operation whose purpose is to merge : it stays global.
+
+        // Chaining a boolean is a FOLD, and a fold reads its operands in the
+        // order it is given them : `a + b + c` and `c + b + a` resolve their
+        // coincidences differently and do not produce the same mesh. So the
+        // chained operands are folded in their GEOMETRIC order (see
+        // geometric_fold_order) — otherwise the caller's list order would leak
+        // back into the result through the chaining, having just been kept out
+        // of the nudging. Measured on a seven panel cabinet whose nudge was
+        // already order-free : the fold alone still produced 4 distinct meshes
+        // across the 5040 permutations of the same panels.
+        //
+        // Only the CHAINING is reordered. The src list of a subtraction or an
+        // intersection is not : each src yields its own result body, in the
+        // caller's own order, which is how a fragment is attributed back to the
+        // operand it came from.
+        std::vector<const manifold::MeshGL64*> cut_mesh_pointers;
+        cut_mesh_pointers.reserve(cut_meshes_.size());
+        for (const auto& mesh : cut_meshes_) cut_mesh_pointers.push_back(&mesh);
+        const std::vector<std::size_t> cut_fold_order = geometric_fold_order(cut_mesh_pointers);
+
+        std::vector<manifold::Manifold> results;
+        switch (operation_) {
+            case Operation::Union: {
+                // A union merges everything into one body, so its whole operand
+                // list is one chain and every one of them is reordered.
+                std::vector<const manifold::MeshGL64*> union_mesh_pointers = cut_mesh_pointers;
+                union_mesh_pointers.reserve(cut_meshes_.size() + src_meshes_.size());
+                for (const auto& mesh : src_meshes_) union_mesh_pointers.push_back(&mesh);
+
+                manifold::Manifold result;
+                for (const std::size_t index : geometric_fold_order(union_mesh_pointers)) {
+                    result = result + (index < cut_manifolds.size()
+                        ? cut_manifolds[index]
+                        : src_manifolds[index - cut_manifolds.size()]);
+                }
+                results.push_back(result);
+                break;
+            }
+            case Operation::Subtraction: {
+                manifold::Manifold cut_result;
+                for (const std::size_t index : cut_fold_order) {
+                    cut_result = cut_result + cut_manifolds[index];
+                }
+                for (auto& manifold : src_manifolds) {
+                    results.push_back(manifold - cut_result);
+                }
+                break;
+            }
+            case Operation::Intersection: {
+                // The cuts are chained together first. The default-constructed
+                // manifold is empty and would absorb the whole intersection :
+                // keep track of whether a cut seeded it, so an empty cut list
+                // leaves each src unchanged.
+                manifold::Manifold cut_result;
+                bool has_cut = false;
+                for (const std::size_t index : cut_fold_order) {
+                    if (has_cut) {
+                        cut_result ^= cut_manifolds[index];
+                    } else {
+                        cut_result = cut_manifolds[index];
+                        has_cut = true;
+                    }
+                }
+                for (auto& manifold : src_manifolds) {
+                    results.push_back(has_cut ? manifold ^ cut_result : manifold);
+                }
+                break;
+            }
+        }
+
+        // --- export ---
+
+        // One fragment per topologically disconnected body, so the caller can
+        // reattribute each of them to its source mesh through face provenance.
+        // Simplify() collapses degenerate leftovers (slivers thinner than the
+        // tolerance inherited from the input meshes) ; like Decompose(), it
+        // maintains the mesh relation, so input face provenance (faceID) that
+        // the Ruby side uses to restore materials and merge triangles back
+        // into faces is preserved. Do NOT call AsOriginal() here.
+        // Decompose() is purely topological : the inner shell of a hollow body
+        // (a closed internal void) comes out as its own component, wound inward
+        // and thus of NEGATIVE volume. Each of them is reattached to the body
+        // whose bounding box contains it (the smallest such body when nested)
+        // and exported inside the same fragment, so hollow bodies survive the
+        // JSON round-trip instead of coming back filled.
+        // Exactly coplanar face-to-face contact (axis planes, no nudge) resolves,
+        // for intersection, into closed zero-volume membranes that Simplify()
+        // keeps (their triangles are not degenerate). A body or a void below the
+        // volume of a tolerance-sized cube cannot exist in SketchUp : drop it.
+        const double min_volume = tolerance_ * tolerance_ * tolerance_;
+
+        json output;
+        output["fragments"] = json::array();
+        for (auto& result : results) {
+            if (result.Status() != manifold::Manifold::Error::NoError) {
+                throw std::runtime_error("Boolean operation failed");
+            }
+
+            std::vector<manifold::Manifold> bodies;
+            std::vector<manifold::Manifold> voids;
+            for (auto& part : result.Simplify().Decompose()) {
+                const double volume = part.Volume();
+                if (volume > min_volume) {
+                    bodies.push_back(part);
+                } else if (volume < -min_volume) {
+                    voids.push_back(part);
+                }
+            }
+
+            std::vector<std::vector<manifold::MeshGL64>> fragment_meshes(bodies.size());
+            std::vector<manifold::Box> body_boxes;
+            std::vector<double> body_volumes;
+            body_boxes.reserve(bodies.size());
+            body_volumes.reserve(bodies.size());
+            for (std::size_t i = 0; i < bodies.size(); ++i) {
+                fragment_meshes[i].push_back(bodies[i].GetMeshGL64());
+                body_boxes.push_back(bodies[i].BoundingBox());
+                body_volumes.push_back(bodies[i].Volume());
+            }
+
+            for (auto& void_part : voids) {
+                const manifold::Box void_box = void_part.BoundingBox();
+                std::ptrdiff_t container = -1;
+                for (std::size_t i = 0; i < bodies.size(); ++i) {
+                    if (!body_boxes[i].Contains(void_box)) continue;
+                    if (container < 0 || body_volumes[i] < body_volumes[container]) container = i;
+                }
+                // An orphan void (no containing body) has nothing to hollow : dropped.
+                if (container >= 0) fragment_meshes[container].push_back(void_part.GetMeshGL64());
+            }
+
+            for (const auto& meshes : fragment_meshes) {
+                write_fragment(output["fragments"].emplace_back(), meshes);
+            }
+        }
+
+        return output;
+    }
+
+}

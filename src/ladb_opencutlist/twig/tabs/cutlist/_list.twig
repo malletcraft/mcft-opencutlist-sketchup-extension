@@ -6,9 +6,9 @@
 {% include 'core/_alert-warnings.twig' %}
 {% include 'core/_alert-tips.twig' %}
 
-{% if usedEdgeMaterialDisplayNames is not empty or usedVeneerMaterialDisplayNames is not empty or usedTags is not empty or ignoredInstanceCount > 0 %}
+{% if groups|length > 0 or instanceCount > 0 and ignoredInstanceCount == instanceCount %}
 
-    {% set groupFiltersHidden = 'filters' in generateOptions.hidden_group_ids or (generateFilters.edge_material_names_filter is empty and generateFilters.veneer_material_names_filter is empty and generateFilters.tags_filter is empty) %}
+    {% set groupFiltersHidden = 'filters' in generateOptions.hidden_group_ids or (generateFilters.names_filter is empty and generateFilters.edge_material_names_filter is empty and generateFilters.veneer_material_names_filter is empty and generateFilters.tags_filter is empty) %}
 
     <table id="ladb_group_filters" data-group-id="filters" class="{% if groupFiltersHidden %}no-print {% endif %}table table-bordered ladb-cutlist-group ladb-cutlist-group-dark ladb-cutlist-group-filters">
         <thead>
@@ -22,6 +22,28 @@
         </tr>
         </thead>
         <tbody>
+        <tr>
+            <td>
+                <div class="media">
+                    <div class="media-left">
+                        <i class="ladb-opencutlist-icon-name" style="font-size: 150%; line-height: 32px;"></i>
+                    </div>
+                    <div class="media-body">
+                        <div class="no-print">
+                            <input type="text" class="form-control" id="ladb_cutlist_names_filter" value="{{ generateFilters.names_filter }}" placeholder="{{ 'tab.cutlist.list.names_filter'|i18next }}">
+                        </div>
+                        <div class="no-screen">
+                            <ul class="ladb-cutlist-tags-filters-printable">
+                                <li>{{ generateFilters.names_filter }}</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="media-right no-print">
+                        <button class="btn btn-default" id="ladb_cutlist_btn_names_filter_clear">{{ 'default.clear'|i18next }}</button>
+                    </div>
+                </div>
+            </td>
+        </tr>
         {% if usedEdgeMaterialDisplayNames is not empty or generateFilters.edge_material_names_filter is not empty %}
             <tr>
                 <td>
@@ -88,7 +110,7 @@
                             <div class="no-screen">
                                 <ul class="ladb-cutlist-tags-filters-printable">
                                     {% for tag in generateFilters.tags_filter %}
-                                        <li>{{ tag }}</li>
+                                        <li>{% if tag|slice(1) == '*' %}{{ tag|slice(0, 1) }}{{ 'tab.cutlist.list.tags_filter_any'|i18next }}{% else %}{{ tag }}{% endif %}</li>
                                     {% endfor %}
                                 </ul>
                             </div>
@@ -107,12 +129,11 @@
         {% endif %}
         </tbody>
     </table>
-{% endif %}
-
-{% if groups|length > 0 %}
 
     {% set groupSummaryHidden = 'summary' in generateOptions.hidden_group_ids %}
 
+{% endif %}
+{% if groups|length > 0 %}
     <table id="ladb_group_summary" data-group-id="summary" class="{% if groupSummaryHidden %}no-print {% endif %}table table-bordered ladb-cutlist-group ladb-cutlist-group-dark ladb-cutlist-group-summary">
         <thead>
         <tr class="table-heading">
@@ -166,7 +187,7 @@
                         {% endif %}
                         <a href="#ladb_group_{{ group.id }}" class="ladb-btn-scrollto ladb-click-tool" data-toggle="tooltip" title="{{ 'tab.cutlist.tooltip.scroll_to_block'|i18next }}"><i class="ladb-opencutlist-icon-arrow-circle-down"></i></a>
                         {% if group.material_id %}
-                            <a href="#" class="ladb-btn-edit-material" data-material-id="{{ group.material_id }}" data-toggle="tooltip" title="{{ 'tab.cutlist.tooltip.edit_material'|i18next({ 'material_name':group.material_display_name }) }}..."><i class="ladb-opencutlist-icon-edit"></i></a>
+                            <a href="#" class="ladb-btn-edit-material" data-material-id="{{ group.material_id }}" data-toggle="tooltip" data-html="true" title="{{ 'tab.cutlist.tooltip.edit_material'|i18next({ 'material_name':group.material_display_name }) }}..."><i class="ladb-opencutlist-icon-edit"></i></a>
                         {% endif %}
                         <a href="#ladb_group_{{ group.id }}" class="ladb-btn-toggle-visible{% if hidden %} ladb-tool-dark{% endif %}" data-toggle="tooltip" title="{{ 'tab.cutlist.tooltip.show_hide_block'|i18next }}"><i class="ladb-opencutlist-icon-eye-{% if hidden %}close{% else %}open{% endif %}"></i></a>
                     </div>
@@ -234,14 +255,6 @@
                 <div class="btn-group pull-right">
                     {% if group.material_type == 2 or group.material_type == 6 or group.material_type == 3 or group.material_type == 4 %}    {# 2 = TYPE_SHEET_GOOD, 6 = TYPE_VENEER, 3 = TYPE_DIMENSIONAL, 4 = TYPE_EDGE #}
                         <button class="no-print btn btn-default btn-sm ladb-btn-hiddable ladb-btn-group-packing"><i class="ladb-opencutlist-icon-packing-irregular"></i> {{ 'tab.cutlist.menu.group_cuttingdiagram'|i18next }}...</button>
-                    {% endif %}
-                    {% if capabilities.is_dev and not capabilities.is_rbz %}
-                        {% if group.material_type == 2 or group.material_type == 6 %}     {# 2 = TYPE_SHEET_GOOD, 6 = TYPE_VENEER  #}
-                            <button class="no-print btn btn-default btn-sm ladb-btn-hiddable ladb-btn-group-cuttingdiagram2d"><i class="ladb-opencutlist-icon-cuttingdiagram2d"></i></button>
-                        {% endif %}
-                        {% if group.material_type == 3 or group.material_type == 4 %}      {# 3 = TYPE_DIMENSIONAL, 4 = TYPE_EDGE #}
-                            <button class="no-print btn btn-default btn-sm ladb-btn-hiddable ladb-btn-group-cuttingdiagram1d"><i class="ladb-opencutlist-icon-cuttingdiagram1d"></i></button>
-                        {% endif %}
                     {% endif %}
                     {% if group.material_type > 0 and group.material_type != 5 %}    {# 5 = TYPE_HARDWARE #}
                         <button class="no-print btn btn-default btn-sm ladb-btn-hiddable ladb-btn-group-labels" data-toggle="tooltip" title="{{ 'tab.cutlist.menu.group_labels'|i18next }}..."><i class="ladb-opencutlist-icon-labels" style="font-size: 1.2em;"></i></button>

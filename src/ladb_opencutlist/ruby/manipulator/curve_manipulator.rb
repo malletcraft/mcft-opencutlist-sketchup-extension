@@ -6,9 +6,9 @@ module Ladb::OpenCutList
 
     attr_reader :curve
 
-    def initialize(curve, transformation = IDENTITY)
-      super(transformation)
+    def initialize(curve, transformation = IDENTITY, material = nil, layer = nil)
       raise "curve must be a Sketchup::Curve." unless curve.is_a?(Sketchup::Curve)
+      super(transformation, _combine_material(curve.edges.first.material, material), _combine_layer(curve.edges.first.layer, layer))
       @curve = curve
     end
 
@@ -31,16 +31,15 @@ module Ladb::OpenCutList
     # -----
 
     def points
-      if @points.nil?
+      @points ||= begin
         @points = @curve.vertices.map { |vertex| vertex.position.transform(@transformation) }
         @points.reverse! if flipped?
+        @points
       end
-      @points
     end
 
     def bounds
       @bounds ||= Geom::BoundingBox.new.add(points)
-      @bounds
     end
 
     def plane
@@ -53,14 +52,12 @@ module Ladb::OpenCutList
 
     def segments
       @segments ||= points.each_cons(2).to_a.flatten(1)
-      @segments
     end
 
     # -----
 
     def plane_manipulator
-      @plane_manipulator ||= PlaneManipulator.new(Geom.fit_plane_to_points(points), IDENTITY)
-      @plane_manipulator
+      @plane_manipulator ||= PlaneManipulator.new(Geom.fit_plane_to_points(points), IDENTITY, material, layer)
     end
 
     # -----

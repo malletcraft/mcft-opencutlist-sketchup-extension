@@ -4,13 +4,15 @@ module Ladb::OpenCutList
   require_relative '../../helper/def_helper'
   require_relative '../../helper/hashable_helper'
   require_relative '../attributes/definition_attributes'
+  require_relative '../attributes/instance_attributes'
 
   class OutlinerNode < DataContainer
 
     include DefHelper
     include HashableHelper
 
-    attr_reader :id, :depth, :type,
+    attr_reader :id, :depth,
+                :native_type, :type,
                 :name, :default_name,
                 :locked, :computed_locked, :visible, :computed_visible, :expanded, :expandable, :child_active, :active, :selected,
                 :children
@@ -20,6 +22,8 @@ module Ladb::OpenCutList
 
       @id = _def.id
       @depth = _def.depth
+
+      @native_type = _def.native_type
       @type = _def.type
 
       @name = _def.name
@@ -35,7 +39,7 @@ module Ladb::OpenCutList
       @active = _def.active
       @selected = _def.selected
 
-      @children = _def.expanded || _def.child_active || _def.active ? _def.children.select { |node_def| !node_def.entity.deleted? }.map { |node_def| node_def.get_hashable } : []
+      @children = _def.expanded || _def.child_active || _def.active ? _def.children.select { |node_def| !node_def.entity.deleted? }.map(&:get_hashable) : []
 
     end
 
@@ -56,13 +60,28 @@ module Ladb::OpenCutList
 
   class OutlinerNodeGroup < OutlinerNode
 
-    attr_reader :material, :layer
+    attr_reader :layer, :material,
+                :is_grain_group,
+                :description,
+                :is2d, :snapto, :cuts_opening, :always_face_camera, :shadows_face_sun, :no_scale_mask
 
     def initialize(_def)
       super
 
-      @material = _def.material_def ? _def.material_def.get_hashable : nil
       @layer = _def.layer_def ? _def.layer_def.get_hashable : nil
+      @material = _def.material_def ? _def.material_def.get_hashable : nil
+
+      instance_attributes = InstanceAttributes.new(_def.entity)
+      @is_grain_group = instance_attributes.is_grain_group
+
+      @description = _def.description
+
+      @is2d = _def.is2d?
+      @snapto = _def.snapto
+      @always_face_camera = _def.always_face_camera?
+      @cuts_opening = _def.cuts_opening?
+      @shadows_face_sun = _def.shadows_face_sun?
+      @no_scale_mask = (0..6).map { |i| _def.no_scale_mask? & (1 << i) != 0 } # convert to Array of bool
 
     end
 
@@ -70,7 +89,7 @@ module Ladb::OpenCutList
 
   class OutlinerNodeComponent < OutlinerNodeGroup
 
-    attr_reader :definition_name, :description,
+    attr_reader :definition_name,
                 :live_component,
                 :url, :tags
 
@@ -79,7 +98,6 @@ module Ladb::OpenCutList
 
       @default_name = _def.default_name
       @definition_name = _def.definition_name
-      @description = _def.description
 
       @live_component = _def.live_component?
 
@@ -87,14 +105,6 @@ module Ladb::OpenCutList
       @url = definition_attributes.url
       @tags = definition_attributes.tags
 
-    end
-
-  end
-
-  class OutlinerNodePart < OutlinerNodeComponent
-
-    def initialize(_def)
-      super
     end
 
   end

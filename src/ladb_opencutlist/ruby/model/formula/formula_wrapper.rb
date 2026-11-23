@@ -4,11 +4,24 @@ module Ladb::OpenCutList
   require_relative '../../utils/path_utils'
   require_relative '../../model/data_container'
   require_relative '../../model/attributes/material_attributes'
+  require_relative '../../parser/formula_parser'
 
   class FormulaWrapper < DataContainer
 
+    # Defense in depth : instances of this class (and its subclasses) are exposed directly to
+    # user-authored formulas evaluated by CommonEvalFormulaWorker. FormulaParser's white lists already reject
+    # these method names statically, but this also removes them at runtime so a parser bypass
+    # (or a future Ruby/Kernel method the parser doesn't know about yet) can't reach them.
+    previous_verbose = $VERBOSE
+    $VERBOSE = nil # Silence Ruby's "undefining '__send__' may cause serious problems" warning, this is intentional
+    FormulaParser::RUNTIME_FORBIDDEN_METHODS.each do |method_name|
+      next if FormulaParser::RUNTIME_KEPT_METHODS.include?(method_name)
+      undef_method(method_name) if method_defined?(method_name) || private_method_defined?(method_name)
+    end
+    $VERBOSE = previous_verbose
+
     def export
-      ''
+      to_s
     end
 
     def to_str
@@ -400,6 +413,11 @@ module Ladb::OpenCutList
       @value.get_attribute('dynamic_attributes', key.to_s.downcase) # DC attribute names are always stored lower case.
     end
 
+    def +(value)
+      return to_s + value if value.is_a?(StringFormulaWrapper) || value.is_a?(String)
+      raise ArgumentError, "Cannot add #{value.class} to #{self.class}"
+    end
+
     def to_s
       return '' if @value.nil?
       self.name
@@ -529,6 +547,11 @@ module Ladb::OpenCutList
       @value.get_attribute('dynamic_attributes', key)
     end
 
+    def +(value)
+      return to_s + value if value.is_a?(StringFormulaWrapper) || value.is_a?(String)
+      raise ArgumentError, "Cannot add #{value.class} to #{self.class}"
+    end
+
     def to_s
       return '' if @value.nil?
       self.name
@@ -654,6 +677,11 @@ module Ladb::OpenCutList
 
     def get_dc_attribute(key)
       @value.get_attribute('dynamic_attributes', key)
+    end
+
+    def +(value)
+      return to_s + value if value.is_a?(StringFormulaWrapper) || value.is_a?(String)
+      raise ArgumentError, "Cannot add #{value.class} to #{self.class}"
     end
 
     def to_s
@@ -940,6 +968,18 @@ module Ladb::OpenCutList
     def grained?
       return false if @group_def.nil? || @group_def.material_attributes.nil?
       @group_def.material_attributes.grained
+    end
+
+    def length_oversize
+      LengthFormulaWrapper.new(@group_def.nil? || @group_def.material_attributes.nil? ? 0 : @group_def.material_attributes.l_length_increase)
+    end
+
+    def width_oversize
+      LengthFormulaWrapper.new(@group_def.nil? || @group_def.material_attributes.nil? ? 0 : @group_def.material_attributes.l_width_increase)
+    end
+
+    def thickness_oversize
+      LengthFormulaWrapper.new(@group_def.nil? || @group_def.material_attributes.nil? ? 0 : @group_def.material_attributes.l_thickness_increase)
     end
 
     def to_s

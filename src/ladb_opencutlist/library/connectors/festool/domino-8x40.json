@@ -1,0 +1,11 @@
+{
+  "format": "ocl-hardware",
+  "version": 1,
+  "id": "0051d9d2-804e-4aa1-8a9d-04da2e286d42",
+  "extends": "connectors/festool/domino.json",
+  "name": "Domino 8x40",
+  "variables": {
+    "width": { "value": "8" },
+    "length": { "value": "40" }
+  }
+}

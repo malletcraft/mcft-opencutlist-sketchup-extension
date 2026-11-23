@@ -170,9 +170,9 @@ module Ladb::OpenCutList
   class PackingSummaryBinTypeStatsDef < DataContainer
 
     attr_reader :bin_type_def, :count, :used,
-                :number_of_items,
                 :std_price,
                 :total_area, :total_length, :total_cost
+    attr_accessor :number_of_items
 
     def initialize(bin_type_def:, count:, used:,
                    number_of_items: 0)
@@ -211,7 +211,8 @@ module Ladb::OpenCutList
                 :cost,
                 :std_price,
                 :std_cut_price,
-                :type
+                :type,
+                :defect_defs
 
     def initialize(id:,
                    length:, width:,
@@ -219,7 +220,8 @@ module Ladb::OpenCutList
                    cost:,
                    std_price:,
                    std_cut_price:,
-                   type: BIN_TYPE_STD)
+                   type: BIN_TYPE_STD,
+                   defect_defs: [])
 
       @id = id
       @length = length
@@ -229,6 +231,8 @@ module Ladb::OpenCutList
       @std_price = std_price
       @std_cut_price = std_cut_price
       @type = type
+
+      @defect_defs = defect_defs
 
     end
 
@@ -241,10 +245,11 @@ module Ladb::OpenCutList
     attr_reader :bin_type_def,
                 :count, :efficiency,
                 :item_defs, :leftover_defs, :cut_defs, :part_info_defs,
-                :number_of_items, :number_of_leftovers, :number_of_leftovers_to_keep, :number_of_cuts,
-                :cut_length,
+                :number_of_leftovers, :number_of_leftovers_to_keep,
                 :x_min, :x_max, :y_min, :y_max
-    attr_accessor :cut_cost,
+    attr_accessor :number_of_items, :number_of_cuts,
+                  :cut_length,
+                  :cut_cost,
                   :svg, :light_svg
 
     def initialize(bin_type_def:,
@@ -295,6 +300,23 @@ module Ladb::OpenCutList
 
   # -----
 
+  class PackingDefectDef < DataContainer
+
+    attr_reader :x, :y, :length, :width
+
+    def initialize(x:, y:, length:, width:)
+
+      @x = x
+      @y = y
+      @length = length
+      @width = width
+
+    end
+
+  end
+
+  # -----
+
   class PackingItemTypeDef < DataContainer
 
     attr_reader :length, :width,
@@ -323,15 +345,74 @@ module Ladb::OpenCutList
 
   end
 
+  class PackingCompositeItemTypeDef < DataContainer
+
+    attr_reader :length, :width,
+                :color,
+                :name,
+                :item_type_defs,
+                :gutter_defs
+
+    def initialize(length:, width:,
+                   name:,
+                   item_type_defs:,
+                   gutter_defs:)
+
+      @length = length
+      @width = width
+
+      @name = name
+      @item_type_defs = item_type_defs
+
+      @gutter_defs = gutter_defs
+
+    end
+
+  end
+
+  class PackingCompositeSubItemTypeDef < PackingItemTypeDef
+
+    attr_reader :depth,
+                :x, :y,
+                :instance_info
+
+    def initialize(depth:,
+                   x:, y:,
+                   length:, width:,
+                   part:,
+                   projection_def:,
+                   color:,
+                   instance_info:)
+
+      super(length: length, width: width,
+            count: 1,
+            part: part,
+            projection_def: projection_def,
+            color: color,
+            boxed: true)
+
+      @depth = depth
+
+      @x = x
+      @y = y
+
+      @instance_info = instance_info
+
+    end
+
+  end
+
   # -----
 
   class PackingItemDef < DataContainer
 
     attr_reader :item_type_def, :instance_info, :thickness_layer, :position_in_batch,
+                :depth,
                 :x, :y, :angle, :mirror,
                 :label_offset
 
     def initialize(item_type_def:, instance_info:, thickness_layer:, position_in_batch:,
+                   depth:,
                    x:, y:, angle:, mirror:,
                    label_offset:)
 
@@ -339,6 +420,8 @@ module Ladb::OpenCutList
       @instance_info = instance_info
       @thickness_layer = thickness_layer
       @position_in_batch = position_in_batch
+
+      @depth = depth
 
       @x = x
       @y = y
@@ -353,7 +436,40 @@ module Ladb::OpenCutList
     # ---
 
     def create_item
-      Packingtem.new(self)
+      PackingItem.new(self)
+    end
+
+  end
+
+  class PackingCompositeItemDef < DataContainer
+
+    attr_reader :item_type_def,
+                :depth,
+                :x, :y, :angle, :mirror,
+                :item_defs
+
+    def initialize(item_type_def:,
+                   depth:,
+                   x:, y:,
+                   item_defs:)
+
+      @item_type_def = item_type_def
+
+      @depth = depth
+
+      @x = x
+      @y = y
+      @angle = 0
+      @mirror = false
+
+      @item_defs = item_defs
+
+    end
+
+    # ---
+
+    def create_item
+      PackingCompositeItem.new(self)
     end
 
   end
@@ -401,11 +517,11 @@ module Ladb::OpenCutList
     end
 
     def vertical?
-      @orientation == 'vertical'
+      @orientation == :vertical
     end
 
     def horizontal?
-      @orientation == 'horizontal'
+      @orientation == :horizontal
     end
 
     # ---
@@ -420,12 +536,16 @@ module Ladb::OpenCutList
 
   class PackingPartInfoDef < DataContainer
 
+    UNUSABLE_REASON_NONE = 0
+    UNUSABLE_REASON_PART_TOO_LARGE = 1
+    UNUSABLE_REASON_GRAIN_GROUP_TOO_LARGE = 2
+
     attr_reader :_sorter,
                 :part, :count,
-                :usable
+                :usable, :unusable_reason
 
     def initialize(part:, count:,
-                   usable: true)
+                   usable: true, unusable_reason: UNUSABLE_REASON_NONE)
 
       @_sorter = part.number.to_i > 0 ? part.number.to_i : part.number.rjust(4)  # Use a special "_sorter" property because number could be a letter. In this case, rjust it.
 
@@ -433,6 +553,7 @@ module Ladb::OpenCutList
       @count = count
 
       @usable = usable
+      @unusable_reason = unusable_reason
 
     end
 

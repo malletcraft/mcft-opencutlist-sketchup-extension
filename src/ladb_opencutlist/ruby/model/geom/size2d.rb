@@ -6,7 +6,7 @@ module Ladb::OpenCutList
 
     attr_reader :length, :width
 
-    def initialize(length = 0, width = 0)
+    def initialize(length = 0.0, width = 0.0)
       if length.is_a?(String)    # String representation of a size "LxL"
         s_length, s_width = StringUtils.split_dxd(length)
         length = s_length.to_l
@@ -42,6 +42,14 @@ module Ladb::OpenCutList
 
     def ==(o)
       o.class == self.class && o.length == @length && o.width == @width
+    end
+
+    def eql?(o)
+      self == o
+    end
+
+    def hash
+      @length.hash ^ @width.hash
     end
 
   end

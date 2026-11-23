@@ -1,0 +1,3544 @@
+module Ladb::OpenCutList
+
+  require_relative '../../lib/fiddle/meshy/meshy'
+  require_relative '../../lib/geometrix/geometrix'
+  require_relative '../../model/drawing/drawing_def'
+  require_relative '../../model/solid/solid_mesh_def'
+  require_relative '../../model/solid/solid_boolean_result_def'
+  require_relative '../../model/solid/solid_cavity_fragment_def'
+
+  # Finds the cavities enclosed by a set of panels — e.g. the interior volume
+  # of a cabinet, one per compartment — powered by the Meshy native lib
+  # (Manifold).
+  #
+  # Pure computation : consumes panel DrawingDefs — single or arrays, whose
+  # face manipulators may span nested sub containers — and produces a
+  # SolidBooleanResultDef whose fragment_defs are the cavities
+  # (SolidCavityFragmentDef, carrying their openness), in WORLD coordinates.
+  # No entity is read or written.
+  #
+  # Principle : the panels are subtracted from an envelope, splitting the
+  # leftover space into disjoint bodies, told apart by face provenance (the
+  # envelope faces carry the reserved face id 0). Two envelope modes :
+  #
+  # - ENVELOPE_HULL (default) : the envelope is the convex hull of the
+  #   panels, eroded by a hair so that no hull face ends up coplanar with the
+  #   panel faces it was built on (see ENVELOPE_HULL_EROSION). The hull caps
+  #   the openings flush with the panel edges, so the cavities of an OPEN
+  #   enclosure (e.g. a cabinet without its front) are found too, closed by
+  #   the caps. Open candidates are told apart by the
+  #   STRUCTURE of their caps : a real compartment opens on at most
+  #   max_opening_planes DOMINANT cap planes (1 for an open front, 2 for a
+  #   through tube — see SolidCavityFragmentDef#opening_plane_count), while
+  #   the outside world and the concavity pockets a NON-convex assembly
+  #   leaves between itself and its hull face the envelope on many comparable
+  #   planes and are filtered out. A cap structure alone does not always tell
+  #   them apart, though — a notched cabinet's L-shaped cavity and the pocket
+  #   its notch leaves OUTSIDE score the same on the caps — so a candidate
+  #   must also be ENCLOSED : hemmed in by its walls, which a compartment is
+  #   by definition and a pocket wrapping a corner is not (see
+  #   SolidCavityFragmentDef#enclosed_by_walls?) — or else lean on the same
+  #   wall FACE as a candidate that is, which is what the two sides of a
+  #   DIVIDER do and what a pocket, leaning on the OUTER faces of the panels
+  #   whose inner faces bound the compartments, never does (see
+  #   SolidCavityFragmentDef#leans_on_a_wall_face_of?). max_openness — the
+  #   maximum fraction of the candidate surface lying on the caps — remains as
+  #   an optional secondary cap (disabled by default), and apart_opening_planes
+  #   an optional stricter STRUCTURE (disabled by default) : every two
+  #   openings must stand apart - turn their backs on one another, or not
+  #   meet at all - which leaves out the CORNER compartments, open at the
+  #   front and on top or on a side - see
+  #   SolidCavityFragmentDef#opening_planes_apart?. It is settled along
+  #   with the count below, and appeals to the reduction the same way.
+  #   The cap COUNT is not read as final while an envelope reduction is still
+  #   to come : a NOTCHED assembly is bridged over its notch by a fan of
+  #   slanted hull caps, one opening apiece, that the reduction is precisely
+  #   there to cut away — so a candidate over the budget is handed to it as a
+  #   PROVISIONAL fragment and must come back under it to be kept.
+  #
+  # - ENVELOPE_BBOX : the envelope is the panels world bounds inflated by
+  #   ENVELOPE_MARGIN. Only hermetically closed cavities are found : any
+  #   opening connects the would-be cavity to the envelope boundary, and the
+  #   single body carrying envelope faces is the outside world, dropped.
+  #
+  # DETACHED PARTS : the panels given are not necessarily ONE enclosure. A case
+  # modelled with its FRONT PANEL standing in front of it, a back laid on with a gap,
+  # a front panel — anything that touches nothing else inflates the hull over space
+  # the enclosure never encloses, and the envelope then joins that space to the
+  # compartment through the very gap that separates them : a cavity flush with
+  # the front panel's back rather than with the case's own front. No filter below can
+  # catch it — the two make up ONE fragment, walled and opening exactly like
+  # the compartment it should have been, merely too big.
+  #
+  # Which panels make up one part of the assembly is read off their BOUNDING
+  # BOXES, taken as belonging together when they come within JOINT_MAX_GAP of
+  # each other. A boolean union would say EXACTLY what is welded to what — and
+  # it is what the panels go through anyway — but exactness is the wrong answer
+  # to this question : a case whose joints are modelled half a millimetre apart
+  # is welded nowhere and is one case all the same, and any of its walls, taken
+  # away, leaves a cavity the hull closes back a hair SMALLER — the caps
+  # collapsing flush onto the panels left — which is precisely the signature of
+  # a part merely laid on. What tells a part from an assembly is therefore a
+  # MODELLING distance, not a geometric one. Boxes over-report proximity (two
+  # L shaped panels interlocking without touching share one), and that is the
+  # safe direction : a part not told apart is a part left where it was.
+  # See #_panel_components.
+  #
+  # Standing apart is NOT, however, enough to be foreign to the enclosure : a
+  # pair of bare shelves facing each other encloses the space between them and
+  # comes nowhere near touching. A component is therefore only a CANDIDATE, and
+  # what settles it is what its REMOVAL does to the cavities. The whole assembly is the reference — an ordinary enclosure
+  # never leaves it — and a component is dropped only when the assembly without
+  # it keeps every cavity, a counterpart holding the same inner point, and
+  # grows none of them : removing a part that structures the space either LOSES
+  # a compartment (the shelf a zone rested on) or MERGES two of them into a
+  # bigger one (a divider, a shelf between two others), while removing a part
+  # merely laid on can do nothing but shrink the envelope it was inflating.
+  # See #_essential_mesh_defs / #_cavities_kept?.
+  #
+  # Reading each candidate against the WHOLE is what keeps the answer stable as
+  # the drawing goes on : a divider added between two floating shelves welds
+  # itself to them and leaves the others alone in their own components, and it
+  # is only because those are still judged against the whole — never against
+  # what the split leaves standing — that the zones between them survive it.
+  #
+  # A component lying strictly INSIDE the hull of the whole is not even tried :
+  # holding no vertex of the envelope, it cannot shrink it, and its removal
+  # could only enlarge what is left. That is the shelf on pins, the drawer box,
+  # the partition modelled with a whisker of play — the everyday detached part,
+  # and the one that costs nothing to keep.
+  #
+  # Finding NOTHING at all is the one case where the reference has nothing to
+  # protect : the components are then run on their own, and whatever they
+  # enclose beats the empty answer the whole assembly gave.
+  #
+  # APPLIED PANELS (ignore_applied_panels option) : a front panel laid FLAT on its
+  # case is the same trouble as a detached one, minus the gap that betrayed it.
+  # Touching, it belongs to its case's component, and the reading above never
+  # looks at it — yet it inflates the hull just the same, and over PART of the
+  # front only, which leaves the openings that are left reading on a slanted
+  # cap. That is what a tool DRAWING such panels runs into : the front panel it has
+  # just laid down is read as a wall of the carcass, and the next one is fitted
+  # to a mouth that no longer exists.
+  #
+  # Such a panel is offered to the very same trial, on a necessary condition
+  # cheap enough to ask of every panel : one of its own dominant faces has the
+  # whole of the rest of the assembly beyond it, so it could be lifted off
+  # along that face. That says nothing yet — the bottom a case stands on
+  # answers to it word for word — and it is again the REMOVAL that settles it.
+  # A bottom holds its compartment in ; a front panel merely covers one. See
+  # #_applied_panel_positions.
+  #
+  # The trial cannot tell a front panel from a BACK laid on the same way : both are
+  # lifted off along one face, and both leave every cavity where it stood, the
+  # envelope collapsing onto the panels left. A back so drawn is therefore
+  # dropped too, and the compartment it closed comes out with one opening more.
+  # Nothing geometric separates the two — only what the part is FOR does —
+  # which is why this is an option and not the rule.
+  #
+  # STANDING PARTS : the feet a case stands on, the plinth under it, the crown
+  # laid on its top touch it — no component of their own — and inflate the
+  # hull all the same : between four feet, the hull closes a POCKET under the
+  # bottom. Harmless while the pocket stays sealed, but the case only has to
+  # leak into it to be lost : the side grooves a back slides in, cut THROUGH,
+  # run down past the bottom and open right into it (T36). Compartment and
+  # pocket then make up one fragment, opening on too many planes to be kept,
+  # and the case yields nothing at all.
+  #
+  # Such parts are offered to the trial above as a GROUP, on a condition read
+  # off the dominant faces again : a panel's face plane that the rest of the
+  # assembly does not cross, with some of it beyond — the plane of the bottom's
+  # underside, with the feet below and everything else above. Removing a
+  # single foot would leave the others closing the pocket, hence the group.
+  # When the whole assembly found nothing, the first group whose removal finds
+  # something is dropped, as the split components are ; otherwise the group
+  # goes through #_essential_mesh_defs with the others. See
+  # #_standing_positions.
+  #
+  # Sealed, the pocket is no better : once the envelope is reduced, the feet's
+  # own faces clip it into cavities of its own — and a divider is offered
+  # between the feet. A standing group's trial therefore does not ask for the
+  # POCKETS under the assembly back : the cavities lying wholly beyond its
+  # plane and against it, when that plane faces down. Down, because a bottomless
+  # case stacked on another has its compartment against the lower one's top
+  # just the same, and that one is a compartment. See #_standing_pocket?.
+  #
+  # INSET FRONT PANELS (front_panel_drawing_defs option) : a front panel
+  # fitted INTO an opening rather than laid over it OCCUPIES the front of the
+  # compartment it closes, and a part fitted in that compartment afterwards
+  # would telescope into it. Such a panel is not handed in WITH the panels —
+  # read as a wall of the carcass it would inflate the hull over the very
+  # mouth it fills, which is what APPLIED PANELS above is about — but ASIDE,
+  # and what it does to the cavity is done to its CAP : the opening it fills
+  # RECEDES to its deepest point. The compartment stays OPEN, with an opening
+  # of its own, one board's thickness shallower — which is what keeps
+  # everything read off an opening (its normal, its count, the recesses it may
+  # still hide) saying what it said before.
+  #
+  # Which front panels are INSET is not asked of the caller : it is read off the
+  # cavities themselves. One laid ON the front stands beyond the cap — the
+  # hull closes the opening flush with the panel edges — and intersects no
+  # cavity at all, while an inset one is INSIDE the compartment it closes, the
+  # intersection being both the proof of the intrusion and its measure. Each
+  # front panel is weighed against the opening it stands SQUARE to and NEAREST to,
+  # so the door of one compartment says nothing about the compartment beside
+  # it, and a door says nothing about the open top its cavity may also have.
+  #
+  # An opening recedes ONCE, to the DEEPEST of the front panels filling it,
+  # over the WHOLE of that opening : a pair of doors meeting on a joint is
+  # ONE closed front, and the cavity must reach neither into the joint between
+  # them nor behind the shallower of two front panels of unequal thickness.
+  # Over that opening and NOTHING else, though : the recess comes before the
+  # envelope reduction, and until then the compartments of a case may well
+  # be ONE cavity — joined behind a back set in its grooves, around a
+  # divider standing short of the hull. The door of one compartment must not
+  # cut into the one beside it (see #_front_panel_recess_mesh).
+  #
+  # And it recedes to the plane of the front panel, not to one parallel to
+  # the opening : the opening is read on the HULL, which slants wherever the
+  # case's front is stepped — a top and a bottom set back over the outer
+  # compartments only, reaching the front between the dividers — while the
+  # door is laid square to the case all the same. Its back face is the
+  # compartment's front, whatever the hull says (02.skp, T44).
+  #
+  # MACHININGS : a panel drilled by glued cuts-opening components (a domino
+  # mortise, a dowel hole) has its host face tessellation PUNCHED by SketchUp,
+  # so its shell only closes back with the machining geometry — which the
+  # callers must therefore leave in (SolidMeshDef marks it virtual, see
+  # SolidMeshDef.virtual_glued_container?), on pain of an open-edges error on
+  # every drilled panel. The voids those machinings enclose are not
+  # compartments, though, and are dropped on their provenance — see
+  # MACHINING_VOID_MIN_AREA_SHARE.
+  #
+  # ENVELOPE REDUCTION (hull mode, reduce_envelope option) : when a panel is
+  # RECESSED behind an opening (e.g. shelves shallower than the sides, or a
+  # cabinet back set forward from the case's true rear edge), the
+  # compartments it separates communicate through the space in front of its
+  # edge and would come out as a single merged cavity. Such a panel is
+  # betrayed by its edge (chant) faces : they bound the cavity on a plane
+  # that, extended, crosses the cavity interior, with envelope cap beyond it.
+  # Those planes are read off the SOURCE faces the cavity's triangles came
+  # from, never off the triangles themselves : a face of the model is planar
+  # by construction, so anything the boolean scattered off it — a vertex
+  # nudged by the plane canonicalization, a sliver left where an envelope cap
+  # grazes the face at a shallow angle — is noise, and a reduction plane that
+  # does not exist in the assembly is the one mistake no amount of evidence
+  # below can catch (such a sliver is a legitimate chant of a real panel,
+  # walled and confined exactly like the face it detached from — it merely
+  # points a couple of degrees off, and being that little bit SHALLOWER it
+  # wins the clip and tilts the very opening the true plane would have
+  # receded). See #_panel_face_planes.
+  # Chants merely lying on the same plane can be pure coincidence (e.g. a
+  # large contour panel and an unrelated divider's free tip landing on the
+  # same depth) : they are first split into sub-groups of chant triangles
+  # that physically TOUCH each other (share a vertex, transitively), not
+  # just coincide numerically — see #_reduction_group_components. A chant
+  # is trusted when, within ONE such touching sub-group, any of :
+  # - the SAME panel also bounds the cavity on BOTH its main faces (front
+  #   and back — the two compartments it separates, e.g. a recessed shelf) ;
+  # - SEVERAL DISTINCT panels make up the sub-group — that alone is strong
+  #   evidence of an intentional, uniformly receding assembly (e.g. a shelf
+  #   recessed together with the case's own top/bottom — a lone panel could
+  #   never pass the BOTH-main-faces test above, since a contour panel's
+  #   other main face faces outward, not another cavity) ;
+  # - failing both, the pocket a reduction there would carve out (the
+  #   envelope cap area beyond the plane) stays clear of the group's own
+  #   (u, v) silhouette — walled in by other panels on its lateral sides
+  #   rather than reaching the envelope's outer edge (e.g. a lone recessed
+  #   back panel, walled by the sides/top/bottom) — see
+  #   #_reduction_pocket_confined?.
+  # Failing all three FOR EVERY sub-group, one last piece of evidence is
+  # read across the plane as a whole : SEVERAL DISTINCT panels expose it
+  # from sub-groups that do NOT touch each other, each of them receding to
+  # it WHOLLY — no part of the panel reaching beyond (see
+  # #_reduction_panel_side). That is the two facing SIDES of a case set
+  # back from its top and bottom : each side is a lone contour panel in its
+  # own sub-group (no BOTH-main-faces, no shared sub-group), and the pocket
+  # necessarily reaches the envelope's outer edge on the very flanks those
+  # sides left open (no confinement) — none of the three can see it, yet
+  # two opposite walls stopping at the exact same depth is precisely the
+  # intentional, uniformly receding assembly the shared-sub-group evidence
+  # is about. Receding WHOLLY stands in for the physical contact that
+  # normally proves the match is no coincidence, and it is what keeps the
+  # concave/notched footprint out : a panel merely NOTCHED at this depth
+  # still extends beyond the plane where it is not notched. Coinciding
+  # chants being that much more ordinary once contact is no longer asked
+  # for, the plane must in addition leave every WALL of the cavity
+  # standing — no panel bounding it lying WHOLLY on the removed side (a
+  # back and a front set between a case's top and bottom expose their top
+  # chants at one and the same height, yet the top itself is entirely
+  # beyond it). The SIDE/END shape test below is then read on the
+  # footprint the WHOLE plane merges rather than sub-group by sub-group,
+  # for the reason the sub-group merge exists at all : the rails of a
+  # frame set back behind its stiles are commonly deeper than they are
+  # long, each reading its own front chant as an END, while the pair of
+  # them spanning the frame's full height reads as the SIDE it is.
+  # Failing that too, this sub-group's chant is exposed by a
+  # concave/notched footprint, not a recess, and reducing there would clip
+  # away the real cavity instead of splitting it. A chant is further
+  # trusted only when the sub-group's MERGED footprint (safe now that
+  # touching, not mere plane coincidence, backs the grouping) is a SIDE face
+  # (perpendicular to its WIDTH, running its full LENGTH — e.g. a shelf's
+  # recessed front edge) rather than an END face (perpendicular to its
+  # LENGTH, where the board simply stops — e.g. the
+  # free tip of an L-shaped divider) : an END has no group-wide role, the
+  # real panels already separate the compartments wherever the board
+  # actually is, and extending its plane would clip an unrelated part of
+  # the assembly it merely happens to cross (e.g. past another divider it
+  # does not connect to) — see #_detect_reduction_planes /
+  # #_reduction_side_plane?. Testing the sub-group's merged footprint rather
+  # than each panel's own — safe only because touching already rules out
+  # coincidence — lets a short member (e.g. a mullion shorter than the case
+  # is deep, in a non-rectangular assembly) be judged alongside what it
+  # actually connects to, instead of on its own possibly-misleading aspect
+  # ratio.
+  #
+  # LONE RECESS : a single contour panel receding WHOLLY behind an opening,
+  # every other wall left standing — a case whose top rail stops short of its
+  # sides, leaving a notch open on top behind it — is exactly the
+  # concave/notched footprint all of the above is wary of, and none of it
+  # accepts the plane. It is only read on a candidate the opening filter
+  # turned down, hence lost without it, and what it cuts is the option's
+  # call : with the reduction ON, on its chant, like any recess (the cavity
+  # stops at the rail) ; on APPEAL, on the panel's own inner main face
+  # instead (the cavity keeps its whole depth, only the notch behind the rail
+  # is given up). That cut leaves the notch as a third opening on the kept
+  # side, which the opening budget does not hold against it. It is also read
+  # on a NOTCHED cavity the filters accepted (open on more than two planes,
+  # or on two that meet - a divider takes up to four, side by side) : the
+  # divider would else climb into the notch behind the rail. On appeal, that
+  # cut is the only one such a cavity gets.
+  #
+  # HOLES : an opening other than a cavity's biggest, whose caps touch no
+  # other opening's and which does not face that biggest one - the gap a top
+  # made of two rails leaves between them - is a hole in a side wall of the
+  # compartment, not one of its mouths (see
+  # SolidCavityFragmentDef#hole_planes). The pocket it opens is cut off at
+  # the panels it opens between (the underside of the rails), whatever the
+  # reduction : a divider stops under the rails rather than rising between
+  # them. Only when nothing but that hole lies beyond the cut.
+  #
+  # That shape test is only a PROXY, though, for the question that actually
+  # decides : does this chant make an OPENING recede, or does it cut ACROSS
+  # the cavity ? Every candidate must answer the first — its plane has to be
+  # antiparallel to one of the cavity's own DOMINANT openings, that opening
+  # lying beyond it (see #_reduction_recedes_opening?) — and that is what a
+  # recess IS, whatever the board's proportions. It admits the divider set
+  # back from the front of a case deeper than it is high, whose recessed
+  # chant is perpendicular to its own longest dimension and which the shape
+  # test reads as an END ; and it rejects the lateral tip of a stub shelf,
+  # which the shape test reads as a SIDE as soon as the board is deeper than
+  # it is long, and whose plane would amputate everything beside the shelf
+  # instead of receding anything. The shape test then only has to arbitrate
+  # the weaker group- and pocket-based evidence, where the concave/notched
+  # footprint family lives : the panel bounding the cavity on BOTH main
+  # faces has already demonstrated it separates two compartments, and needs
+  # no proxy on top.
+  #
+  # Each cavity is then clipped at the remaining planes IT exposed (keeping
+  # the panel side) : its caps recede to the recessed panel edge — the whole
+  # connected group is reduced to the depth of its shallowest element — and
+  # each compartment comes out as its own cavity.
+  #
+  # The clip is applied to the CAVITY, not to the shared envelope : a recessed
+  # panel is evidence about the cavity whose openings it bounds, and about no
+  # other. Reducing the envelope instead let a plane found in one compartment
+  # eat into every other compartment it happened to cross — a shelf recessed
+  # on one side of a divider stealing that depth from the cabinet's other
+  # side, which borders no recessed panel at all. Clipping the cavity yields
+  # the same volume — (reduced envelope − panels) restricted to that connected
+  # component — with the blast radius the evidence actually supports, and the
+  # sub-compartments a clip splits off simply come out as the fragments of
+  # that operation.
+  #
+  # A cavity is clipped at ONE plane per round, the LEAST receding one, and
+  # BOTH what the clip keeps and what it leaves go back through the
+  # detection until no plane is found (REDUCTION_MAX_PASSES) — see #run.
+  # Recesses of different depths regularly live in the SAME cavity — a case
+  # whose divider is recessed 50 mm, carrying a shelf recessed 100 mm on one
+  # side only, is a single cavity, since the space in front of the divider
+  # joins its two sides — and a clip is unbounded in its own plane, so
+  # applying both at once would recede the shelf-free side to 100 too. The
+  # shallowest recess is precisely the one that PARTITIONS : cutting at 50
+  # splits the two sides apart, and the 100 plane is then found on the side
+  # that actually carries the shelf.
+  #
+  # BOTH sides are re-examined because either can still hold a recess the
+  # round that produced it could not see : the KEPT side a NESTED one (the
+  # 100 mm shelf above, invisible until the 50 mm plane split the two sides
+  # apart), the side LEFT BEHIND a SIBLING one, living precisely on the side
+  # the clip just took away (e.g. two unconnected partitions recessed at
+  # either end of a cavity open top and bottom, the deeper one only
+  # reachable once the shallower has been cut).
+  #
+  # They are not evidence of the same weight, though. A KEPT side is
+  # CONFIRMED : the panel's own mass separates whatever it touches, so it is
+  # a compartment whatever it came off of, and it reaches the result as soon
+  # as no further plane splits it. A side LEFT BEHIND is only PROVISIONAL :
+  # most of the time it is the plain "extra depth" a front panel would still occupy
+  # in front of the recess, no compartment of its own. It earns its keep only
+  # through what a later round finds INSIDE it — the kept sides of any clip
+  # it turns out to hide being confirmed like any other — and one that
+  # reaches a round with no plane of its own is that plain flare after all,
+  # and is dropped.
+  #
+  # BRIDGE FOOT : a case stepped IN PLAN - an L, one side shorter than the
+  # other, its top and bottom notched to follow it - is capped across the
+  # notch by a hull BRIDGE, slanted by the step over the compartment's width
+  # (43° for a 285 mm step over a 300 mm wide compartment), well past the band
+  # a bridge is otherwise read in (REDUCTION_BRIDGE_OPENING_DOT). The chant of
+  # the short side is where that bridge rests : its plane passes through the
+  # bridge's foot, the whole bridge lying beyond it. That alone says where the
+  # compartment's mouth is - the hull spans nothing but the notch in front of
+  # it - and it is read as evidence of its own, none of the tests above being
+  # able to see it : the notch chants of the top and bottom touch the side's,
+  # on the same plane, and the merged footprint they make spans the whole
+  # case. Only every wall of the cavity must be left standing, as for the
+  # other evidence read across a plane. See #_reduction_bridge_foot?.
+  #
+  # OPPOSED RECESSES : a plane exposed by chants facing BOTH ways - a divider
+  # stopping where a side starts, the two of them ending at one and the same
+  # depth from opposite ends of the case - parts two compartments, not a
+  # compartment from the flare in front of it. The side the clip leaves is
+  # then confirmed rather than provisional, as long as one of the panels
+  # facing back lies wholly on it : it is walled there by a panel of its own,
+  # which no flare is. See #_reduction_opposed_plane?.
+  #
+  # ENVELOPE REDUCTION ON APPEAL (hull mode, reduce_envelope OFF) : turning
+  # the reduction off asks for the mouths as the hull caps them - a front
+  # panel spanning the whole opening, a recessed shelf left behind it. It
+  # does not ask for the cavities to vanish, which is what the opening
+  # filter alone makes of an assembly receding on the FAR side : sides
+  # running past a case's top, bottom and dividers at the rear leave a slab
+  # between them the hull fills, every compartment opens onto it, and they
+  # all come out as ONE candidate open on four planes, dropped. So the
+  # candidates the filter turns down are reduced all the same, exactly as
+  # above, and nothing else is : an accepted cavity is never clipped, and a
+  # side a clip brings back within the budget is taken as it comes, no
+  # deeper recess read on it. A candidate no clip ever brings back is
+  # dropped, as it was.
+  #
+  # BEVELED EDGES (hull mode, reduce_envelope option) : an edge PROFILED at
+  # an angle — a mitred front, a chamfer, a moulding — leaves the cavity
+  # FLARING outward over the profile's depth : the hull caps the opening on
+  # the panels' outermost points, and the profile faces themselves become the
+  # walls of a funnel that has nothing to do with the usable volume (a part
+  # drawn in there grows wings into it). Such a face is betrayed by its TILT :
+  # it is neither the panel's main face nor perpendicular to it — see
+  # REDUCTION_MAIN_DOT / REDUCTION_EDGE_DOT. A genuinely slanted panel (a
+  # lectern's front) is not caught, since the slant IS its own dominant
+  # normal. Each opening is then receded to the FOOT of the bevels flaring
+  # toward it (the deepest point where the flare starts, i.e. the last full
+  # cross section), by a plane perpendicular to that cap, clipping the cavity
+  # exactly like a recessed chant does — see #_detect_bevel_planes.
+  # A profile with RIGHT angles (rebate, shoulder) exposes a plain chant
+  # instead, already handled by the recess detection above.
+  #
+  # The tilt alone does not settle it, though : it is read against the panel's
+  # OWN dominant normal, so a board set OBLIQUE to the assembly (a divider at
+  # 45° in plan) tilts every square cut it ends on — a chant cut parallel to
+  # the case's front, the ordinary way to end such a board, comes out at 45°
+  # of its own board and lands in the very band a mitre does. What tells them
+  # apart is the cavity, not the board : a profile FLARES to an opening, a
+  # recess merely STOPS in front of one. A tilted face whose plane recedes one
+  # of the cavity's own dominant openings — antiparallel to it, that opening
+  # lying beyond, the very test every recess plane must pass anyway (see
+  # #_reduction_recedes_opening?) — therefore goes down the recess path after
+  # all, and only the rest reaches the bevel detection. No genuine profile can
+  # slip through : a mitre, a chamfer, a moulding facet all meet their opening
+  # at an angle, and a facet that WERE parallel to it is a rebate shoulder,
+  # which the recess path already owns wherever the board is square to the
+  # assembly. Nor can the diversion reach an axis-aligned one : that same
+  # chant, on a board square to the opening it recedes, is perpendicular to
+  # its dominant normal and never entered the band to begin with.
+  #
+  # OVERALL CAVITY (overall_cavity option) : the interior of the enclosure as
+  # if it were EMPTY — what a part spanning the whole case (a back, a front, a
+  # plinth) is drawn in — bounded by its CONTOUR panels only, the ones facing
+  # the outside world, and ignoring the dividers and shelves that carve it into
+  # compartments. It cannot be read off the compartments already found : their
+  # union leaves out the material of every panel between them, and comes out
+  # holed, or plainly disjoint as soon as a divider spans the case. So it is a
+  # SECOND PASS of the whole pipeline above, over the contour panels alone —
+  # cheap in code, since the hull of the contour is the hull of the assembly
+  # (an internal panel is, by definition, inside it) and every filter applies
+  # unchanged. Its cavities carry the mark (SolidCavityFragmentDef#overall?)
+  # and are appended AFTER the compartments ; there may well be several, an
+  # assembly holding two disjoint cases having one overall cavity each.
+  #
+  # A panel is INTERNAL when a cavity bounds it on BOTH SIDES of its board, and
+  # CONTOUR otherwise — read on the first pass's own cavities, whose faces name
+  # both the panel they lie on and, by the sign of their normal against its
+  # dominant one, the side they lie on (see #_internal_panel_indices). The SIDE
+  # is what settles it, never the number of parallel planes exposed : one side
+  # of a board commonly shows several (a rebate for the back, a shoulder), and
+  # counting them would read an ordinary rebated case side as a divider and cut
+  # the overall cavity in two on the very panel meant to bound it.
+  #
+  # The reduction above then reads the second pass as it reads any other, which
+  # is precisely right : the internal panels are not in it, so a shelf recessed
+  # behind the opening can no longer recede anything, while the case's own
+  # recessed back or mitred front still does. The overall cavity recedes for
+  # what the CONTOUR does, and for nothing else.
+  #
+  # An assembly with no internal panel at all (a bare case) is not run twice :
+  # its compartments ARE its overall cavity, and marked copies of them are
+  # appended instead — a fragment is either one or the other, never both, so a
+  # caller sorts the two apart by #overall? whatever the assembly.
+  #
+  # An enclosure that exists only BECAUSE of an internal panel has, on the
+  # other hand, no overall cavity at all : a shelf between a side and a top is
+  # enclosed by the three of them, and the two contour panels left alone are an
+  # open L enclosing nothing (see SolidCavityFragmentDef#enclosed_by_walls?).
+  # The pass then simply finds nothing, and nothing is what comes back — never
+  # the compartments in disguise, which are the whole of no such volume.
+  #
+  # Panels may overlap each other freely (the boolean absorbs overlaps, no
+  # exact joinery needed) and gaps below the SketchUp merge tolerance are
+  # sealed by Meshy's plane canonicalization.
+  #
+  # Each cavity fragment carries the indices (in the panel drawing defs list)
+  # of the panels whose faces bound it (SolidFragmentDef#src_indices).
+  class CommonSolidFindCavitiesWorker
+
+    Meshy = Fiddle::Meshy
+
+    ENVELOPE_HULL = 'hull'.freeze
+    ENVELOPE_BBOX = 'bbox'.freeze
+
+    # The error a detection gives up with once past the +time_budget+ it was
+    # given. Nothing in the geometry says beforehand what a detection will
+    # cost - a machined carcass and a sculpted assembly weigh the same by
+    # vertices and by planes, and differ by seconds (see #run) - so the
+    # budget is TIME, checked between the booleans : a boolean under way is
+    # never interrupted, and the budget is overrun by at most one of them.
+    ERROR_TOO_COMPLEX = 'tool.smart_build.error.too_complex_cavity'.freeze
+
+    # Bbox envelope inflation, in inches. Keeps the envelope planes well
+    # clear of the panel planes, so that Meshy's plane canonicalization
+    # (TOLERANCE scale) never merges an envelope face with a panel face.
+    ENVELOPE_MARGIN = 1.0
+
+    # Hull envelope erosion, in inches. A hull face is very often EXACTLY
+    # coplanar with the panel faces it was built on — a flush back, a flat
+    # side, any convex part of the assembly. The subtraction then traps a
+    # wafer-thin sheet of "cavity" between the two, spread over the whole
+    # panel ring, which the cavity carries along as a flange (and which no
+    # smaller offset would cure : Meshy canonicalizes planes within the mesh
+    # tolerance, snapping them back together). Pulling every hull face just
+    # past that tolerance puts the envelope boundary strictly INSIDE the
+    # panel material there, so the ring is subtracted away for good — see
+    # #_erode_hull_vertices. Measured on a mitred case (a flush back, hull
+    # face exactly on the panel ends), the flange survives every erosion
+    # below one TOLERANCE and disappears from one TOLERANCE on — the
+    # canonicalization threshold — so the factor keeps a margin above it
+    # rather than sitting on that discontinuity. The openings' caps recede by
+    # the same amount in exchange, a few hundredths of a millimetre.
+    ENVELOPE_HULL_EROSION = SolidMeshDef::TOLERANCE * 1.5
+
+    # Below this, the Gram determinant of the planes a vertex is being put
+    # back on is treated as singular — their normals are too close to tell
+    # apart, and the exact combination would blow up on the noise between
+    # them. See #_restore_plane_offset.
+    RESTORE_MIN_DETERMINANT = 1.0e-6
+
+    # Minimum a plane's normal must add to the directions already constrained
+    # to be worth constraining too — the sine of the angle it makes with the
+    # ones already taken, so the counterpart of RESTORE_MIN_DETERMINANT (a
+    # determinant of 1 - cos² = sin² for a pair) on one normal at a time. See
+    # #_restore_append_basis.
+    RESTORE_MIN_INDEPENDENCE = 1.0e-3
+
+    # How much longer than the plain correction the move holding a vertex on
+    # its faces may get before it is given up on. Holding a face that GRAZES
+    # the plane being restored costs a slide of erosion / sin(angle), which
+    # runs away as the angle closes — and the angle alone cannot say where to
+    # stop, so the move is what gets measured. Ten times the erosion is still
+    # a few hundredths of a millimetre, and anything past it is a corner too
+    # degenerate to slide along at all. See #_restore_held_offset.
+    RESTORE_MAX_AMPLIFICATION = 10.0
+
+    # Share of a candidate's PANEL boundary (its openings left aside) that may
+    # lie on virtual machining faces before it is read as the machining's own
+    # void rather than a cavity : the pocket of a domino mortise, of a dowel
+    # hole, of a hinge cup. That geometry cannot simply be kept out of the
+    # panels — it is what closes their punched shell back (see the class doc,
+    # MACHININGS) — so what it encloses is filtered here instead. A pocket
+    # dug in a panel is bounded by its machining and by nothing else, so the
+    # share is all-or-nothing in principle ; the margin only absorbs the
+    # degenerate triangles the boolean may attribute to the host face where
+    # the machining meets it, whose area is zero to begin with.
+    MACHINING_VOID_MIN_AREA_SHARE = 0.99
+
+    # Safety bound on the reduction rounds : a cavity is clipped at ONE plane
+    # per round and both sides go back through the detection (see #run), so
+    # an assembly needs one round per recess it exposes — whether NESTED (a
+    # divider recessed, holding a shelf recessed deeper still) or SIBLING (two
+    # unrelated recesses on either side of a cavity open at both ends, each
+    # only visible once the other's clip has been applied) — plus a last one
+    # to find nothing. Neither goes that deep in furniture, and each round
+    # can only shrink what is left to examine, so this merely caps a
+    # pathological input.
+    REDUCTION_MAX_PASSES = 8
+
+    # Clip plane erosion, in inches : how far past the detected plane the
+    # cavity is actually cut, toward the KEPT side. A reduction plane is read
+    # off the cavity's own faces, so it is EXACTLY coplanar with the chant (or
+    # the bevel foot) that produced it. Cutting right there leaves the chant
+    # face on the cut plane, facing the clip box's own face, and the boolean
+    # keeps that stand-off as a zero-volume flap hanging off the reduced
+    # cavity — the same coplanarity trap ENVELOPE_HULL_EROSION cures on the
+    # hull, and it stays out of the volume but pollutes the cavity bounds.
+    # Cutting a hair deeper puts the chant strictly on the removed side. The
+    # compartment loses that hair of depth in exchange, a few hundredths of a
+    # millimetre.
+    REDUCTION_CLIP_EROSION = SolidMeshDef::TOLERANCE * 1.5
+
+    # A cavity boundary face is an edge (chant) face of its panel when its
+    # normal departs from the panel dominant normal by more than 60°, and a
+    # main face when it departs by less than about 14°. In between, it is a
+    # TILTED edge — still an edge of the board, but not square to it (mitred
+    # front, chamfer, moulding facet... or the square cut an OBLIQUE panel
+    # ends on) : see the class doc, BEVELED EDGES. Only the band that used to
+    # be read as a main face is diverted there : what already qualified as a
+    # chant keeps going down the recess path, where a bevel too shallow to
+    # leave that band is rejected anyway (a contour panel exposes a single
+    # main face to the cavity).
+    #
+    # The band is a first sort only. Being measured against the panel's OWN
+    # dominant normal, it says how the face sits on its board, not what it
+    # does to the cavity : what falls in it is arbitrated afterwards on the
+    # cavity's openings — see #_detect_reduction_planes.
+    REDUCTION_EDGE_DOT = 0.5
+    REDUCTION_MAIN_DOT = 0.97
+
+    # Minimum crossing depth, in inches, for an edge plane to trigger the
+    # envelope reduction : recesses within snapping noise are ignored.
+    REDUCTION_MIN_DEPTH = SolidMeshDef::TOLERANCE * 10
+
+    # Minimum accumulated edge area, in square inches, for a plane to
+    # trigger the envelope reduction. A real edge strip spans the panel
+    # thickness across the cavity (square inches), while the degenerate
+    # sliver triangles the boolean may leave where a panel face is flush
+    # with the hull are many orders of magnitude below : without this
+    # filter, such a sliver — whose arbitrary normal rarely matches any
+    # panel plane — seeds a diagonal reduction plane that shreds the
+    # cavity. Slivers being nudge artifacts, they also leak the panel
+    # order into the result.
+    REDUCTION_MIN_AREA = REDUCTION_MIN_DEPTH * REDUCTION_MIN_DEPTH
+
+    # Maximum dot product between a reduction plane's normal and an opening
+    # cap's normal for that plane to be read as RECEDING that opening : the
+    # two must be ANTIPARALLEL — a cap normal points out of the cavity, a
+    # reduction normal toward the kept side — within about 8°. A recess read
+    # against a SLANTED opening (a lectern's front) falls outside the band
+    # and is not reduced at all : an assembly whose opening is not flat gives
+    # no plane to recede it to. A hull bridge is no such opening, see
+    # REDUCTION_BRIDGE_OPENING_DOT.
+    # See #_reduction_recedes_opening?.
+    REDUCTION_OPENING_DOT = -0.99
+
+    # The same, for an opening capped by a hull BRIDGE - a cap no face of the
+    # assembly lies in, spanning a step between panels that stop at different
+    # depths (see #_reduction_opening_caps) - within about 30°. Such a cap
+    # slants by the step's depth over the compartment's width, not by
+    # anything the assembly was drawn with : the opening is no lectern's, and
+    # the tilt says nothing against receding it. What still keeps a plane
+    # from cutting across the bridge is asked of the cap itself, not of its
+    # tilt : it must lie WHOLLY beyond the plane. 30° stays clear of a 45°
+    # mitre, whose full-thickness edges leave a bridge too.
+    REDUCTION_BRIDGE_OPENING_DOT = -0.866
+
+    # The same, for a hull bridge the plane is the FOOT of - see the class
+    # doc, BRIDGE FOOT, and #_reduction_bridge_foot? - within 60°. The bridge
+    # resting on the plane is what keeps a plane from cutting across it here,
+    # not the tilt, which only follows the step's proportions.
+    REDUCTION_BRIDGE_FOOT_OPENING_DOT = -0.5
+
+    # Minimum share of a cavity's total cap area for one cap plane to be
+    # treated as an OPENING a beveled edge may recede. A cavity leaking
+    # through an incidental hole — two edge profiles that do not mitre into
+    # each other leave one at every corner — faces the envelope there on a
+    # few square millimetres, orders of magnitude below its real openings ;
+    # letting such a facet recede would clip the envelope on a plane the
+    # assembly never justified, since the clip applies to the whole cross
+    # section. Same spirit as SolidCavityFragmentDef#opening_plane_count,
+    # which reads the openings off the DOMINANT cap planes.
+    REDUCTION_BEVEL_CAP_RATIO = 0.05
+
+    # How far apart, in inches, two panels may be drawn and still be read as
+    # belonging to the same part of the assembly — see #_panel_components. It
+    # stands for the sloppiness of hand modelling, not for any tolerance of the
+    # geometry : SketchUp joints commonly miss by a few tenths of a millimetre
+    # (a whole order of magnitude above SolidMeshDef::TOLERANCE, which is what
+    # the MESH may be off by), while a part actually laid on another stands
+    # millimetres away — a front panel's clearance, a back's rebate. About a
+    # millimetre sits between the two with room to spare on either side.
+    JOINT_MAX_GAP = 0.04
+
+    # How much bigger than the cavity it stands for a fragment may come out
+    # when a DETACHED component is taken away, before the two are read as a
+    # different cavity — see #_cavities_kept?. Removing a component that
+    # SEPARATED two compartments merges them, which doubles a volume rather
+    # than nudging it, so the margin only has to clear the hair the envelope
+    # moves by when the hull it is eroded from loses a few points.
+    KEPT_CAVITY_MAX_VOLUME_RATIO = 1.01
+
+    # How squarely a standing plane has to face DOWN for the cavities against
+    # it to be pockets under the assembly — see #_standing_pocket?. Some 8°
+    # of play : a case is drawn upright, its feet with it.
+    STANDING_DOWN_MIN_DOT = 0.99
+
+    def initialize(panel_drawing_defs,
+
+                   envelope: ENVELOPE_HULL,
+                   max_opening_planes: 2,
+                   apart_opening_planes: false,
+                   max_openness: 1.0,
+                   reduce_envelope: true,
+                   overall_cavity: false,
+                   ignore_applied_panels: false,
+                   front_panel_drawing_defs: [],
+                   time_budget: nil,
+                   validate: true
+
+    )
+
+      @panel_drawing_defs = Array(panel_drawing_defs)
+      @front_panel_drawing_defs = Array(front_panel_drawing_defs)
+
+      @envelope = envelope
+      @max_opening_planes = max_opening_planes
+      @apart_opening_planes = apart_opening_planes
+      @max_openness = max_openness
+      @reduce_envelope = reduce_envelope
+      @overall_cavity = overall_cavity
+      @ignore_applied_panels = ignore_applied_panels
+      @time_budget = time_budget
+      @validate = validate
+
+    end
+
+    # -----
+
+    def run
+      result_def = SolidBooleanResultDef.new
+
+      # See ERROR_TOO_COMPLEX and #_budget_exhausted?
+      @deadline = @time_budget.nil? ? nil : Time.now + @time_budget
+      @budget_exhausted = false
+
+      if @panel_drawing_defs.empty? || !@panel_drawing_defs.all? { |drawing_def| drawing_def.is_a?(DrawingDef) }
+        result_def.errors << [ 'default.error' ]
+        return result_def
+      end
+      unless Meshy.available?
+        result_def.errors << [ 'core.error.exception', { :error => "Can't load Meshy" } ]
+        return result_def
+      end
+
+      # Meshes are extracted in WORLD coordinates : each drawing def may have
+      # its own transformation, the world is the only space common to all
+      # operands, and the envelope is built in that space.
+      panel_mesh_defs = @panel_drawing_defs.map { |drawing_def| SolidMeshDef.from_drawing_def(drawing_def) }
+
+      # Curves are not propagated through Manifold (provenance is per-triangle
+      # only) : collect their world-coordinates segments here for geometric
+      # re-attribution if the cavities get rebuilt.
+      panel_mesh_defs.each { |mesh_def| result_def.curve_info_defs.concat(mesh_def.curve_info_defs) }
+
+      # [ mesh def, index in @panel_drawing_defs ] of the non empty panels. The
+      # index travels WITH the mesh : a pass may run on a SUBSET of the panels
+      # (the contour ones, for the overall cavity below), and its cavities must
+      # still name the caller's own drawing defs — see #_find_cavities.
+      indexed_mesh_defs = []
+      panel_mesh_defs.each_with_index { |mesh_def, panel_index| indexed_mesh_defs << [ mesh_def, panel_index ] unless mesh_def.empty? }
+      if indexed_mesh_defs.empty?
+        result_def.errors << [ 'default.error' ]
+        return result_def
+      end
+
+      # The front panels stand ASIDE from the panels : they are no wall of the
+      # assembly, and what they do is done to the cavities' caps once those
+      # are found — see the class doc, INSET FRONT PANELS. Their own dominant
+      # normal tells which opening each of them stands square to, their bounds
+      # keep the intrusion test off the compartments they cannot reach.
+      @front_panel_meshes = @front_panel_drawing_defs.map { |drawing_def|
+        drawing_def.is_a?(DrawingDef) ? SolidMeshDef.from_drawing_def(drawing_def) : nil
+      }.compact.reject { |mesh_def| mesh_def.empty? }.map { |mesh_def| mesh_def.to_meshy_hash }
+      @front_panel_normals = _panel_dominant_normals(@front_panel_meshes)
+      @front_panel_bounds = @front_panel_meshes.map { |mesh| _vertices_bounds(mesh[:vertices]) }
+
+      # The assembly AS A WHOLE is the reference : an ordinary enclosure never
+      # leaves it, and a detached part has to earn its removal against it —
+      # see the class doc, DETACHED PARTS.
+      compartment_fragment_defs, overall_fragment_defs = _run_clusters([ indexed_mesh_defs ], result_def, validate: @validate, overall: @overall_cavity)
+      return result_def unless result_def.success?
+
+      components = _panel_components(indexed_mesh_defs)
+
+      if components.length > 1 && compartment_fragment_defs.empty?
+
+        # Nothing to protect : whatever the components enclose on their own
+        # beats the empty answer the whole assembly gave. Run aside, so that
+        # an attempt that fails leaves the reported result untouched.
+        split_result_def = SolidBooleanResultDef.new
+        split_fragment_defs, split_overall_fragment_defs = _run_clusters(
+          components.map { |positions| positions.map { |position| indexed_mesh_defs[position] } },
+          split_result_def, validate: false, overall: @overall_cavity
+        )
+        if split_result_def.success? && !split_fragment_defs.empty?
+          compartment_fragment_defs = split_fragment_defs
+          overall_fragment_defs = split_overall_fragment_defs
+        end
+
+      end
+
+      if compartment_fragment_defs.empty?
+
+        # Still nothing : the STANDING parts may be what closes a pocket the
+        # enclosure leaks into — see the class doc, STANDING PARTS. Nothing to
+        # protect either, so the first group whose removal finds something
+        # wins.
+        _standing_positions(indexed_mesh_defs).each do |positions, _plane|
+          break if _budget_exhausted?
+          trial_mesh_defs = indexed_mesh_defs.reject.with_index { |_entry, position| positions.include?(position) }
+          trial_result_def = SolidBooleanResultDef.new
+          trial_fragment_defs, trial_overall_fragment_defs = _run_clusters([ trial_mesh_defs ], trial_result_def, validate: false, overall: @overall_cavity)
+          next unless trial_result_def.success? && !trial_fragment_defs.empty?
+          compartment_fragment_defs = trial_fragment_defs
+          overall_fragment_defs = trial_overall_fragment_defs
+          break
+        end
+
+      else
+
+        # What may be taken off : the DETACHED components, the STANDING parts
+        # and — when the caller asks for it — the panels merely LAID ON the
+        # assembly, which are jointive and so form no component of their own.
+        # Each one [ positions, plane ] : the plane a standing group stands
+        # beyond, nil for the others.
+        candidates = components.length > 1 ? components.map { |positions| [ positions, nil ] } : []
+        candidates += _standing_positions(indexed_mesh_defs)
+        candidates += _applied_panel_positions(indexed_mesh_defs).map { |positions| [ positions, nil ] } if @ignore_applied_panels
+
+        unless candidates.empty?
+          essential_mesh_defs, protected_fragment_defs = _essential_mesh_defs(indexed_mesh_defs, candidates, compartment_fragment_defs)
+          unless essential_mesh_defs.equal?(indexed_mesh_defs)
+            # Read once more as a whole, and kept only if it still holds every
+            # cavity the reference had — but the pockets under the standing
+            # parts removed : what was true of each removal apart has to be
+            # true of them together.
+            kept_result_def = SolidBooleanResultDef.new
+            kept_fragment_defs, kept_overall_fragment_defs = _run_clusters([ essential_mesh_defs ], kept_result_def, validate: false, overall: @overall_cavity)
+            if kept_result_def.success? && _cavities_kept?(protected_fragment_defs, kept_fragment_defs)
+              compartment_fragment_defs = kept_fragment_defs
+              overall_fragment_defs = kept_overall_fragment_defs
+            end
+          end
+        end
+
+      end
+
+      # A budget run out anywhere leaves a detection other than the one asked
+      # for - reductions left undone, trials cut short : none of it is
+      # reported. See ERROR_TOO_COMPLEX.
+      if @budget_exhausted
+        result_def.errors << [ ERROR_TOO_COMPLEX ]
+        return result_def
+      end
+
+      result_def.fragment_defs.concat(compartment_fragment_defs)
+      result_def.fragment_defs.concat(overall_fragment_defs)
+
+      result_def
+    end
+
+    # -----
+
+    private
+
+    # ONE detection over each of the given clusters — a cluster being a
+    # [ SolidMeshDef, index in @panel_drawing_defs ] list, see #_find_cavities.
+    #
+    # Returns [ compartments, overall cavities ] rather than filing them in
+    # +result_def+ : the caller weighs several of these against each other and
+    # only one of them ends up reported (see the class doc, DETACHED PARTS), so
+    # a run it disowns must leave nothing of itself behind — errors included,
+    # which is what the throwaway +result_def+ a trial run is given is for.
+    def _run_clusters(clusters, result_def, validate:, overall:)
+      compartment_fragment_defs = []
+      overall_fragment_defs = []
+
+      clusters.each do |cluster_mesh_defs|
+        break if _budget_exhausted?
+
+        fragment_defs, panel_id_ranges, dominant_normals = _find_cavities(cluster_mesh_defs, result_def, validate: validate, overall: false)
+        compartment_fragment_defs.concat(fragment_defs)
+        break unless result_def.success?
+
+        # OVERALL CAVITY : a second pass, over the CONTOUR panels only — see
+        # the class doc. Held apart from the compartments, and appended AFTER
+        # them by #run, so that a caller reading the list in order (or picking
+        # the first fragment holding a point) still meets them first.
+        next unless overall
+
+        internal_panel_indices = _internal_panel_indices(fragment_defs, panel_id_ranges, dominant_normals)
+        if internal_panel_indices.empty?
+          # Nothing partitions this enclosure : its compartments ARE its
+          # overall cavity, and a second pass would recompute them identically.
+          # Marked COPIES rather than the fragments themselves, so that a
+          # caller may sort the two apart by #overall? in every case alike.
+          overall_fragment_defs.concat(fragment_defs.map { |fragment_def| _as_overall(fragment_def) })
+        else
+          contour_mesh_defs = cluster_mesh_defs.reject { |_mesh_def, panel_index| internal_panel_indices.include?(panel_index) }
+          unless contour_mesh_defs.empty? || _budget_exhausted?
+            # validate: false — these very panels went through the first pass's
+            # validation, only a native exception is left to report
+            cluster_overall_fragment_defs, _panel_id_ranges, _dominant_normals = _find_cavities(contour_mesh_defs, result_def, validate: false, overall: true)
+            overall_fragment_defs.concat(cluster_overall_fragment_defs)
+          end
+        end
+
+      end
+
+      [ compartment_fragment_defs, overall_fragment_defs ]
+    end
+
+    # Whether the time budget is run out - see ERROR_TOO_COMPLEX. Asked
+    # between the booleans ; once it says so, it goes on saying so, and #run
+    # reports the detection as given up whatever the passes still returned.
+    def _budget_exhausted?
+      @budget_exhausted ||= !@deadline.nil? && Time.now >= @deadline
+    end
+
+    # The positions (in +indexed_mesh_defs+) of the panels making up one part
+    # of the assembly, one list per part — see the class doc, DETACHED PARTS.
+    # Panels whose bounding boxes come within JOINT_MAX_GAP of each other
+    # belong together, transitively. Each list is in the order of its panels,
+    # and the lists in the order of their first one, so that what is built on
+    # them stays stable.
+    def _panel_components(indexed_mesh_defs)
+      count = indexed_mesh_defs.length
+      return [ (0...count).to_a ] if count < 2
+
+      # Half the gap on each box : two boxes then overlap exactly when the
+      # panels they hold are no farther apart than the whole of it.
+      margin = JOINT_MAX_GAP / 2.0
+      bounds = indexed_mesh_defs.map { |mesh_def, _panel_index|
+        min = [ Float::INFINITY ] * 3
+        max = [ -Float::INFINITY ] * 3
+        mesh_def.vertices.each_slice(3) do |point|
+          3.times do |i|
+            min[i] = point[i] if point[i] < min[i]
+            max[i] = point[i] if point[i] > max[i]
+          end
+        end
+        [ min.map { |v| v - margin }, max.map { |v| v + margin } ]
+      }
+
+      parent = (0...count).to_a
+      fn_find = lambda { |i| parent[i] = fn_find.call(parent[i]) unless parent[i] == i ; parent[i] }
+      fn_union = lambda { |i, j| pi, pj = fn_find.call(i), fn_find.call(j) ; parent[pi] = pj if pi != pj }
+
+      count.times do |i|
+        ((i + 1)...count).each do |j|
+          next if fn_find.call(i) == fn_find.call(j)
+          min_i, max_i = bounds[i]
+          min_j, max_j = bounds[j]
+          next unless (0..2).all? { |axis| min_i[axis] <= max_j[axis] && min_j[axis] <= max_i[axis] }
+          fn_union.call(i, j)
+        end
+      end
+
+      components = {}
+      count.times { |position| (components[fn_find.call(position)] ||= []) << position }
+      components.values
+    end
+
+    # The panels left once the CANDIDATES that turn out to structure nothing
+    # are dropped — see the class doc, DETACHED PARTS. Returns
+    # +indexed_mesh_defs+ ITSELF when they all earn their keep, which is the
+    # caller's signal that there is nothing to recompute.
+    #
+    # +candidates+ is a list of [ position list, plane ] : the detached
+    # components, the standing groups (see #_standing_positions) and the
+    # panels merely laid on the assembly when the caller asked for those too
+    # (see #_applied_panel_positions). All are weighed the same way, and for
+    # the same reason — they may be inflating the envelope without enclosing
+    # anything.
+    #
+    # +reference_fragment_defs+ are the cavities of the whole assembly : each
+    # candidate is weighed against them, never against what an earlier removal
+    # left standing, so that one detached part cannot decide for another. Bar
+    # one exception : the POCKETS a standing group closes UNDER the assembly
+    # are its own, not the assembly's (see #_standing_pocket?), and its trial
+    # does not ask for them back.
+    #
+    # Returns [ panels left, cavities to protect ] : the reference, less the
+    # pockets of the standing groups granted — what the caller checks the
+    # final pass against.
+    def _essential_mesh_defs(indexed_mesh_defs, candidates, reference_fragment_defs)
+      hull_planes = _hull_planes(indexed_mesh_defs.inject([]) { |vertices, (mesh_def, _panel_index)| vertices.concat(mesh_def.vertices) })
+      superfluous_positions = []
+      pocket_fragment_defs = []
+
+      candidates.each do |positions, plane|
+        break if _budget_exhausted?
+        next if positions.length == indexed_mesh_defs.length
+        next if positions.any? { |position| superfluous_positions.include?(position) }
+
+        # Holding no vertex of the envelope, a component strictly INSIDE the
+        # hull cannot shrink it : whatever it is, removing it could only
+        # enlarge what is left, so it is kept without being tried.
+        unless hull_planes.nil?
+          component_vertices = positions.inject([]) { |vertices, position| vertices.concat(indexed_mesh_defs[position].first.vertices) }
+          next if _points_within_planes?(component_vertices, hull_planes, -SolidMeshDef::TOLERANCE)
+        end
+
+        # Removals already granted stay out : two front panels on the same case are
+        # each superfluous, and the second must be weighed without the first
+        # inflating the envelope back.
+        dropped_positions = superfluous_positions + positions
+        trial_mesh_defs = indexed_mesh_defs.reject.with_index { |_entry, position| dropped_positions.include?(position) }
+        next if trial_mesh_defs.empty?
+
+        trial_result_def = SolidBooleanResultDef.new
+        trial_fragment_defs, _overall_fragment_defs = _run_clusters([ trial_mesh_defs ], trial_result_def, validate: false, overall: false)
+        next unless trial_result_def.success?
+
+        pockets = plane.nil? ? [] : reference_fragment_defs.select { |fragment_def| _standing_pocket?(fragment_def, plane) }
+        next unless _cavities_kept?(reference_fragment_defs - pockets, trial_fragment_defs)
+        superfluous_positions = dropped_positions
+        pocket_fragment_defs.concat(pockets)
+      end
+
+      return [ indexed_mesh_defs, reference_fragment_defs ] if superfluous_positions.empty?
+      [
+        indexed_mesh_defs.reject.with_index { |_entry, position| superfluous_positions.include?(position) },
+        reference_fragment_defs - pocket_fragment_defs
+      ]
+    end
+
+    # Whether the given cavity is a POCKET under the assembly : lying wholly
+    # beyond the given standing plane, and against it — the space between the
+    # feet, walled by the bottom's underside, the feet and the hull. See the
+    # class doc, STANDING PARTS.
+    #
+    # UNDER only, the world's Z telling which way is down : a case is drawn
+    # standing on its feet, and what it stands on is no part of it. Two cases
+    # stacked are the same thing upside down — the upper one standing beyond
+    # the lower one's top — but a bottomless upper case has its compartment
+    # against that very plane, and it is no pocket.
+    #
+    # Nor is one FLOORED by a panel : the space between feet, inside a plinth,
+    # opens on the ground — the faces it turns down are the hull cap the feet
+    # stand on, or none at all where the hull slants from a foot up to a side
+    # (T36). A cavity whose downward faces are mostly a panel's is closed by a
+    # BOTTOM, the lowest shelf of a stack without sides, and that one is a
+    # compartment too - whether that shelf runs the full width (T46) or stops
+    # short, the hull then slanting from its end (T47). ALL the downward
+    # faces, and not only the lowest ones : on T47 the lowest point of the
+    # cavity is the edge at the foot of that slant, below the shelf's top.
+    def _standing_pocket?(fragment_def, plane)
+      nx, ny, nz, d = plane
+      return false if nz > -STANDING_DOWN_MIN_DOT
+      min, _max = _projection_range(fragment_def.vertices, [ nx, ny, nz ])
+      return false if min.nil? || (min - d).abs > SolidMeshDef::TOLERANCE
+      envelope_area, panel_area = _facing_areas(fragment_def, [ nx, ny, nz ])
+      panel_area <= envelope_area
+    end
+
+    # [ envelope area, panel area ] of the triangles of the given fragment
+    # facing out along +normal+ - to STANDING_DOWN_MIN_DOT. Doubled areas :
+    # only their comparison matters.
+    def _facing_areas(fragment_def, normal)
+      vertices = fragment_def.vertices
+      envelope_area = 0.0
+      panel_area = 0.0
+      fragment_def.face_indices.each_slice(3).with_index do |(a, b, c), triangle_index|
+        ax, ay, az = vertices[a * 3], vertices[a * 3 + 1], vertices[a * 3 + 2]
+        ux = vertices[b * 3] - ax ; uy = vertices[b * 3 + 1] - ay ; uz = vertices[b * 3 + 2] - az
+        vx = vertices[c * 3] - ax ; vy = vertices[c * 3 + 1] - ay ; vz = vertices[c * 3 + 2] - az
+        cx = uy * vz - uz * vy
+        cy = uz * vx - ux * vz
+        cz = ux * vy - uy * vx
+        area2 = Math.sqrt(cx * cx + cy * cy + cz * cz)
+        next if area2 <= 0 || (cx * normal[0] + cy * normal[1] + cz * normal[2]) / area2 < STANDING_DOWN_MIN_DOT
+        fragment_def.triangle_face_id(triangle_index) == 0 ? envelope_area += area2 : panel_area += area2
+      end
+      [ envelope_area, panel_area ]
+    end
+
+    # Whether every one of +reference_fragment_defs+ is still there in
+    # +fragment_defs+ — a cavity holding its inner point, and no bigger than it
+    # was. Losing one means the removal took away a wall the compartment needed
+    # ; a bigger one means it took away what SEPARATED two compartments, and
+    # they have merged. Only a part that was merely inflating the envelope
+    # leaves every cavity where it stood — see the class doc, DETACHED PARTS.
+    def _cavities_kept?(reference_fragment_defs, fragment_defs)
+      reference_fragment_defs.each do |reference_fragment_def|
+        point = _inner_point(reference_fragment_def)
+        return false if point.nil?
+        fragment_def = fragment_defs.find { |other| other.contains_point?(point) }
+        return false if fragment_def.nil?
+        return false if fragment_def.volume > reference_fragment_def.volume * KEPT_CAVITY_MAX_VOLUME_RATIO
+      end
+      true
+    end
+
+    # A point WITHIN the given fragment, to recognize it by in another run.
+    # Its centroid when that lies inside — which it does on the ordinary
+    # compartment — else a point stepped inward from the middle of its largest
+    # face, an L shaped cavity having its centroid out in the notch. nil when
+    # neither lands inside, on which the caller keeps the panel rather than
+    # decide on evidence it does not have.
+    def _inner_point(fragment_def)
+      centroid = fragment_def.centroid
+      return centroid if !centroid.nil? && fragment_def.contains_point?(centroid)
+
+      vertices = fragment_def.vertices
+      step = SolidMeshDef::TOLERANCE * 10
+      point = nil
+      area2 = 0.0
+      fragment_def.face_indices.each_slice(3) do |a, b, c|
+        triangle_normal, triangle_area2 = _triangle_normal(vertices, a, b, c)
+        next if triangle_normal.nil? || triangle_area2 <= area2
+        cx = (vertices[a * 3] + vertices[b * 3] + vertices[c * 3]) / 3.0
+        cy = (vertices[a * 3 + 1] + vertices[b * 3 + 1] + vertices[c * 3 + 1]) / 3.0
+        cz = (vertices[a * 3 + 2] + vertices[b * 3 + 2] + vertices[c * 3 + 2]) / 3.0
+        [ -1.0, 1.0 ].each do |way|
+          candidate = Geom::Point3d.new(cx + way * step * triangle_normal[0], cy + way * step * triangle_normal[1], cz + way * step * triangle_normal[2])
+          next unless fragment_def.contains_point?(candidate)
+          point = candidate
+          area2 = triangle_area2
+          break
+        end
+      end
+      point
+    end
+
+    # Outward [ nx, ny, nz, d ] planes of the convex hull of the given flat
+    # vertex array, nil when it is degenerate (fewer than 4 points, coplanar) —
+    # a set of points no other can be said to lie inside of.
+    def _hull_planes(vertices)
+      points = []
+      vertices.each_slice(3) { |x, y, z| points << Geom::Point3d.new(x, y, z) }
+      triangles = Geometrix::HullFinder.find_convex_hull_triangle_indices(points)
+      return nil if triangles.nil?
+
+      planes = []
+      triangles.each do |a, b, c|
+        normal, _length = _triangle_normal(vertices, a, b, c)
+        next if normal.nil?
+        planes << [
+          normal[0], normal[1], normal[2],
+          normal[0] * vertices[a * 3] + normal[1] * vertices[a * 3 + 1] + normal[2] * vertices[a * 3 + 2]
+        ]
+      end
+      planes.empty? ? nil : planes
+    end
+
+    # The panels that are LAID ON the assembly rather than built into it — a
+    # front panel in applique, a front panel — one position list each, ready for the very
+    # trial the detached components go through.
+    #
+    # What is read here is only a NECESSARY condition, and a cheap one : the
+    # panel has one of its own dominant faces with the whole of the rest of
+    # the assembly on the far side of it, so it could be lifted off along that
+    # face without anything having to move. That alone does not make it
+    # applied — a side of a carcass answers to it just as well, everything
+    # else standing on its inner side. What settles it is the trial in
+    # #_essential_mesh_defs : a side HOLDS its compartment in, and taking it
+    # away opens the cavity or merges it with the next ; a front panel merely covers
+    # one, and taking it away leaves every cavity exactly where it stood.
+    #
+    # Reading the separating plane off the panel's DOMINANT face is what keeps
+    # this to one pass over the vertices — no hull, no boolean. A part laid on
+    # by its edge is missed, which only means it is not offered to the trial :
+    # the answer stays the one the assembly as a whole gave.
+    def _applied_panel_positions(indexed_mesh_defs)
+      count = indexed_mesh_defs.length
+      return [] if count < 2
+
+      dominant_normals = _panel_dominant_normals(indexed_mesh_defs.map { |mesh_def, _panel_index|
+        { :vertices => mesh_def.vertices, :face_indices => mesh_def.face_indices }
+      })
+
+      positions = []
+      count.times do |position|
+        normal = dominant_normals[position]
+        next if normal.nil?
+
+        own_min, own_max = _projection_range(indexed_mesh_defs[position].first.vertices, normal)
+        next if own_min.nil?
+
+        others_min = nil
+        others_max = nil
+        indexed_mesh_defs.each_with_index do |(mesh_def, _panel_index), other_position|
+          next if other_position == position
+          min, max = _projection_range(mesh_def.vertices, normal)
+          next if min.nil?
+          others_min = min if others_min.nil? || min < others_min
+          others_max = max if others_max.nil? || max > others_max
+        end
+        next if others_min.nil?
+
+        positions << [ position ] if others_min >= own_max - SolidMeshDef::TOLERANCE ||
+                                     others_max <= own_min + SolidMeshDef::TOLERANCE
+      end
+      positions
+    end
+
+    # The groups of panels STANDING beyond a face of another — the feet under a
+    # bottom, a plinth, a crown — one [ position list, plane ] per group, ready
+    # for the removal trial. The plane is the face's, as an outward
+    # [ nx, ny, nz, d ] pointing to the group. See the class doc, STANDING
+    # PARTS.
+    #
+    # A panel's dominant face planes, at either end of its thickness, are read
+    # against the rest of the assembly : a plane that no other panel CROSSES,
+    # with some of them beyond it, separates those from everything else — the
+    # panel itself included. A group holding every other panel is left out :
+    # that is a panel laid on the rest, the business of
+    # #_applied_panel_positions, and trying it would only leave that panel
+    # alone.
+    #
+    # Like there, this is only a NECESSARY condition : the shelves under a top
+    # are beyond the top's underside too — but so are the sides crossing it,
+    # which is why the plane is refused. And a group that passes is only
+    # offered : two cases stacked one on the other separate on such a plane,
+    # and the trial keeps each of them, its removal losing its compartments.
+    def _standing_positions(indexed_mesh_defs)
+      count = indexed_mesh_defs.length
+      return [] if count < 3
+
+      dominant_normals = _panel_dominant_normals(indexed_mesh_defs.map { |mesh_def, _panel_index|
+        { :vertices => mesh_def.vertices, :face_indices => mesh_def.face_indices }
+      })
+
+      groups = []
+      count.times do |position|
+        normal = dominant_normals[position]
+        next if normal.nil?
+
+        ranges = indexed_mesh_defs.map { |mesh_def, _panel_index| _projection_range(mesh_def.vertices, normal) }
+        own_min, own_max = ranges[position]
+        next if own_min.nil?
+
+        # +way+ turns each side into the far side of its own plane : a panel
+        # is beyond when its nearest point is, across when its farthest is
+        [ [ own_max, 1.0 ], [ own_min, -1.0 ] ].each do |d, way|
+          beyond = []
+          crossed = false
+          ranges.each_with_index do |(min, max), other_position|
+            next if other_position == position || min.nil?
+            nearest, farthest = way > 0 ? [ min, max ] : [ -max, -min ]
+            if nearest >= way * d - SolidMeshDef::TOLERANCE
+              beyond << other_position
+            elsif farthest > way * d + SolidMeshDef::TOLERANCE
+              crossed = true
+              break
+            end
+          end
+          next if crossed || beyond.empty? || beyond.length == count - 1
+          next if groups.any? { |positions, _plane| positions == beyond }
+          groups << [ beyond, [ way * normal[0], way * normal[1], way * normal[2], way * d ] ]
+        end
+      end
+      groups
+    end
+
+    # [ lowest, highest ] projection of the given flat vertex array on the
+    # given direction, [ nil, nil ] when it is empty.
+    def _projection_range(vertices, normal)
+      min = nil
+      max = nil
+      vertices.each_slice(3) do |x, y, z|
+        value = normal[0] * x + normal[1] * y + normal[2] * z
+        min = value if min.nil? || value < min
+        max = value if max.nil? || value > max
+      end
+      [ min, max ]
+    end
+
+    # Whether every point of the given flat vertex array lies on the inner side
+    # of every one of the given outward planes. +margin+ is how far a point may
+    # sit PAST a plane and still count : the mesh tolerance to read a point as
+    # being on the hull, its opposite to ask for a point strictly within it.
+    def _points_within_planes?(vertices, planes, margin = SolidMeshDef::TOLERANCE)
+      vertices.each_slice(3) do |x, y, z|
+        planes.each do |nx, ny, nz, d|
+          return false if nx * x + ny * y + nz * z - d > margin
+        end
+      end
+      true
+    end
+
+    # ONE cavity detection pass over the given panels : the face info registry,
+    # the envelope, the hermetic and open subtractions and, in hull mode, the
+    # envelope reduction — the whole of what the class doc describes.
+    #
+    # +indexed_mesh_defs+ is a list of [ SolidMeshDef, index in
+    # @panel_drawing_defs ]. A pass may run on a SUBSET of the panels (the
+    # contour ones, for the overall cavity), so the index cannot be the
+    # position in that list : carried along, it keeps
+    # SolidFragmentDef#src_indices and the culprit an error names (see
+    # #_report_errors) expressed in the caller's own drawing defs, whatever the
+    # pass was given.
+    #
+    # +overall+ marks the cavities this pass produces (see
+    # SolidCavityFragmentDef#overall?).
+    #
+    # Returns [ cavity fragment defs, panel id ranges, panel dominant normals ]
+    # — the last two being what #_internal_panel_indices reads its panels off.
+    # On error the errors are appended to +result_def+ and the tuple is
+    # returned AS IT STANDS : the cavities an earlier stage did produce are
+    # still cavities, and the caller tells the failure by result_def#success?.
+    def _find_cavities(indexed_mesh_defs, result_def, validate:, overall:)
+      @envelope_restore_planes = []
+      @panel_face_planes = nil  # This pass's own panels — see #_panel_face_planes
+
+      # Merge all face info registries into a single one, offsetting ids
+      # accordingly. Id 0 is reserved for the envelope : it drives the
+      # outside / openness filtering below. Panel id ranges are kept aside to
+      # attribute each cavity to the panels bounding it.
+      face_info_defs = [ SolidFaceInfoDef.new(nil, virtual: true) ]
+      panel_id_ranges = []
+      panel_meshes = []
+      indexed_mesh_defs.each do |mesh_def, panel_index|
+        id_offset = face_info_defs.length
+        panel_meshes << mesh_def.to_meshy_hash(id_offset: id_offset)
+        face_info_defs.concat(mesh_def.face_info_defs)
+        panel_id_ranges << [ (id_offset...face_info_defs.length), panel_index ]
+      end
+
+      dominant_normals = _panel_dominant_normals(panel_meshes)
+
+      # What this pass returns, built up front so that every error path below
+      # gives back the cavities collected so far — the list is filled IN PLACE
+      cavity_fragment_defs = []
+      pass = [ cavity_fragment_defs, panel_id_ranges, dominant_normals ]
+
+      envelope_mesh = @envelope == ENVELOPE_BBOX ? _envelope_bbox_mesh(panel_meshes) : _envelope_hull_mesh(panel_meshes)
+      if envelope_mesh.nil?
+        result_def.errors << [ 'default.error' ]
+        return pass
+      end
+
+      # The cavities are collected by TWO complementary passes :
+      #
+      # - The HERMETIC cavities (openness == 0) come from the direct
+      #   subtraction : they are internal voids of the panel union, which
+      #   Meshy computes exactly but whose fragment serialization does not
+      #   round-trip (an exported void resolves into zero-volume membranes) —
+      #   so they must be captured in the very operation that subtracts the
+      #   panels. Joint imperfection residues never touch them : a residue
+      #   reaching a cavity would be an opening.
+      #
+      # - The OPEN cavities (openness > 0, hull mode only) come from a
+      #   union-then-subtraction : welding the panels together first lets the
+      #   joints between imperfectly joined panels resolve INSIDE the union,
+      #   so the subtraction cannot imprint them as razor-thin flaps on the
+      #   cavities. This also makes the result independent of the panel
+      #   order, which otherwise leaks into the output through the chained
+      #   cut union and the canonical plane tie-breaks. An open assembly has
+      #   no internal void, so nothing is lost by the fragment round-trip.
+      #
+      # A cavity is hermetic or open, never both : the two sets are disjoint
+      # by construction.
+
+      # Returns [ collected, deferred ] : the cavities this output yields, and
+      # the candidates only the envelope reduction can still settle (see the
+      # opening filter below), the caller feeding them back as PROVISIONAL
+      # fragments - whether @reduce_envelope or not, see ENVELOPE REDUCTION
+      # ON APPEAL.
+      fn_collect = lambda { |output, hermetic|
+        collected = []
+        deferred = []          # Candidates the opening filter turned down, pending reduction
+        leaning = []           # Candidates the enclosure filter alone turned down
+        leaning_deferred = []  # ... which the opening filter turned down too
+        next [ collected, deferred ] unless output['fragments'].is_a?(Array)
+        output['fragments'].each do |fragment|
+          face_ids = fragment['face_ids']
+          next unless face_ids.is_a?(Array) && !face_ids.empty?
+          volume, total_area, envelope_area, machining_area = _measure(fragment, face_info_defs)
+          # Sheet residue : a body whose mean thickness is below the SketchUp
+          # merge tolerance is a collapsed joint imperfection, not a void
+          next if total_area <= 0 || 2.0 * volume / total_area < SolidMeshDef::TOLERANCE
+          # Machining void : the pocket a glued cuts-opening component digs
+          # into a panel, bounded by that machining alone — see
+          # MACHINING_VOID_MIN_AREA_SHARE
+          panel_area = total_area - envelope_area
+          next if panel_area > 0 && machining_area / panel_area >= MACHINING_VOID_MIN_AREA_SHARE
+          openness = envelope_area / total_area
+          if hermetic
+            next if face_ids.include?(0)  # Envelope face : the outside world or an open cavity
+            openness = 0.0                # No envelope face at all : hermetically closed
+          else
+            # openness == 1.0 would be a body bounded by the envelope only,
+            # a pure hull artifact touching no panel
+            next if openness <= 0 || openness >= 1.0 || openness > @max_openness
+          end
+          fragment_def = SolidCavityFragmentDef.new(
+            fragment['vertices'], fragment['face_indices'], face_ids, face_info_defs,
+            src_indices: _panel_indices(face_ids, panel_id_ranges),
+            openness: openness,
+            overall: overall
+          )
+          next if fragment_def.empty?
+          # Structural filter : a real compartment opens on few flat openings,
+          # the outside world and concavity pockets face the envelope on many
+          # planes.
+          #
+          # Counted too early, though, to settle the matter on its own : the
+          # openings are read off the ENVELOPE faces, and a NOTCHED assembly
+          # (a side and a bottom running deeper than the rest, an L) is bridged
+          # by the convex hull over its notch with a fan of slanted caps, each
+          # of them an opening of its own. Those are precisely what the
+          # envelope reduction takes away — so a candidate the count turns
+          # down is handed to it as PROVISIONAL rather than dropped, and has to
+          # earn its keep by coming out of a clip within the limit. With the
+          # reduction off, it is still handed to it : see ENVELOPE REDUCTION
+          # ON APPEAL in the class doc.
+          #
+          # Asked to stand APART, the openings are past the budget only when
+          # some of them meet : an opening apart from every other is a HOLE in
+          # a wall of the compartment - the gap a top made of two rails leaves
+          # between them - not the corner a missing panel opens, which is
+          # what the budget is about.
+          too_open = !hermetic && (@apart_opening_planes ? !fragment_def.opening_planes_apart? : fragment_def.opening_plane_count > @max_opening_planes)
+          # Enclosure filter : a compartment is hemmed in by its walls, a
+          # concavity pocket only wraps a corner of the assembly — see
+          # SolidCavityFragmentDef#enclosed_by_walls?. A candidate it turns
+          # down is not settled yet : the corner compartment a divider leaves
+          # against a side is shaped exactly like a pocket, and only the rest
+          # of the batch can tell (below).
+          unless hermetic || fragment_def.enclosed_by_walls?
+            (too_open ? leaning_deferred : leaning) << fragment_def
+            next
+          end
+          (too_open ? deferred : collected) << fragment_def
+        end
+
+        # Second reading of the candidates the enclosure filter turned down,
+        # this time against the compartments it recognized : one that leans on
+        # the very same wall FACE as an accepted cavity is the other side of a
+        # DIVIDER, hence a compartment too — see
+        # SolidCavityFragmentDef#leans_on_a_wall_face_of?. Read from the
+        # accepted set as it stands BEFORE this pass, so the evidence always
+        # traces back to a cavity enclosed on its own merits : a chain of
+        # candidates vouching for one another would let a pocket in through
+        # any one of them.
+        unless leaning.empty? && leaning_deferred.empty?
+          enclosed_fragment_defs = collected.dup
+          leaning.each do |fragment_def|
+            collected << fragment_def if enclosed_fragment_defs.any? { |other| fragment_def.leans_on_a_wall_face_of?(other) }
+          end
+          leaning_deferred.each do |fragment_def|
+            deferred << fragment_def if enclosed_fragment_defs.any? { |other| fragment_def.leans_on_a_wall_face_of?(other) }
+          end
+        end
+
+        [ collected, deferred ]
+      }
+
+      # Hermetic pass
+      direct_output = Meshy.operate(
+        :operation => Meshy::OPERATION_SUBTRACTION,
+        :validate => validate,
+        :tolerance => SolidMeshDef::TOLERANCE,
+        :src_meshes => [ envelope_mesh ],
+        :cut_meshes => panel_meshes
+      )
+      return pass if _report_errors(direct_output, result_def, panel_id_ranges)
+      cavity_fragment_defs.concat(fn_collect.call(direct_output, true).first)  # A hermetic cavity has no opening to defer
+
+      # Open pass (the bbox envelope only reveals hermetic cavities)
+      if @envelope != ENVELOPE_BBOX
+        union_output = Meshy.operate(
+          :operation => Meshy::OPERATION_UNION,
+          :validate => false,  # Operands were validated by the hermetic pass
+          :tolerance => SolidMeshDef::TOLERANCE,
+          :src_meshes => panel_meshes,
+          :cut_meshes => []
+        )
+        return pass if _report_errors(union_output, result_def)
+
+        welded_meshes = (union_output['fragments'] || []).map { |fragment|
+          {
+            :vertices => fragment['vertices'],
+            :face_indices => fragment['face_indices'],
+            :face_ids => fragment['face_ids'],
+            :tolerance => SolidMeshDef::TOLERANCE
+          }
+        }
+        unless welded_meshes.empty?
+          welded_output = Meshy.operate(
+            :operation => Meshy::OPERATION_SUBTRACTION,
+            :validate => false,
+            :tolerance => SolidMeshDef::TOLERANCE,
+            :src_meshes => [ envelope_mesh ],
+            :cut_meshes => welded_meshes
+          )
+          return pass if _report_errors(welded_output, result_def)
+          # Only the open cavities need it : a hermetic one is bounded by
+          # panels alone, it never touches the hull
+          _restore_envelope_vertices(welded_output['fragments'])
+          open_fragment_defs, deferred_fragment_defs = fn_collect.call(welded_output, false)
+
+          # INSET FRONT PANELS : the openings a front panel fills recede behind it, so
+          # that what is fitted in the compartment next stops at its back and
+          # not at the mouth it closed — see the class doc. Applied BEFORE the
+          # reduction, whose recesses are then read on the cavity as the
+          # front panels leave it : a chant recessed less deeply than the front panel it
+          # stands behind has nothing left to recede.
+          unless @front_panel_meshes.empty?
+            recessed = _recess_front_panel_openings(open_fragment_defs, deferred_fragment_defs, envelope_mesh, result_def, fn_collect)
+            return pass if recessed.nil?
+            open_fragment_defs, deferred_fragment_defs = recessed
+          end
+
+          # Envelope reduction : the recessed panel edges detected on an open
+          # cavity clip THAT cavity, shallowest recess first, the survivors
+          # going back through the detection — see the class doc.
+          #
+          # BOTH sides of a clip go back through the detection : the KEPT
+          # side because it may nest a deeper recess of its own (T07 : a
+          # divider recessed 50, carrying a shelf recessed 100 on one side
+          # only — the 100 plane only becomes visible once the 50 one has
+          # split the two sides apart), the BEYOND side because it may hide
+          # a SIBLING recess the shallowest clip could not see, that recess
+          # living precisely on the side just clipped away (T22 : two
+          # unconnected partitions recessed at either end of a cavity open
+          # top and bottom).
+          #
+          # They are not evidence of the same weight, though. A KEPT side is
+          # CONFIRMED : the panel's own mass separates whatever it touches,
+          # so it is a compartment whatever it came off of, and it goes to
+          # the result once no further plane splits it. A BEYOND side is only
+          # PROVISIONAL : most of the time it is the plain "extra depth" a
+          # front panel would still occupy in front of the recess, no compartment of
+          # its own. It earns its keep only through what a LATER round finds
+          # inside it — the kept sides of any clip it turns out to hide are
+          # confirmed like any other — and a provisional fragment reaching a
+          # round with no plane of its own is that plain flare after all, and
+          # is dropped.
+          #
+          # With the reduction OFF, only the deferred candidates go through it
+          # (see ENVELOPE REDUCTION ON APPEAL) : the cavities the filters
+          # accepted are kept as they are, and so is any side a clip confirms.
+          #
+          # Except for a LONE recess, read on the NOTCHED cavities the filters
+          # accepted as well (see the class doc, LONE RECESS) : on appeal,
+          # those go through it too, and nothing but that cut applies to them.
+          notched_fragment_defs = open_fragment_defs.select { |fragment_def| _notched?(fragment_def) }
+          if @reduce_envelope ? !(open_fragment_defs.empty? && deferred_fragment_defs.empty?) : !(deferred_fragment_defs.empty? && notched_fragment_defs.empty?)
+            on_appeal = !@reduce_envelope
+            # An untouched cavity is a cavity : the ones no reduction ever
+            # clips must reach the result, so they start out confirmed - and
+            # on appeal they are never clipped at all, but for the notched
+            # ones' lone recess. The ones the opening filter deferred start
+            # out PROVISIONAL, on the contrary : they only exist here to be
+            # clipped, and a round that finds no plane on them drops them just
+            # like a plain flare.
+            confirmed_fragment_defs = on_appeal ? open_fragment_defs - notched_fragment_defs : []
+            active = (on_appeal ? notched_fragment_defs : open_fragment_defs).map { |fragment_def| [ fragment_def, false ] } +
+                     deferred_fragment_defs.map { |fragment_def| [ fragment_def, true ] }
+            REDUCTION_MAX_PASSES.times do
+              break if active.empty?
+              return pass if _budget_exhausted?
+              # A LONE recess (see #_detect_reduction_planes) is only read on
+              # a candidate that is lost without it, or a NOTCHED one : the cut
+              # it makes, the option decides
+              lone_recesses = active.map { |fragment_def, provisional| provisional || _notched?(fragment_def) ? (on_appeal ? :main : :chant) : nil }
+              reduction_planes_per_fragment = _detect_reduction_planes(active.map { |fragment_def, _provisional| fragment_def }, panel_id_ranges, panel_meshes, dominant_normals, envelope_mesh, lone_recesses)
+              # On appeal, an accepted cavity is only ever cut by its lone
+              # recess
+              if on_appeal
+                active.each_with_index do |(_fragment_def, provisional), index|
+                  reduction_planes_per_fragment[index] = @lone_main_planes_per_fragment[index] || [] unless provisional
+                end
+              end
+              next_active = []
+              clipped_any = false
+              active.each_with_index do |(fragment_def, provisional), index|
+                normal, d = _shallowest_reduction_plane(reduction_planes_per_fragment[index], fragment_def)
+                if normal.nil?
+                  # Nothing left to split : a confirmed fragment is a
+                  # finished compartment, a provisional one was the flare
+                  confirmed_fragment_defs << fragment_def unless provisional
+                  next
+                end
+                return pass if _budget_exhausted?
+                kept_output = Meshy.operate(
+                  :operation => Meshy::OPERATION_INTERSECTION,
+                  :validate => false,
+                  :tolerance => SolidMeshDef::TOLERANCE,
+                  :src_meshes => [ _reduction_fragment_mesh(fragment_def) ],
+                  :cut_meshes => [ _reduction_slab_mesh(normal, d, envelope_mesh) ]
+                )
+                return pass if _report_errors(kept_output, result_def)
+                _restore_clipped_vertices(kept_output['fragments'], normal, d)
+                kept, kept_deferred_fragment_defs = fn_collect.call(kept_output, false)
+                # Cut off at a LONE board's inner face, the kept side still
+                # opens on the notch the board leaves behind it : that opening
+                # is what the cut gave up, not one the budget is about — see
+                # the class doc, LONE RECESS
+                lone_main = (@lone_main_planes_per_fragment[index] || []).any? { |lone_normal, lone_d|
+                  normal[0] * lone_normal[0] + normal[1] * lone_normal[1] + normal[2] * lone_normal[2] > 0.9999 && (d - lone_d).abs < REDUCTION_MIN_DEPTH
+                }
+                if lone_main
+                  kept += kept_deferred_fragment_defs
+                  kept_deferred_fragment_defs = []
+                end
+
+                if kept.empty? && kept_deferred_fragment_defs.empty?
+                  # Nothing on the kept side : the reduction has nothing to
+                  # say here, keep the fragment as it came in rather than
+                  # losing it
+                  confirmed_fragment_defs << fragment_def unless provisional
+                  next
+                end
+
+                clipped_any = true
+                # In place, so the cavity order stays the panel order the
+                # subtraction produced. On appeal, a kept side within the
+                # budget is what the appeal was for : it is not reduced any
+                # further.
+                kept.each { |kept_fragment_def| on_appeal ? confirmed_fragment_defs << kept_fragment_def : next_active << [ kept_fragment_def, false ] }
+                # A kept side STILL over its opening budget is not a
+                # compartment yet : it goes back provisional, to be settled by
+                # a deeper clip or dropped
+                kept_deferred_fragment_defs.each { |kept_fragment_def| next_active << [ kept_fragment_def, true ] }
+
+                # Walled on the plane by a panel of its own, the side left
+                # behind is a compartment too - see the class doc, OPPOSED
+                # RECESSES. It is then cut like a kept side, by the slab of the
+                # reversed plane : the side left by a subtraction keeps the
+                # hair of erosion the kept side gave up, a membrane spread over
+                # the whole cross section that a flare, dropped in the end,
+                # never had to answer for.
+                opposed = (@opposed_planes_per_fragment[index] || []).any? { |opposed_normal, opposed_d|
+                  normal[0] * opposed_normal[0] + normal[1] * opposed_normal[1] + normal[2] * opposed_normal[2] > 0.9999 && (d - opposed_d).abs < REDUCTION_MIN_DEPTH
+                }
+                if opposed
+                  beyond_normal = normal.map { |v| -v }
+                  beyond_d = -d
+                  beyond_output = Meshy.operate(
+                    :operation => Meshy::OPERATION_INTERSECTION,
+                    :validate => false,
+                    :tolerance => SolidMeshDef::TOLERANCE,
+                    :src_meshes => [ _reduction_fragment_mesh(fragment_def) ],
+                    :cut_meshes => [ _reduction_slab_mesh(beyond_normal, beyond_d, envelope_mesh) ]
+                  )
+                  return pass if _report_errors(beyond_output, result_def)
+                  _restore_clipped_vertices(beyond_output['fragments'], beyond_normal, beyond_d)
+                else
+                  beyond_output = Meshy.operate(
+                    :operation => Meshy::OPERATION_SUBTRACTION,
+                    :validate => false,
+                    :tolerance => SolidMeshDef::TOLERANCE,
+                    :src_meshes => [ _reduction_fragment_mesh(fragment_def) ],
+                    :cut_meshes => [ _reduction_slab_mesh(normal, d, envelope_mesh) ]
+                  )
+                  return pass if _report_errors(beyond_output, result_def)
+                  _restore_clipped_vertices(beyond_output['fragments'], normal, d)
+                end
+                beyond, beyond_deferred_fragment_defs = fn_collect.call(beyond_output, false)
+                beyond.each { |beyond_fragment_def| next_active << [ beyond_fragment_def, !opposed ] }
+                beyond_deferred_fragment_defs.each { |beyond_fragment_def| next_active << [ beyond_fragment_def, true ] }
+              end
+              active = next_active
+              # A clip strictly shrinks its cavity and takes away the very
+              # faces its plane was read from, so a round that clips nothing
+              # is the fixed point
+              break unless clipped_any
+            end
+            # Whatever the pass bound cut short : a confirmed fragment is
+            # still a compartment, only one round short of proving it holds
+            # no deeper recess
+            active.each { |fragment_def, provisional| confirmed_fragment_defs << fragment_def unless provisional }
+            open_fragment_defs = confirmed_fragment_defs
+          end
+
+          # Holes : the pocket a hole opens in a wall is given up - see the
+          # class doc, HOLES
+          open_fragment_defs = open_fragment_defs.flat_map { |fragment_def|
+            cut = _cut_hole_pockets(fragment_def, panel_id_ranges, dominant_normals, envelope_mesh, result_def, fn_collect)
+            return pass if cut.nil?
+            cut
+          }
+
+          cavity_fragment_defs.concat(open_fragment_defs)
+        end
+      end
+
+      pass
+    end
+
+    # The given open cavity with the POCKETS its holes open cut off - see the
+    # class doc, HOLES. Returns the resulting fragment defs (the cavity itself
+    # when nothing is cut), nil when a clip failed — the errors then are in
+    # +result_def+.
+    #
+    # A hole's pocket stops where the panels it opens between stop : the
+    # cavity faces lying on a MAIN face of their panel, parallel to the hole
+    # and facing the same way, behind it — the underside of the two rails
+    # around the gap. Cut at the deepest of them, and only if nothing but
+    # that hole's own caps lies beyond : the cut takes away a pocket, never
+    # a mouth.
+    def _cut_hole_pockets(fragment_def, panel_id_ranges, dominant_normals, envelope_mesh, result_def, fn_collect)
+      hole_planes = fragment_def.hole_planes
+      return [ fragment_def ] if hole_planes.empty? || fragment_def.face_ids.nil?
+
+      mesh_position_by_face_id = []
+      panel_id_ranges.each_with_index { |(id_range, _panel_index), mesh_position| id_range.each { |face_id| mesh_position_by_face_id[face_id] = mesh_position } }
+
+      current = fragment_def
+      hole_planes.each do |(hx, hy, hz), hole_d|
+        ceiling_d = nil
+        other_cap_beyond = false
+        current.face_indices.each_slice(3).with_index do |(a, b, c), triangle_index|
+          normal, _area2 = _triangle_normal(current.vertices, a, b, c)
+          next if normal.nil?
+          offset = normal[0] * current.vertices[a * 3] + normal[1] * current.vertices[a * 3 + 1] + normal[2] * current.vertices[a * 3 + 2]
+          face_id = current.face_ids[triangle_index]
+          next if face_id == 0
+          face_info_def = current.face_info_defs[face_id]
+          next if face_info_def && face_info_def.virtual?
+          next unless normal[0] * hx + normal[1] * hy + normal[2] * hz >= REDUCTION_MAIN_DOT
+          mesh_position = mesh_position_by_face_id[face_id]
+          next if mesh_position.nil? || (dominant_normal = dominant_normals[mesh_position]).nil?
+          next unless (dominant_normal[0] * hx + dominant_normal[1] * hy + dominant_normal[2] * hz).abs >= REDUCTION_MAIN_DOT
+          next unless offset < hole_d - REDUCTION_MIN_DEPTH
+          ceiling_d = offset if ceiling_d.nil? || offset < ceiling_d
+        end
+        next if ceiling_d.nil?
+        # Nothing but the hole beyond the cut : no other opening's cap
+        current.face_indices.each_slice(3).with_index do |(a, b, c), triangle_index|
+          next unless current.face_ids[triangle_index] == 0
+          normal, _area2 = _triangle_normal(current.vertices, a, b, c)
+          next if normal.nil? || normal[0] * hx + normal[1] * hy + normal[2] * hz >= REDUCTION_MAIN_DOT
+          beyond = [ a, b, c ].any? { |index| hx * current.vertices[index * 3] + hy * current.vertices[index * 3 + 1] + hz * current.vertices[index * 3 + 2] > ceiling_d + REDUCTION_MIN_DEPTH }
+          (other_cap_beyond = true ; break) if beyond
+        end
+        next if other_cap_beyond
+        # The kept side is the one AWAY from the hole
+        normal = [ -hx, -hy, -hz ]
+        d = -ceiling_d
+        return nil if _budget_exhausted?
+        kept_output = Meshy.operate(
+          :operation => Meshy::OPERATION_INTERSECTION,
+          :validate => false,
+          :tolerance => SolidMeshDef::TOLERANCE,
+          :src_meshes => [ _reduction_fragment_mesh(current) ],
+          :cut_meshes => [ _reduction_slab_mesh(normal, d, envelope_mesh) ]
+        )
+        return nil if _report_errors(kept_output, result_def)
+        _restore_clipped_vertices(kept_output['fragments'], normal, d)
+        kept, kept_deferred_fragment_defs = fn_collect.call(kept_output, false)
+        kept += kept_deferred_fragment_defs
+        next unless kept.length == 1  # A cut that does not leave the cavity whole is no pocket's
+        current = kept.first
+      end
+      [ current ]
+    end
+
+    # Whether the given open cavity is NOTCHED : open on more than two planes,
+    # or on two that meet - the shape a lone contour panel receding behind
+    # its neighbours leaves, the notch it opens on top of the mouths. Where a
+    # LONE recess is read on an accepted cavity, see the class doc.
+    def _notched?(fragment_def)
+      fragment_def.opening_plane_count > 2 || !fragment_def.opening_planes_apart?
+    end
+
+    # Panel indices (in @panel_drawing_defs) of the INTERNAL panels of the
+    # given cavities : the ones a cavity bounds on BOTH SIDES of their board —
+    # the dividers, shelves and partitions that carve an enclosure into
+    # compartments. Everything else is a CONTOUR panel, and it is the contour
+    # alone that bounds the overall cavity (see the class doc, OVERALL CAVITY).
+    #
+    # A cavity face lying on a panel's MAIN face (within REDUCTION_MAIN_DOT of
+    # its dominant normal, the same reading as #_detect_reduction_planes)
+    # points OUT of the cavity, hence INTO the panel : the SIGN of its dot with
+    # the dominant normal says which side of the board that cavity is on. Both
+    # signs present is a panel with a cavity on either side of it.
+    #
+    # The side, not the plane OFFSET, is what settles it : a single side of a
+    # board commonly exposes several parallel main planes (a rebate for the
+    # back, a shoulder), and counting planes would read an ordinary rebated
+    # side panel as a divider — cutting the overall cavity in two on the very
+    # panel that was supposed to bound it. Each side must in addition carry
+    # REDUCTION_MIN_AREA, the same guard the reduction planes get against the
+    # degenerate slivers a boolean leaves where two faces are flush.
+    #
+    # A divider whose other side produced no cavity of its own (a compartment
+    # the filters turned down) reads as contour and stays in the pass, where it
+    # merely splits the overall cavity : the failure mode is a cavity too MANY,
+    # never one reaching past a panel it should have stopped at.
+    def _internal_panel_indices(fragment_defs, panel_id_ranges, dominant_normals)
+
+      area_by_panel_side = Hash.new(0.0)
+      fragment_defs.each do |fragment_def|
+        face_ids = fragment_def.face_ids
+        next if face_ids.nil?
+        vertices = fragment_def.vertices
+        fragment_def.face_indices.each_slice(3).with_index do |(a, b, c), triangle_index|
+          face_id = face_ids[triangle_index]
+          next if face_id == 0  # Envelope cap, not a panel face
+          mesh_position = panel_id_ranges.find_index { |id_range, _| id_range.cover?(face_id) }
+          next if mesh_position.nil?
+          dominant_normal = dominant_normals[mesh_position]
+          next if dominant_normal.nil?
+          normal, area2 = _triangle_normal(vertices, a, b, c)
+          next if normal.nil?
+          dot = normal[0] * dominant_normal[0] + normal[1] * dominant_normal[1] + normal[2] * dominant_normal[2]
+          next if dot.abs < REDUCTION_MAIN_DOT  # An edge (chant) face, or a tilted one : says nothing about the sides
+          area_by_panel_side[[ panel_id_ranges[mesh_position].last, dot > 0 ? 1 : -1 ]] += area2 / 2.0
+        end
+      end
+
+      sides_by_panel_index = Hash.new(0)
+      area_by_panel_side.each do |(panel_index, _side), area|
+        sides_by_panel_index[panel_index] += 1 if area >= REDUCTION_MIN_AREA
+      end
+      sides_by_panel_index.select { |_panel_index, sides| sides >= 2 }.keys
+    end
+
+    # A copy of the given cavity marked as the OVERALL one — same geometry,
+    # same provenance. See #run : an enclosure with no internal panel at all
+    # has its compartments for overall cavity, and a fragment is either one or
+    # the other, never both, so the caller may always sort them apart.
+    def _as_overall(fragment_def)
+      SolidCavityFragmentDef.new(
+        fragment_def.vertices, fragment_def.face_indices, fragment_def.face_ids, fragment_def.face_info_defs,
+        src_indices: fragment_def.src_indices,
+        openness: fragment_def.openness,
+        overall: true
+      )
+    end
+
+    # Appends the given Meshy output errors (native exception or structured
+    # per-mesh validation errors) to the result def as i18n tuples. Returns
+    # true when the output carries errors.
+    #
+    # +panel_id_ranges+ names the culprit panel of a validation error : the cut
+    # meshes of the validated pass are the panels, in that list's own order
+    # (empty mesh defs are skipped, so it is NOT the drawing def order — see
+    # #run), and the single src mesh is the computed envelope, which belongs to
+    # no drawing def. Left nil for the passes running with :validate => false,
+    # whose operands (welded shells, cavity fragments) are computed too : they
+    # can only ever report a native exception.
+    def _report_errors(output, result_def, panel_id_ranges = nil)
+      result_def.append_meshy_errors(output) do |role, index|
+        next nil if panel_id_ranges.nil? || role != 'cut' || !index.is_a?(Integer)
+        entry = panel_id_ranges[index]
+        entry.nil? ? nil : @panel_drawing_defs[entry.last]
+      end
+    end
+
+    # Axis aligned envelope box enclosing every cut mesh, inflated by
+    # ENVELOPE_MARGIN, serialized to the mesh format expected by
+    # Fiddle::Meshy.operate. Its 12 triangles all carry face id 0.
+    def _envelope_bbox_mesh(cut_meshes)
+
+      min = [ Float::INFINITY ] * 3
+      max = [ -Float::INFINITY ] * 3
+      cut_meshes.each do |mesh|
+        mesh[:vertices].each_slice(3) do |point|
+          3.times do |i|
+            min[i] = point[i] if point[i] < min[i]
+            max[i] = point[i] if point[i] > max[i]
+          end
+        end
+      end
+
+      x0, y0, z0 = min.map { |v| v - ENVELOPE_MARGIN }
+      x1, y1, z1 = max.map { |v| v + ENVELOPE_MARGIN }
+
+      _envelope_mesh_hash(
+        [
+          x0, y0, z0, x1, y0, z0, x1, y1, z0, x0, y1, z0,
+          x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1
+        ],
+        [
+          0, 2, 1, 0, 3, 2,
+          4, 5, 6, 4, 6, 7,
+          0, 1, 5, 0, 5, 4,
+          2, 3, 7, 2, 7, 6,
+          1, 2, 6, 1, 6, 5,
+          3, 0, 4, 3, 4, 7
+        ]
+      )
+    end
+
+    # Convex hull of every cut mesh vertex, serialized to the mesh format
+    # expected by Fiddle::Meshy.operate. Every triangle carries face id 0.
+    # nil when the panels are degenerate (coplanar).
+    def _envelope_hull_mesh(cut_meshes)
+
+      points = []
+      cut_meshes.each do |mesh|
+        mesh[:vertices].each_slice(3) { |x, y, z| points << Geom::Point3d.new(x, y, z) }
+      end
+
+      triangles = Geometrix::HullFinder.find_convex_hull_triangle_indices(points)
+      return nil if triangles.nil?
+
+      # Compact : only the hull vertices are sent
+      vertices = []
+      indices_map = {}
+      face_indices = triangles.flatten.map { |index|
+        indices_map[index] ||= begin
+          point = points[index]
+          # to_f : Point3d coordinates are Lengths, which do not serialize as
+          # JSON numbers
+          vertices << point.x.to_f << point.y.to_f << point.z.to_f
+          vertices.length / 3 - 1
+        end
+      }
+
+      eroded_vertices = _erode_hull_vertices(vertices, face_indices)
+      @envelope_restore_planes = _envelope_restore_planes(vertices, eroded_vertices, face_indices)
+
+      _envelope_mesh_hash(eroded_vertices, face_indices)
+    end
+
+    # [ normal, ERODED offset, ORIGINAL offset ] per distinct hull face, the
+    # two offsets read on the same triangle before and after the erosion —
+    # what #_restore_envelope_vertices needs to put a cavity's caps back where
+    # the panels really end. Empty when the hull was not eroded.
+    #
+    # Both offsets share one normal : the erosion being a uniform scale, it
+    # leaves every face parallel to itself.
+    #
+    # The faces are told apart GEOMETRICALLY - same normal, same offset within
+    # the mesh tolerance - rather than by a quantized key : a face's eroded
+    # offset lands on a quantization boundary as soon as it is the one the
+    # erosion ratio was set on (it recedes by exactly ENVELOPE_HULL_EROSION,
+    # a whole number of half tolerances) and passes through the origin, which
+    # is simply where models are drawn. The float noise between its own
+    # triangles then falls on either side of that boundary and registers ONE
+    # plane TWICE - and a duplicate is not free downstream : it fills a slot
+    # of #_restore_envelope_vertices' three corrections budget and makes the
+    # system its twin normals form singular, which silently drops the very
+    # correction it duplicates (see #_restore_plane_offset).
+    def _envelope_restore_planes(vertices, eroded_vertices, face_indices)
+      return [] if eroded_vertices.equal?(vertices)
+
+      planes = []
+      face_indices.each_slice(3) do |a, b, c|
+        normal, _area2 = _triangle_normal(eroded_vertices, a, b, c)
+        next if normal.nil?
+        d_eroded = normal[0] * eroded_vertices[a * 3] + normal[1] * eroded_vertices[a * 3 + 1] + normal[2] * eroded_vertices[a * 3 + 2]
+        next if planes.any? { |other_normal, other_d_eroded, _other_d_original|
+          normal[0] * other_normal[0] + normal[1] * other_normal[1] + normal[2] * other_normal[2] > 1.0 - SolidFragmentDef::PLANE_NORMAL_TOLERANCE &&
+            (d_eroded - other_d_eroded).abs <= SolidMeshDef::TOLERANCE
+        }
+        d_original = normal[0] * vertices[a * 3] + normal[1] * vertices[a * 3 + 1] + normal[2] * vertices[a * 3 + 2]
+        planes << [ normal, d_eroded, d_original ]
+      end
+      planes
+    end
+
+    # Pulls every face of the given hull (flat vertices, triangle indices)
+    # inward by at least ENVELOPE_HULL_EROSION, by scaling its vertices
+    # toward their centroid — which lies inside the hull, being a convex
+    # combination of its own vertices. A uniform scale moves each face by an
+    # offset proportional to ITS distance to the centroid, so the ratio is
+    # set on the CLOSEST face : every face then recedes by at least the
+    # erosion, the farthest ones by proportionally more (a few tenths of a
+    # millimetre at worst, on an assembly far longer than it is wide).
+    # Returned unchanged when the hull is too flat for the erosion to remain
+    # a small perturbation — such an assembly encloses no cavity anyway.
+    def _erode_hull_vertices(vertices, face_indices)
+      count = vertices.length / 3
+      return vertices if count == 0
+
+      cx = cy = cz = 0.0
+      vertices.each_slice(3) { |x, y, z| cx += x ; cy += y ; cz += z }
+      cx /= count ; cy /= count ; cz /= count
+
+      distance_min = Float::INFINITY
+      face_indices.each_slice(3) do |a, b, c|
+        normal, _area2 = _triangle_normal(vertices, a, b, c)
+        next if normal.nil?
+        distance = (normal[0] * (vertices[a * 3] - cx) + normal[1] * (vertices[a * 3 + 1] - cy) + normal[2] * (vertices[a * 3 + 2] - cz)).abs
+        distance_min = distance if distance < distance_min
+      end
+      return vertices if distance_min == Float::INFINITY || distance_min < ENVELOPE_HULL_EROSION * 10
+
+      ratio = 1.0 - ENVELOPE_HULL_EROSION / distance_min
+      eroded = []
+      vertices.each_slice(3) do |x, y, z|
+        eroded << cx + (x - cx) * ratio << cy + (y - cy) * ratio << cz + (z - cz) * ratio
+      end
+      eroded
+    end
+
+    def _envelope_mesh_hash(vertices, face_indices)
+      {
+        :vertices => vertices,
+        :face_indices => face_indices,
+        :face_ids => Array.new(face_indices.length / 3, 0),
+        :num_vertices => vertices.length / 3,
+        :num_faces => face_indices.length / 3,
+        :tolerance => SolidMeshDef::TOLERANCE
+      }
+    end
+
+    # [ volume, total surface area, envelope (face id 0) surface area,
+    # machining (virtual face) surface area ] of the given fragment, in one
+    # pass over its triangles. The envelope area drives the openness (0.0 for
+    # a hermetically closed cavity, the opening ratio for an open one), the
+    # volume / area ratio the sheet residue filter and the machining area the
+    # machining void one (see MACHINING_VOID_MIN_AREA_SHARE).
+    def _measure(fragment, face_info_defs)
+      vertices = fragment['vertices']
+      face_ids = fragment['face_ids']
+      volume = 0.0
+      envelope_area = 0.0
+      machining_area = 0.0
+      total_area = 0.0
+      fragment['face_indices'].each_slice(3).with_index do |(a, b, c), triangle_index|
+        ax, ay, az = vertices[a * 3], vertices[a * 3 + 1], vertices[a * 3 + 2]
+        bx, by, bz = vertices[b * 3], vertices[b * 3 + 1], vertices[b * 3 + 2]
+        cx, cy, cz = vertices[c * 3], vertices[c * 3 + 1], vertices[c * 3 + 2]
+        volume += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6.0
+        ux = bx - ax ; uy = by - ay ; uz = bz - az
+        vx = cx - ax ; vy = cy - ay ; vz = cz - az
+        nx = uy * vz - uz * vy
+        ny = uz * vx - ux * vz
+        nz = ux * vy - uy * vx
+        area = Math.sqrt(nx * nx + ny * ny + nz * nz) / 2.0
+        total_area += area
+        face_id = face_ids[triangle_index]
+        if face_id == 0
+          envelope_area += area
+        elsif (face_info_def = face_info_defs[face_id]) && face_info_def.virtual?
+          machining_area += area
+        end
+      end
+      [ volume.abs, total_area, envelope_area, machining_area ]
+    end
+
+    # Indices of the panel drawing defs whose faces appear in the given
+    # fragment face ids : the panels bounding the cavity.
+    def _panel_indices(face_ids, panel_id_ranges)
+      face_ids.uniq.map { |face_id|
+        entry = panel_id_ranges.find { |id_range, _| id_range.cover?(face_id) }
+        entry.nil? ? nil : entry.last
+      }.compact.uniq.sort
+    end
+
+    # Area-weighted dominant face normal of each panel mesh ([ x, y, z ] unit
+    # vector, or nil when degenerate), used to tell a panel edge (chant) face
+    # from a main face. The two main faces of a board are opposite : normals
+    # are accumulated up to sign.
+    #
+    # The quantized key only BUCKETS the triangles : what is returned is the
+    # area-weighted mean of the bucket's true normals. The key itself is off
+    # by up to 5e-4 per component, which on a panel at an angle to the axes
+    # tilts whatever plane is built along it - an inset back recessed along
+    # it left the cavity 0.4 mm deeper at one end than the other.
+    def _panel_dominant_normals(panel_meshes)
+      panel_meshes.map do |mesh|
+        vertices = mesh[:vertices]
+        accumulators = {}
+        mesh[:face_indices].each_slice(3) do |a, b, c|
+          normal, area2 = _triangle_normal(vertices, a, b, c)
+          next if normal.nil?
+          normal = normal.map { |v| -v } if normal[0] < 0 || (normal[0] == 0 && (normal[1] < 0 || (normal[1] == 0 && normal[2] < 0)))
+          key = normal.map { |v| (v * 1000).round }
+          accumulator = accumulators[key] ||= [ 0.0, 0.0, 0.0, 0.0 ]
+          accumulator[0] += area2 * normal[0]
+          accumulator[1] += area2 * normal[1]
+          accumulator[2] += area2 * normal[2]
+          accumulator[3] += area2
+        end
+        max_entry = accumulators.max_by { |_, accumulator| accumulator[3] }
+        next nil if max_entry.nil?
+        nx, ny, nz, _ = max_entry.last
+        length = Math.sqrt(nx * nx + ny * ny + nz * nz)
+        length == 0 ? nil : [ nx / length, ny / length, nz / length ]
+      end
+    end
+
+    # Plane of every panel FACE, as [ normal, d ] by face id (unit normal
+    # pointing OUT of the panel, n.p = d on the plane), read off the SOURCE
+    # meshes — the model's own geometry, before any boolean touched it.
+    #
+    # A face of the model is planar by construction : all the triangles
+    # carrying its id lie on one plane, and the area weighting only serves to
+    # keep a degenerate one from skewing the result. What the caller gets out
+    # of this is the plane a cavity face BELONGS to, as opposed to the plane
+    # the boolean happened to leave its triangles on — see
+    # #_detect_reduction_planes.
+    def _panel_face_planes(panel_meshes)
+      accumulators = {}
+      panel_meshes.each do |mesh|
+        vertices = mesh[:vertices]
+        face_ids = mesh[:face_ids]
+        next if vertices.nil? || face_ids.nil?
+        mesh[:face_indices].each_slice(3).with_index do |(a, b, c), triangle_index|
+          face_id = face_ids[triangle_index]
+          next if face_id.nil?
+          normal, area2 = _triangle_normal(vertices, a, b, c)
+          next if normal.nil?
+          d = normal[0] * vertices[a * 3] + normal[1] * vertices[a * 3 + 1] + normal[2] * vertices[a * 3 + 2]
+          accumulator = accumulators[face_id] ||= [ 0.0, 0.0, 0.0, 0.0, 0.0 ]
+          accumulator[0] += area2 * normal[0]
+          accumulator[1] += area2 * normal[1]
+          accumulator[2] += area2 * normal[2]
+          accumulator[3] += area2 * d
+          accumulator[4] += area2
+        end
+      end
+      planes = {}
+      accumulators.each do |face_id, (nx, ny, nz, sum_d, sum_area2)|
+        length = Math.sqrt(nx * nx + ny * ny + nz * nz)
+        next if length == 0 || sum_area2 == 0
+        planes[face_id] = [ [ nx / length, ny / length, nz / length ], sum_d / sum_area2 ]
+      end
+      planes
+    end
+
+    # Unit normal ([ x, y, z ]) and doubled area of the given triangle, nil
+    # normal when degenerate.
+    def _triangle_normal(vertices, a, b, c)
+      ax, ay, az = vertices[a * 3], vertices[a * 3 + 1], vertices[a * 3 + 2]
+      bx, by, bz = vertices[b * 3], vertices[b * 3 + 1], vertices[b * 3 + 2]
+      cx, cy, cz = vertices[c * 3], vertices[c * 3 + 1], vertices[c * 3 + 2]
+      ux = bx - ax ; uy = by - ay ; uz = bz - az
+      vx = cx - ax ; vy = cy - ay ; vz = cz - az
+      nx = uy * vz - uz * vy
+      ny = uz * vx - ux * vz
+      nz = ux * vy - uy * vx
+      length = Math.sqrt(nx * nx + ny * ny + nz * nz)
+      return [ nil, 0.0 ] if length == 0
+      [ [ nx / length, ny / length, nz / length ], length ]
+    end
+
+    # Planes of the recessed panel edges bounding the given open cavities :
+    # each is a chant plane (fragment boundary face NOT on its panel dominant
+    # plane) that, extended, crosses the cavity interior with envelope cap
+    # area beyond it. Returns ONE [ [ normal, d ], ... ] list PER given
+    # fragment def, in the same order, where the normal (unit [ x, y, z ],
+    # n.p = d on the plane) points toward the KEPT side — a cavity face lies
+    # on the panel, so its outward normal points into it.
+    #
+    # The lists are kept apart on purpose : a plane is evidence about the
+    # cavity that exposed it and about no other, so it only ever clips that
+    # one — see the class doc, ENVELOPE REDUCTION.
+    #
+    # +lone_recesses+ (one entry per fragment def, nil by default) admits on
+    # that fragment the chant of a LONE panel receding wholly, which none of
+    # the evidence below accepts — see the class doc, LONE RECESS : :chant
+    # clips on that chant, :main on the panel's own main face instead.
+    def _detect_reduction_planes(fragment_defs, panel_id_ranges, panel_meshes, dominant_normals, envelope_mesh, lone_recesses = [])
+      # The source planes are those of the panels this pass was given : they
+      # outlive the reduction rounds, which only ever clip the CAVITIES
+      face_planes = (@panel_face_planes ||= _panel_face_planes(panel_meshes))
+      # Position of the panel each face id belongs to, read per triangle
+      # below : the id ranges are disjoint, a lookup answers what a scan of
+      # them would
+      mesh_position_by_face_id = []
+      panel_id_ranges.each_with_index { |(id_range, _panel_index), mesh_position| id_range.each { |face_id| mesh_position_by_face_id[face_id] = mesh_position } }
+      @lone_main_planes_per_fragment = []
+      @opposed_planes_per_fragment = []
+      fragment_defs.each_with_index.map do |fragment_def, fragment_index|
+        lone_recess = lone_recesses[fragment_index]
+        planes = {}
+        vertices = fragment_def.vertices
+        face_ids = fragment_def.face_ids
+        face_info_defs = fragment_def.face_info_defs
+        next [] if face_ids.nil?
+
+        # Chant plane candidates of this fragment, and the plane offsets (in
+        # each panel's own dominant axis) where that same panel bounds the
+        # cavity on a MAIN face — front and back, when both are exposed
+        main_plane_keys_by_panel = Hash.new { |h, k| h[k] = {} }
+        # ... and those main face planes themselves, as [ normal, d ] read off
+        # the cavity (the normal pointing into the panel) — the cut a LONE
+        # recess makes on appeal
+        main_planes_by_panel = Hash.new { |h, k| h[k] = {} }
+        triangle_mesh_position = {}
+        candidates = {}
+        # Every panel bounding this cavity, by whatever kind of face — the
+        # walls a clip must not throw away, see #_reduction_panel_side
+        bounding_mesh_positions = {}
+        # The cavity's openings ([ normal, offset, area, centroid sums ] per envelope cap
+        # plane), the edge faces TILTED on their own board
+        # ([ triangle index, normal, area, offset, panel ]) and, once those
+        # have been sorted out below, the ones among them that flare toward an
+        # opening ([ triangle index, normal, area ]) — see
+        # #_detect_bevel_planes
+        cap_planes = {}
+        tilted_triangles = []
+        bevel_triangles = []
+        fragment_def.face_indices.each_slice(3).with_index do |(a, b, c), triangle_index|
+          face_id = face_ids[triangle_index]
+          normal, area2 = _triangle_normal(vertices, a, b, c)
+          next if normal.nil?
+          if face_id == 0  # Envelope cap : an opening of the cavity
+            d = normal[0] * vertices[a * 3] + normal[1] * vertices[a * 3 + 1] + normal[2] * vertices[a * 3 + 2]
+            key = normal.map { |v| (v * 1000).round } << (d / SolidMeshDef::TOLERANCE).round
+            cap_plane = cap_planes[key] ||= [ normal, d, 0.0, 0.0, 0.0, 0.0, [] ]
+            cap_plane[2] += area2 / 2.0
+            # Area-weighted centroid sums : where the opening actually lies,
+            # see #_reduction_opening_caps
+            cap_plane[3] += area2 * (vertices[a * 3] + vertices[b * 3] + vertices[c * 3])
+            cap_plane[4] += area2 * (vertices[a * 3 + 1] + vertices[b * 3 + 1] + vertices[c * 3 + 1])
+            cap_plane[5] += area2 * (vertices[a * 3 + 2] + vertices[b * 3 + 2] + vertices[c * 3 + 2])
+            cap_plane[6] << a << b << c
+            next
+          end
+          # A machining face says where a panel is DUG, never where it stops :
+          # the wall of a mortise opening on the cavity is a plane of the
+          # assembly like any other, large enough to clear REDUCTION_MIN_AREA,
+          # and would recede the envelope down to a pocket a few millimetres
+          # deep. See the class doc, MACHININGS.
+          face_info_def = face_info_defs[face_id]
+          next if face_info_def && face_info_def.virtual?
+          mesh_position = mesh_position_by_face_id[face_id]
+          next if mesh_position.nil?
+          dominant_normal = dominant_normals[mesh_position]
+          next if dominant_normal.nil?
+          bounding_mesh_positions[mesh_position] = true
+          # The triangle's own plane is the BOOLEAN's, not the MODEL's : snap
+          # it back onto the plane of the panel face it came from, keeping the
+          # triangle's own orientation (a cavity face points INTO its panel,
+          # the source face out of it). A face of the model is planar by
+          # construction, so everything the boolean scattered off it — a
+          # vertex nudged by the plane canonicalization, a sliver left where
+          # an envelope cap grazes the face — is read back as the one plane
+          # the assembly actually has, and can no longer pass for a recess of
+          # its own. See #_panel_face_planes.
+          face_normal, face_d = face_planes[face_id]
+          if face_normal.nil?
+            d = normal[0] * vertices[a * 3] + normal[1] * vertices[a * 3 + 1] + normal[2] * vertices[a * 3 + 2]
+          elsif normal[0] * face_normal[0] + normal[1] * face_normal[1] + normal[2] * face_normal[2] < 0
+            normal, d = face_normal.map { |v| -v }, -face_d
+          else
+            normal, d = face_normal, face_d
+          end
+          dot = normal[0] * dominant_normal[0] + normal[1] * dominant_normal[1] + normal[2] * dominant_normal[2]
+          if dot.abs >= REDUCTION_MAIN_DOT  # Main face plane, not an edge
+            # Read on the vertex brought back onto that same plane : the
+            # offsets are quantized to the tolerance, and a vertex drifting
+            # off its face by a fraction of it would else split ONE main
+            # plane into two keys — which is the very evidence "the panel
+            # bounds the cavity on BOTH its main faces" rests on.
+            gap = normal[0] * vertices[a * 3] + normal[1] * vertices[a * 3 + 1] + normal[2] * vertices[a * 3 + 2] - d
+            ax = vertices[a * 3] - normal[0] * gap
+            ay = vertices[a * 3 + 1] - normal[1] * gap
+            az = vertices[a * 3 + 2] - normal[2] * gap
+            offset = dominant_normal[0] * ax + dominant_normal[1] * ay + dominant_normal[2] * az
+            main_plane_keys_by_panel[mesh_position][(offset / SolidMeshDef::TOLERANCE).round] = true
+            main_planes_by_panel[mesh_position][normal.map { |v| (v * 1000).round } << (d / SolidMeshDef::TOLERANCE).round] ||= [ normal, d ]
+            next
+          end
+          if dot.abs >= REDUCTION_EDGE_DOT  # Edge face TILTED on its own board
+            # A profile or a recessed chant of an OBLIQUE panel — told apart
+            # below, once the cavity's own openings are all in.
+            #
+            # Deliberately NOT registered as a main plane above, whichever it
+            # turns out to be : a tilted face spans a whole range of offsets
+            # on the panel's dominant axis, so the single offset it would
+            # contribute is arbitrary — two of them would fake the "bounds the
+            # cavity on both its main faces" evidence a genuine recess must
+            # produce.
+            tilted_triangles << [ triangle_index, normal, area2 / 2.0, d, mesh_position ]
+            next
+          end
+          key = normal.map { |v| (v * 1000).round } << (d / SolidMeshDef::TOLERANCE).round
+          candidate = candidates[key] ||= [ normal, d, 0.0, [] ]
+          candidate[2] += area2 / 2.0
+          candidate[3] << triangle_index
+          triangle_mesh_position[triangle_index] = mesh_position
+        end
+
+        # A face tilted on its own board is a PROFILE when it FLARES toward an
+        # opening, and a plain recessed chant when it merely STOPS in front of
+        # one — a question about the cavity, which only the openings collected
+        # above can answer, and which the tilt alone must not be asked (see the
+        # class doc, BEVELED EDGES). The chants join the candidates they would
+        # have been had their board been square to the assembly ; everything
+        # else goes on to #_detect_bevel_planes.
+        opening_caps = _reduction_opening_caps(cap_planes, face_planes, vertices)
+        tilted_triangles.each do |triangle_index, normal, area, d, mesh_position|
+          unless _reduction_recedes_opening?(normal, d, opening_caps)
+            bevel_triangles << [ triangle_index, normal, area ]
+            next
+          end
+          key = normal.map { |v| (v * 1000).round } << (d / SolidMeshDef::TOLERANCE).round
+          candidate = candidates[key] ||= [ normal, d, 0.0, [] ]
+          candidate[2] += area
+          candidate[3] << triangle_index
+          triangle_mesh_position[triangle_index] = mesh_position
+        end
+
+        candidates.each do |key, (normal, d, area, triangle_indices)|
+          next if planes.key?(key)
+          # Degenerate boolean sliver, not a chant strip — see
+          # REDUCTION_MIN_AREA
+          next if area < REDUCTION_MIN_AREA
+          # The plane must make one of the cavity's own OPENINGS recede : that
+          # is what tells a recess from a chant that merely cuts ACROSS the
+          # cavity (a stub shelf's lateral tip, where the board just ends and
+          # nothing beyond it justifies a cut) — see
+          # #_reduction_recedes_opening?. Asked first : it only reads the few
+          # opening caps, where the test below reads every vertex.
+          bridge_foot = _reduction_bridge_foot?(normal, d, opening_caps)
+          next unless bridge_foot || _reduction_recedes_opening?(normal, d, opening_caps)
+          # The cavity must extend on both sides of the extended plane —
+          # beyond the chant (removed side, negative distances) and behind
+          # it (kept side, where the panel and the compartments lie)
+          beyond = false
+          behind = false
+          nx, ny, nz = normal
+          index = 0
+          length = vertices.length
+          while index < length
+            distance = nx * vertices[index] + ny * vertices[index + 1] + nz * vertices[index + 2] - d
+            beyond ||= distance < -REDUCTION_MIN_DEPTH
+            behind ||= distance > REDUCTION_MIN_DEPTH
+            break if beyond && behind
+            index += 3
+          end
+          next unless beyond && behind
+          # Several panels merely lying on the same (normal, d) plane can be
+          # pure coincidence (e.g. a large contour panel and an unrelated
+          # divider's free tip that happen to sit at the same depth) : a
+          # numeric match alone is not proof they belong to the same recess.
+          # Physical CONTACT is — see #_reduction_group_components. Only ONE
+          # touching sub-group needs to hold up on its own for the whole
+          # plane to be trusted (the eventual clip still applies to the full
+          # cross-section, unchanged — this only decides whether to trust
+          # the plane at all).
+          mesh_positions_by_component = _reduction_group_components(triangle_indices, fragment_def).map { |component|
+            component.map { |triangle_index| triangle_mesh_position[triangle_index] }.uniq
+          }
+          fn_side_plane = lambda { |mesh_positions|
+            merged_mesh = { :vertices => mesh_positions.flat_map { |mesh_position| panel_meshes[mesh_position][:vertices] } }
+            _reduction_side_plane?(normal, merged_mesh)
+          }
+          # BRIDGE FOOT : the plane a hull bridge rests on - see the class doc.
+          # Every wall of the cavity left standing, as for the plural
+          # evidence below
+          accepted = bridge_foot && bounding_mesh_positions.keys.none? { |mesh_position| _reduction_panel_side(normal, d, panel_meshes[mesh_position]) == :removed }
+          accepted ||= mesh_positions_by_component.any? { |mesh_positions|
+            # A genuine recessed panel (e.g. a shallow shelf) is exposed to
+            # the cavity on BOTH its main faces — front and back, the two
+            # compartments it separates ; a contour panel (side, top,
+            # bottom...) can never satisfy that on its own (its other main
+            # face faces outward, not another cavity). It is trusted
+            # instead when SEVERAL DISTINCT, TOUCHING panels share this
+            # exact plane (e.g. a shelf recessed together with the case's
+            # own top/bottom) ; or, failing that, when its pocket stays
+            # confined within the group's own silhouette — see
+            # #_reduction_pocket_confined?. Failing all three, this
+            # sub-group's chant is exposed by a concave/notched footprint,
+            # not a recess : reducing there would clip away
+            # the real cavity instead of splitting it.
+            both_main_faces = mesh_positions.any? { |mesh_position| main_plane_keys_by_panel[mesh_position].size >= 2 }
+            shared_by_group = mesh_positions.length >= 2
+            next false unless both_main_faces || shared_by_group || _reduction_pocket_confined?(normal, d, fragment_def, envelope_mesh)
+            # A SIDE face (e.g. a shelf's recessed front edge, running the
+            # panel's full length) genuinely represents the depth every
+            # element in the touching group recedes to. An END face (e.g.
+            # an L-shaped divider's free tip, where the board simply stops)
+            # has no such role : the real panels already separate the
+            # compartments wherever the board actually is, and beyond its
+            # tip nothing justifies a cut — extending its plane would clip
+            # an unrelated part of the assembly it merely happens to cross
+            # — see #_reduction_side_plane?. Tested on the sub-group's
+            # MERGED footprint (safe now that touching, not mere plane
+            # coincidence, backs the grouping) so a short member (e.g. a
+            # mullion shorter than the case is deep, in a non-rectangular
+            # assembly) is judged alongside what it actually connects to,
+            # not on its own possibly-misleading aspect ratio.
+            #
+            # A shape test can only ever be a PROXY, though — it reads the
+            # board's length off its own bounds, and a board deeper than it is
+            # long has the two swapped. The panel that bounds the cavity on
+            # BOTH main faces needs none of it : it demonstrably separates two
+            # compartments, and the plane demonstrably recedes an opening
+            # (checked above), which is the whole definition of a recess. The
+            # shape test stays as the last line of defence for the weaker
+            # group- and pocket-based evidence, where the concave/notched
+            # footprint family lives.
+            both_main_faces || fn_side_plane.call(mesh_positions)
+          }
+          # Failing every per-sub-group test : SEVERAL DISTINCT panels expose
+          # this plane from sub-groups that do NOT touch each other, and each
+          # of them recedes to it WHOLLY — no part of the panel reaches beyond
+          # (see #_reduction_panel_side). That is the two facing sides of
+          # a case set back from its top and bottom : one lone contour panel
+          # per sub-group (no BOTH-main-faces, no shared sub-group), and a
+          # pocket that necessarily reaches the envelope's outer edge on the
+          # very flanks the receding panels left open (no confinement) — the
+          # three tests above are structurally unable to see it, yet two
+          # opposite walls stopping at the exact same depth is precisely the
+          # intentional, uniformly receding assembly the shared-sub-group
+          # evidence is about.
+          #
+          # Receding WHOLLY replaces physical contact as the proof that the
+          # match is no coincidence, and it is what keeps the concave/notched
+          # footprint family out : a panel merely NOTCHED at this depth (a
+          # case stepped in plan, deeper on one side than the other) still
+          # extends beyond the plane where it is not notched, so clipping
+          # there would amputate the deeper compartment it bounds. A panel
+          # that stops here for its whole body is not stepping around
+          # anything — it recedes.
+          #
+          # Coinciding chants are far more ordinary here than in the tests
+          # above, though — the evidence no longer rests on the panels
+          # touching — so the plane must also leave every WALL of the cavity
+          # standing : no panel bounding it may lie WHOLLY on the removed
+          # side. A back and a front set between a case's top and bottom
+          # expose their own top chants at one and the same height (the
+          # gap left by the drawing, however small, is enough), two lone
+          # non-touching panels receding wholly like any real recess — but
+          # the top itself is entirely beyond that height, and clipping
+          # there would cut the cavity off from the very wall closing it.
+          # A recess recedes an OPENING : there is nothing of the assembly
+          # left in front of it to lose.
+          #
+          # The shape test is here read on the footprint the WHOLE plane
+          # merges, not sub-group by sub-group — the same widening the
+          # sub-group merge above already makes, carried to the grouping
+          # this branch actually rests on. What binds these panels is that
+          # they all stop dead at one and the same plane, which is as much
+          # of a group as touching makes, and each of them taken alone is
+          # exactly the misleading aspect ratio the merge exists to escape :
+          # the rails of a frame set back behind its stiles are commonly
+          # deeper than they are long (a 528 mm deep, 400 mm long rail
+          # reads its own front chant as an END), while the pair of them,
+          # spanning the frame's full height, reads as the SIDE it is.
+          unless accepted
+            mesh_positions = mesh_positions_by_component.flatten.uniq
+            accepted = mesh_positions.length >= 2 &&
+              mesh_positions.all? { |mesh_position| _reduction_panel_side(normal, d, panel_meshes[mesh_position]) == :kept } &&
+              bounding_mesh_positions.keys.none? { |mesh_position| _reduction_panel_side(normal, d, panel_meshes[mesh_position]) == :removed } &&
+              fn_side_plane.call(mesh_positions)
+          end
+          # LONE recess : ONE panel, receding to this plane WHOLLY, every
+          # other wall left standing — the plural evidence above taken down to
+          # a single board, which is all a case whose top rail stops short of
+          # its sides has to show. That is the notched footprint all of the
+          # above guards against, too, so it is only read where the cavity
+          # is lost without it — see the class doc, LONE RECESS.
+          if !accepted && lone_recess
+            mesh_positions = mesh_positions_by_component.flatten.uniq
+            if mesh_positions.length == 1 &&
+               _reduction_panel_side(normal, d, panel_meshes[mesh_positions.first]) == :kept &&
+               bounding_mesh_positions.keys.none? { |mesh_position| _reduction_panel_side(normal, d, panel_meshes[mesh_position]) == :removed } &&
+               fn_side_plane.call(mesh_positions)
+              if lone_recess == :chant
+                accepted = true
+              else
+                # On appeal, the board is cut off at its INNER face instead :
+                # the cavity keeps its whole depth, only the notch the board
+                # leaves open behind it is given up. That face bounds the
+                # cavity alone, and the cut flips its normal, keeping the side
+                # AWAY from the board.
+                main_planes = main_planes_by_panel[mesh_positions.first].values
+                if main_planes.length == 1
+                  main_normal, main_d = main_planes.first
+                  main_normal = main_normal.map { |v| -v }
+                  main_d = -main_d
+                  main_key = main_normal.map { |v| (v * 1000).round } << (main_d / SolidMeshDef::TOLERANCE).round
+                  # A wall cut off with it is lost, unless it stands FLUSH on
+                  # that face too : the other rail of a top made of two, at
+                  # the same height, is cut off exactly as much as this one
+                  if _reduction_recedes_opening?(main_normal, main_d, opening_caps) &&
+                     bounding_mesh_positions.keys.none? { |mesh_position|
+                       next false if mesh_position == mesh_positions.first
+                       next false unless _reduction_panel_side(main_normal, main_d, panel_meshes[mesh_position]) == :removed
+                       _mesh_extent(panel_meshes[mesh_position], main_normal).last < main_d - REDUCTION_MIN_DEPTH
+                     }
+                    planes[main_key] ||= [ main_normal, main_d ]
+                    (@lone_main_planes_per_fragment[fragment_index] ||= []) << [ main_normal, main_d ]
+                  end
+                end
+              end
+            end
+          end
+          next unless accepted
+          planes[key] = [ normal, d ]
+          (@opposed_planes_per_fragment[fragment_index] ||= []) << [ normal, d ] if _reduction_opposed_plane?(normal, d, candidates, triangle_mesh_position, panel_meshes)
+        end
+
+        # Beveled edges : each opening recedes to the foot of the bevels
+        # flaring toward it — a criterion of its own, needing none of the
+        # evidence collected above. Those guards tell a recess from a
+        # concave/notched footprint, an ambiguity a flare simply does not
+        # have : a wall that widens as it reaches an opening is a profiled
+        # edge, whatever the assembly's footprint.
+        _detect_bevel_planes(fragment_def, bevel_triangles, cap_planes).each do |normal, d|
+          key = normal.map { |v| (v * 1000).round } << (d / SolidMeshDef::TOLERANCE).round
+          planes[key] ||= [ normal, d ]
+        end
+
+        _merge_close_reduction_planes(planes.values)
+      end
+    end
+
+    # The given planes with the parallel ones closer than REDUCTION_MIN_DEPTH
+    # to each other merged into their DEEPEST member (the one keeping the
+    # least).
+    #
+    # Such a pair never describes two different recesses : anything that close
+    # is below the recess the detection is willing to act on at all. It does
+    # happen, though — the parts of a cabinet are commonly drawn against the
+    # cavities of the previous ones, and every cavity is receded by a hair
+    # (ENVELOPE_HULL_EROSION, REDUCTION_CLIP_EROSION), so a whole level of
+    # nesting can sit a few hundredths of a millimetre behind the one before
+    # it. Keeping only the shallowest would then cut EXACTLY on the faces of
+    # the other, leaving the boolean a zero-volume membrane over them — which
+    # bridges whatever that panel was separating, and the compartments it
+    # splits come back merged (the very thing the reduction is for). Keeping
+    # the deepest puts the cut clear of every panel of the group.
+    def _merge_close_reduction_planes(planes)
+      merged = []
+      planes.each do |normal, d|
+        twin = merged.find { |other_normal, other_d|
+          normal[0] * other_normal[0] + normal[1] * other_normal[1] + normal[2] * other_normal[2] > 0.9999 &&
+            (d - other_d).abs < REDUCTION_MIN_DEPTH
+        }
+        if twin.nil?
+          merged << [ normal, d ]
+        elsif d > twin[1]
+          twin[1] = d
+        end
+      end
+      merged
+    end
+
+    # Moves the vertices the subtraction left on an ERODED hull face back onto
+    # the hull face as it was BUILT, undoing ENVELOPE_HULL_EROSION on the
+    # RESULT of the boolean — which has already run, and keeps all of the
+    # clearance it needed. Same doctrine as #_restore_clipped_vertices, and
+    # the same reason : a hull face passes exactly through the outermost panel
+    # points, so an un-eroded cap is exactly where the panels end, and a part
+    # drawn flush with the cavity gets the cabinet's true inner dimension
+    # instead of one erosion less at each end.
+    #
+    # A vertex may sit on several hull faces at once — the corner where two
+    # openings meet — and each of them wants it on its own restored plane :
+    # the correction is the combination that satisfies them all, found by
+    # solving the small system its normals make (see #_restore_plane_offset).
+    #
+    # The cap is not the only face the vertex belongs to, though : it is a
+    # CORNER, where the cap meets the panel WALLS that the opening is cut
+    # through, and those walls are where they belong already — only the cap
+    # was eroded. Moving the vertex along the cap normal alone takes it OFF
+    # them by erosion × |n_cap · n_wall|, so the cavity's wall comes out
+    # PIVOTED : exact at the closed end, adrift at the open one. It stays
+    # invisible as long as walls meet caps at a right angle (the dot is 0,
+    # and every ordinary caisson is built that way) and appears as soon as
+    # one is OBLIQUE — the splayed sides of a 3-sided trough, a tent, a
+    # lectern. It is the cavity's own surface that ends up off the panel
+    # then, by more than SolidMeshDef::TOLERANCE, which is enough for a point
+    # picked on the panel to miss the cavity entirely
+    # (SolidFragmentDef#contains_point?).
+    #
+    # So the walls meeting the vertex constrain the move too, each asking for
+    # none of it along its own normal : the vertex slides ALONG them, back
+    # onto the restored cap. Perpendicular walls ask for nothing the cap
+    # normal was not already giving them (the two are orthogonal, the
+    # solution is unchanged), which is why this only ever moves an oblique
+    # case.
+    def _restore_envelope_vertices(fragments)
+      return if @envelope_restore_planes.nil? || @envelope_restore_planes.empty?
+      return unless fragments.is_a?(Array)
+
+      # Every vertex is read against every plane - hundreds of them on a
+      # hull wrapping anything but a box : the planes are laid out flat once,
+      # and walked without a block
+      tolerance = SolidMeshDef::TOLERANCE
+      plane_count = @envelope_restore_planes.length
+      plane_normals = @envelope_restore_planes.map { |normal, _d_eroded, _d_original| normal }
+      plane_nxs = plane_normals.map { |normal| normal[0] }
+      plane_nys = plane_normals.map { |normal| normal[1] }
+      plane_nzs = plane_normals.map { |normal| normal[2] }
+      plane_d_eroded = @envelope_restore_planes.map { |_normal, d_eroded, _d_original| d_eroded }
+      plane_d_original = @envelope_restore_planes.map { |_normal, _d_eroded, d_original| d_original }
+
+      fragments.each do |fragment|
+        vertices = fragment['vertices']
+        next unless vertices.is_a?(Array)
+        # Read on the vertices as Meshy left them : taken at the first
+        # correction, before it moves anything
+        wall_normals_by_vertex = nil
+        next if vertices.length < 3
+
+        # Most planes pass nowhere near a given vertex : the vertices are
+        # sorted into a coarse grid, and a cell only walks the planes passing
+        # within its reach — the tolerance plus the cell's half diagonal from
+        # its center, which no vertex of the cell is farther from. The planes a
+        # cell keeps stay in their order, and each is still asked the exact
+        # question below, so the corrections come out exactly the same.
+        min_x = max_x = vertices[0] ; min_y = max_y = vertices[1] ; min_z = max_z = vertices[2]
+        index = 3
+        while index < vertices.length
+          x = vertices[index] ; y = vertices[index + 1] ; z = vertices[index + 2]
+          min_x = x if x < min_x ; max_x = x if x > max_x
+          min_y = y if y < min_y ; max_y = y if y > max_y
+          min_z = z if z < min_z ; max_z = z if z > max_z
+          index += 3
+        end
+        cell_size = [ max_x - min_x, max_y - min_y, max_z - min_z ].max / 16.0
+        cell_size = tolerance if cell_size < tolerance
+        reach = cell_size * 0.8661 + tolerance * 2.0  # Half diagonal (√3 / 2, rounded up) + tolerance, and as much again against rounding
+        plane_indices_by_cell = {}
+
+        index = 0
+        while index < vertices.length
+
+          x = vertices[index] ; y = vertices[index + 1] ; z = vertices[index + 2]
+          cell_x = ((x - min_x) / cell_size).floor
+          cell_y = ((y - min_y) / cell_size).floor
+          cell_z = ((z - min_z) / cell_size).floor
+          cell_plane_indices = plane_indices_by_cell[(cell_x * 64 + cell_y) * 64 + cell_z] ||= begin
+            center_x = min_x + (cell_x + 0.5) * cell_size
+            center_y = min_y + (cell_y + 0.5) * cell_size
+            center_z = min_z + (cell_z + 0.5) * cell_size
+            (0...plane_count).select { |plane_index|
+              (plane_nxs[plane_index] * center_x + plane_nys[plane_index] * center_y + plane_nzs[plane_index] * center_z - plane_d_eroded[plane_index]).abs <= reach
+            }
+          end
+
+          corrections = []
+          cell_plane_indices.each do |plane_index|
+            projection = plane_nxs[plane_index] * x + plane_nys[plane_index] * y + plane_nzs[plane_index] * z
+            next if (projection - plane_d_eroded[plane_index]).abs > tolerance
+            normal = plane_normals[plane_index]
+            d_original = plane_d_original[plane_index]
+            # A plane PARALLEL to one already taken says nothing new - the
+            # vertex being within one tolerance of both, they ask for the same
+            # move - and taking it anyway would make the system they form
+            # singular, which costs the correction itself : the singular
+            # fallback keeps the LARGEST one alone (see #_restore_plane_offset),
+            # so a cap paired with a farther face loses its own restoration
+            # entirely. Two barely tilted hull facets are enough for this ;
+            # exact duplicates are already ruled out upstream (see
+            # #_envelope_restore_planes).
+            next if corrections.any? { |other_normal, _distance|
+              (normal[0] * other_normal[0] + normal[1] * other_normal[1] + normal[2] * other_normal[2]).abs > 1.0 - SolidFragmentDef::PLANE_NORMAL_TOLERANCE
+            }
+            corrections << [ normal, d_original - projection ]
+            # A non degenerate corner meets three faces at most
+            break if corrections.length == 3
+          end
+
+          unless corrections.empty?
+            wall_normals_by_vertex ||= _face_normals_by_vertex(fragment, true)
+            offset = _restore_held_offset(corrections, wall_normals_by_vertex[index / 3])
+            vertices[index] += offset[0]
+            vertices[index + 1] += offset[1]
+            vertices[index + 2] += offset[2]
+          end
+
+          index += 3
+        end
+      end
+    end
+
+    # The smallest move satisfying +corrections+ that also HOLDS the vertex on
+    # the faces it already belongs to, +held_normals+ : each of them joins the
+    # system asking for no move at all along its own normal, so the vertex
+    # slides ALONG it instead of leaving it. Only the directions the
+    # corrections do not already span are worth taking (a face parallel to one
+    # of them says nothing new and would only make the system singular), and a
+    # corner meets three faces at most.
+    #
+    # A face GRAZING the plane being restored is the degenerate case : the
+    # slide along it runs away as the angle closes, and no threshold on the
+    # angle bounds the move usefully. So the move itself is what is checked —
+    # beyond RESTORE_MAX_AMPLIFICATION times the plain correction there is no
+    # usable corner here, and the plain correction is the sane answer.
+    def _restore_held_offset(corrections, held_normals)
+      offset = _restore_plane_offset(corrections)
+      return offset if held_normals.nil? || held_normals.empty?
+
+      held = corrections.dup
+      basis = []
+      corrections.each { |normal, _distance| _restore_append_basis(basis, normal) }
+      held_normals.each do |normal|
+        break if held.length == 3
+        held << [ normal, 0.0 ] if _restore_append_basis(basis, normal)
+      end
+      return offset if held.length == corrections.length
+
+      held_offset = _restore_plane_offset(held)
+      limit = RESTORE_MAX_AMPLIFICATION * Math.sqrt(offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2])
+      return offset if Math.sqrt(held_offset[0] * held_offset[0] + held_offset[1] * held_offset[1] + held_offset[2] * held_offset[2]) > limit
+      held_offset
+    end
+
+    # Unit normals of the faces each vertex of the given raw Meshy fragment
+    # lies on, as { vertex index => [ normal, ... ] }, one entry per distinct
+    # plane. Feeds the held constraints of #_restore_held_offset.
+    #
+    # +walls_only+ keeps the PANEL faces alone (face id != 0 — the envelope's
+    # own id is 0, see #run) : that is what #_restore_envelope_vertices wants,
+    # since every cap the vertex lies on is a plane it is being MOVED to, and
+    # is already among its corrections. #_restore_clipped_vertices wants them
+    # all instead — the caps of a cavity reaching a clip have been restored
+    # ALREADY, so they hold the vertex exactly like a panel does, and the clip
+    # plane itself (an id 0 face too, the slab brings the cap id in) is
+    # discarded on the spot for being parallel to the correction.
+    def _face_normals_by_vertex(fragment, walls_only)
+      normals_by_vertex = {}
+
+      vertices = fragment['vertices']
+      face_indices = fragment['face_indices']
+      face_ids = fragment['face_ids']
+      return normals_by_vertex unless vertices.is_a?(Array) && face_indices.is_a?(Array) && face_ids.is_a?(Array)
+
+      triangle_index = 0
+      while triangle_index * 3 < face_indices.length
+
+        if !walls_only || face_ids[triangle_index] != 0
+
+          ia = face_indices[triangle_index * 3]
+          ib = face_indices[triangle_index * 3 + 1]
+          ic = face_indices[triangle_index * 3 + 2]
+
+          ax = vertices[ia * 3] ; ay = vertices[ia * 3 + 1] ; az = vertices[ia * 3 + 2]
+          bx = vertices[ib * 3] ; by = vertices[ib * 3 + 1] ; bz = vertices[ib * 3 + 2]
+          cx = vertices[ic * 3] ; cy = vertices[ic * 3 + 1] ; cz = vertices[ic * 3 + 2]
+
+          ux = bx - ax ; uy = by - ay ; uz = bz - az
+          vx = cx - ax ; vy = cy - ay ; vz = cz - az
+
+          nx = uy * vz - uz * vy
+          ny = uz * vx - ux * vz
+          nz = ux * vy - uy * vx
+          length = Math.sqrt(nx * nx + ny * ny + nz * nz)
+
+          if length > 0
+            normal = [ nx / length, ny / length, nz / length ]
+            [ ia, ib, ic ].each do |vertex_index|
+              normals = (normals_by_vertex[vertex_index] ||= [])
+              # Same plane, already held : the triangles of one panel face all
+              # carry its normal
+              next if normals.any? { |other|
+                (normal[0] * other[0] + normal[1] * other[1] + normal[2] * other[2]).abs > 1.0 - SolidFragmentDef::PLANE_NORMAL_TOLERANCE
+              }
+              normals << normal
+            end
+          end
+
+        end
+
+        triangle_index += 1
+      end
+
+      normals_by_vertex
+    end
+
+    # Appends the given unit normal to +basis+, an orthonormal basis of the
+    # directions already spoken for, and returns whether it brought a new one.
+    # The part of it the basis does not already span is what it adds ; below
+    # RESTORE_MIN_INDEPENDENCE of it there is nothing left to add, and taking
+    # it anyway would only make #_restore_plane_offset's system singular.
+    def _restore_append_basis(basis, normal)
+      residual = [ normal[0], normal[1], normal[2] ]
+      basis.each do |axis|
+        dot = residual[0] * axis[0] + residual[1] * axis[1] + residual[2] * axis[2]
+        3.times { |i| residual[i] -= dot * axis[i] }
+      end
+      length = Math.sqrt(residual[0] * residual[0] + residual[1] * residual[1] + residual[2] * residual[2])
+      return false if length < RESTORE_MIN_INDEPENDENCE
+      basis << [ residual[0] / length, residual[1] / length, residual[2] / length ]
+      true
+    end
+
+    # The smallest move putting a point back on all of the given restored
+    # planes at once : +corrections+ is [ unit normal, distance still to
+    # cover along it ], and the move is sought in the space the normals span
+    # (any component orthogonal to them would move the point along the faces
+    # for nothing). Solving the resulting Gram system by Cramer's rule.
+    #
+    # Near parallel normals make that system singular — two hull facets barely
+    # tilted against each other. Their corrections then say nearly the same
+    # thing, so the largest one alone is applied rather than a blown up
+    # combination of both.
+    def _restore_plane_offset(corrections)
+      normals = corrections.map { |normal, _distance| normal }
+      distances = corrections.map { |_normal, distance| distance }
+
+      coefficients = case normals.length
+                     when 1
+                       distances
+                     when 2
+                       _restore_solve_2(normals, distances)
+                     else
+                       _restore_solve_3(normals, distances)
+                     end
+      if coefficients.nil?
+        index = (0...distances.length).max_by { |i| distances[i].abs }
+        coefficients = Array.new(distances.length, 0.0)
+        coefficients[index] = distances[index]
+      end
+
+      offset = [ 0.0, 0.0, 0.0 ]
+      normals.each_with_index do |normal, index|
+        3.times { |axis| offset[axis] += coefficients[index] * normal[axis] }
+      end
+      offset
+    end
+
+    def _restore_solve_2(normals, distances)
+      cosine = normals[0][0] * normals[1][0] + normals[0][1] * normals[1][1] + normals[0][2] * normals[1][2]
+      determinant = 1.0 - cosine * cosine
+      return nil if determinant.abs < RESTORE_MIN_DETERMINANT
+      [
+        (distances[0] - cosine * distances[1]) / determinant,
+        (distances[1] - cosine * distances[0]) / determinant
+      ]
+    end
+
+    def _restore_solve_3(normals, distances)
+      gram = Array.new(3) { |i| Array.new(3) { |j| normals[i][0] * normals[j][0] + normals[i][1] * normals[j][1] + normals[i][2] * normals[j][2] } }
+      determinant = _restore_determinant_3(gram)
+      return nil if determinant.abs < RESTORE_MIN_DETERMINANT
+      (0..2).map { |column|
+        substituted = Array.new(3) { |i| Array.new(3) { |j| j == column ? distances[i] : gram[i][j] } }
+        _restore_determinant_3(substituted) / determinant
+      }
+    end
+
+    def _restore_determinant_3(m)
+      m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+        m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+        m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    end
+
+    # Moves the vertices a clip left ON its plane back onto the plane that was
+    # DETECTED, undoing REDUCTION_CLIP_EROSION on the RESULT of the boolean —
+    # which has already run, and keeps every bit of the clearance it needed.
+    #
+    # The erosion is a numerical device, and it must not show in the cavity :
+    # a cavity is what gets DRAWN in (see the Smart Draw separator tool), a
+    # part drawn flush with it lands a hair behind the recess that justified
+    # the clip, and its own edge is then a recess a hair deeper still. The
+    # next clip has to clear THAT one, so it recedes by another erosion, and
+    # every part drawn in the same compartment comes out a little smaller
+    # than the one before — three shelves in a row, three sizes, and nothing
+    # the user can do about it. Snapped back, a part drawn flush lands
+    # exactly on the recess plane, its edge merges with it (see
+    # #_merge_close_reduction_planes) and the next clip lands where the
+    # previous one did.
+    #
+    # A vertex on the clip is a CORNER of it, shared with the faces the clip
+    # cuts through - the compartment's walls, and the cavity's own caps, which
+    # #_restore_envelope_vertices has already put back by the time a fragment
+    # reaches a reduction. Only the clip moves, so those faces hold the vertex
+    # and it SLIDES along them (see #_restore_held_offset) : a face
+    # perpendicular to the clip simply gets that much longer, exactly as a
+    # move along the plane normal alone would have made it, and one meeting it
+    # at an angle - a bevelled edge, the splayed side of a trough - keeps its
+    # own plane instead of being bent by the erosion. That bend used to be
+    # accepted as "a few hundredths of a millimetre, below anything the cavity
+    # is used for", which held right up until a point picked ON such a face
+    # had to land inside the cavity : SolidFragmentDef#contains_point? works
+    # to SolidMeshDef::TOLERANCE, and the bend is bigger than that.
+    def _restore_clipped_vertices(fragments, normal, d)
+      return unless fragments.is_a?(Array)
+      clip_d = d + REDUCTION_CLIP_EROSION
+      fragments.each do |fragment|
+        vertices = fragment['vertices']
+        next unless vertices.is_a?(Array)
+        face_normals_by_vertex = _face_normals_by_vertex(fragment, false)
+        index = 0
+        while index < vertices.length
+          distance = normal[0] * vertices[index] + normal[1] * vertices[index + 1] + normal[2] * vertices[index + 2] - clip_d
+          if distance.abs <= SolidMeshDef::TOLERANCE
+            offset = _restore_held_offset([ [ normal, -REDUCTION_CLIP_EROSION ] ], face_normals_by_vertex[index / 3])
+            vertices[index] += offset[0]
+            vertices[index + 1] += offset[1]
+            vertices[index + 2] += offset[2]
+          end
+          index += 3
+        end
+      end
+    end
+
+    # The LEAST receding of the given planes for the given cavity — the one
+    # whose removed side is the thinnest slice of it — as [ normal, d ], or
+    # nil when there is none.
+    #
+    # Only that one is applied, and the pieces it leaves are detected again :
+    # the planes of one cavity are not necessarily about the same part of it,
+    # and a clip is unbounded in its own plane (see #_reduction_slab_mesh), so
+    # applying them together lets the deepest recess impose its depth on
+    # compartments that never saw it — a case whose divider is recessed 50,
+    # holding a shelf recessed 100 on one side only, is a single cavity (the
+    # space in front of the divider joins both sides) exposing both planes,
+    # and clipping it at both puts its far side at 100 too. Cutting at 50
+    # first splits that side off, and the 100 plane is then found on the side
+    # that actually carries the shelf — see the class doc.
+    def _shallowest_reduction_plane(planes, fragment_def)
+      return nil if planes.nil? || planes.empty?
+      shallowest = nil
+      shallowest_depth = nil
+      planes.each do |normal, d|
+        projection_min = nil
+        fragment_def.vertices.each_slice(3) do |x, y, z|
+          projection = normal[0] * x + normal[1] * y + normal[2] * z
+          projection_min = projection if projection_min.nil? || projection < projection_min
+        end
+        next if projection_min.nil?
+        depth = d - projection_min
+        next unless shallowest_depth.nil? || depth < shallowest_depth
+        shallowest = [ normal, d ]
+        shallowest_depth = depth
+      end
+      shallowest
+    end
+
+    # Planes receding the OPENINGS of the given cavity to the FOOT of the
+    # beveled edges flaring toward them — see the class doc, BEVELED EDGES.
+    # Same [ [ normal, d ], ... ] contract as one entry of
+    # #_detect_reduction_planes (the normal points toward the KEPT side), so
+    # both feed the same cavity clipping.
+    #
+    # +bevel_triangles+ are the fragment's tilted edge faces
+    # ([ triangle index, normal, area ]), +cap_planes+ its envelope cap
+    # planes ([ normal, offset, area ], the normal pointing OUT of the
+    # cavity). A bevel has a say on an opening when it FLARES toward it (the
+    # cavity widens on the way out : the wall's outward normal leans back
+    # inside) and REACHES it — an edge profile elsewhere in the cavity (a
+    # chamfered shelf front, deep inside) says nothing about where that
+    # opening is. The whole flare recedes to its deepest foot : a group is
+    # only as usable as its most receded member, the same doctrine the
+    # recessed chants follow.
+    def _detect_bevel_planes(fragment_def, bevel_triangles, cap_planes)
+      return [] if bevel_triangles.empty?
+
+      vertices = fragment_def.vertices
+      face_indices = fragment_def.face_indices
+
+      fn_projection = lambda { |vertex_index, axis|
+        axis[0] * vertices[vertex_index * 3] + axis[1] * vertices[vertex_index * 3 + 1] + axis[2] * vertices[vertex_index * 3 + 2]
+      }
+
+      total_cap_area = cap_planes.inject(0.0) { |sum, (_key, cap_plane)| sum + cap_plane[2] }
+      return [] if total_cap_area <= 0
+
+      planes = []
+      cap_planes.each do |_key, (cap_normal, cap_d, cap_area)|
+        # Hull facet residue or incidental leak, not an opening
+        next if cap_area < REDUCTION_MIN_AREA || cap_area < total_cap_area * REDUCTION_BEVEL_CAP_RATIO
+
+        areas = {}
+        bevel_triangles.each do |triangle_index, normal, area|
+          next unless normal[0] * cap_normal[0] + normal[1] * cap_normal[1] + normal[2] * cap_normal[2] < 0
+          next unless face_indices[triangle_index * 3, 3].any? { |vertex_index| fn_projection.call(vertex_index, cap_normal) > cap_d - REDUCTION_MIN_DEPTH }
+          areas[triangle_index] = area
+        end
+        next if areas.empty?
+
+        # Where the flare starts, measured on the surviving TOUCHING groups
+        # only : a boolean sliver — the degenerate triangle a panel face
+        # flush with the hull leaves behind, whose normal is arbitrary and
+        # whose provenance may put it anywhere — would otherwise drag the
+        # foot to a depth nothing in the assembly justifies. Same
+        # REDUCTION_MIN_AREA doctrine as the chant candidates : a real
+        # profile strip runs the edge's full length, orders of magnitude
+        # above.
+        foot = Float::INFINITY
+        _reduction_group_components(areas.keys, fragment_def).each do |component|
+          next if component.inject(0.0) { |sum, triangle_index| sum + areas[triangle_index] } < REDUCTION_MIN_AREA
+          component.each do |triangle_index|
+            face_indices[triangle_index * 3, 3].each do |vertex_index|
+              projection = fn_projection.call(vertex_index, cap_normal)
+              foot = projection if projection < foot
+            end
+          end
+        end
+        next if foot == Float::INFINITY
+
+        # Flush profile (or noise) : nothing to recede
+        next if cap_d - foot < REDUCTION_MIN_DEPTH
+
+        planes << [ cap_normal.map { |v| -v }, -foot ]
+      end
+      planes
+    end
+
+    # Splits the given candidate plane's chant triangles into groups that
+    # physically TOUCH each other (share a vertex, transitively) rather than
+    # merely lying on the same (normal, d) plane — which can also happen by
+    # pure coincidence between panels that have nothing to do with each
+    # other (e.g. a large contour panel and an unrelated divider's free tip
+    # landing on the same depth). Vertex-sharing, not full edge-sharing : the
+    # two sides of a genuine joint are not guaranteed to be triangulated
+    # identically, so requiring a shared edge would be too strict. See
+    # #_detect_reduction_planes.
+    def _reduction_group_components(triangle_indices, fragment_def)
+      vertices = fragment_def.vertices
+      face_indices = fragment_def.face_indices
+
+      parent = {}
+      find = lambda { |i| parent[i] = find.call(parent[i]) unless parent[i] == i ; parent[i] }
+      union = lambda { |i, j| pi, pj = find.call(i), find.call(j) ; parent[pi] = pj if pi != pj }
+      triangle_indices.each { |triangle_index| parent[triangle_index] = triangle_index }
+
+      triangles_by_vertex = Hash.new { |h, k| h[k] = [] }
+      triangle_indices.each do |triangle_index|
+        a, b, c = face_indices[triangle_index * 3, 3]
+        [ a, b, c ].each do |vertex_index|
+          vertex_key = [ vertices[vertex_index * 3], vertices[vertex_index * 3 + 1], vertices[vertex_index * 3 + 2] ].map { |v| (v / SolidMeshDef::TOLERANCE).round }
+          triangles_by_vertex[vertex_key].each { |other| union.call(triangle_index, other) }
+          triangles_by_vertex[vertex_key] << triangle_index
+        end
+      end
+
+      triangle_indices.group_by { |triangle_index| find.call(triangle_index) }.values
+    end
+
+    # True when the given candidate plane's REMOVED pocket (the beyond-side
+    # envelope cap area a reduction there would carve out) stays clear of
+    # the group's own (u, v) silhouette (the envelope's own extent
+    # perpendicular to the candidate normal) — walled in by other panels on
+    # its lateral sides rather than reaching the envelope's outer edge.
+    # Reaching that edge means the "recess" is actually the assembly's true
+    # boundary there (a concave/notched footprint, open to the exterior),
+    # not a step the whole group recedes to together. This is a cheap
+    # bounding-box proxy, not an exact polygon containment test : for a
+    # non-rectangular (e.g. L-shaped) envelope, a pocket could stay within
+    # the overall bbox without being walled on its full perimeter — an
+    # acceptable trade-off given how close to rectangular real cabinets are
+    # in practice (see the class doc, ENVELOPE REDUCTION).
+    def _reduction_pocket_confined?(normal, d, fragment_def, envelope_mesh)
+      u, v = _reduction_plane_basis(normal)
+
+      envelope_u0, envelope_u1 = _mesh_extent(envelope_mesh, u)
+      envelope_v0, envelope_v1 = _mesh_extent(envelope_mesh, v)
+
+      vertices = fragment_def.vertices
+      face_ids = fragment_def.face_ids
+      cap_u0 = cap_v0 = Float::INFINITY
+      cap_u1 = cap_v1 = -Float::INFINITY
+      fragment_def.face_indices.each_slice(3).with_index do |(a, b, c), triangle_index|
+        next unless face_ids[triangle_index] == 0
+        [ a, b, c ].each do |vertex_index|
+          x, y, z = vertices[vertex_index * 3], vertices[vertex_index * 3 + 1], vertices[vertex_index * 3 + 2]
+          next unless normal[0] * x + normal[1] * y + normal[2] * z - d < -REDUCTION_MIN_DEPTH
+          pu = u[0] * x + u[1] * y + u[2] * z
+          pv = v[0] * x + v[1] * y + v[2] * z
+          cap_u0 = pu if pu < cap_u0 ; cap_u1 = pu if pu > cap_u1
+          cap_v0 = pv if pv < cap_v0 ; cap_v1 = pv if pv > cap_v1
+        end
+      end
+      return false if cap_u0 > cap_u1  # No beyond-side cap vertex at all
+
+      cap_u0 >= envelope_u0 + REDUCTION_MIN_DEPTH && cap_u1 <= envelope_u1 - REDUCTION_MIN_DEPTH &&
+        cap_v0 >= envelope_v0 + REDUCTION_MIN_DEPTH && cap_v1 <= envelope_v1 - REDUCTION_MIN_DEPTH
+    end
+
+    # Orthonormal basis [ u, v ] completing the given unit normal, seeded on
+    # the axis the normal is least aligned with.
+    def _reduction_plane_basis(normal)
+      seed = [ [ 1.0, 0.0, 0.0 ], [ 0.0, 1.0, 0.0 ], [ 0.0, 0.0, 1.0 ] ][normal.map(&:abs).each_with_index.min.last]
+      u = [
+        normal[1] * seed[2] - normal[2] * seed[1],
+        normal[2] * seed[0] - normal[0] * seed[2],
+        normal[0] * seed[1] - normal[1] * seed[0]
+      ]
+      length = Math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2])
+      u = u.map { |v| v / length }
+      v = [
+        normal[1] * u[2] - normal[2] * u[1],
+        normal[2] * u[0] - normal[0] * u[2],
+        normal[0] * u[1] - normal[1] * u[0]
+      ]
+      [ u, v ]
+    end
+
+    # [ min, max ] of the given mesh's vertices projected on the given axis.
+    def _mesh_extent(mesh, axis)
+      min = Float::INFINITY
+      max = -Float::INFINITY
+      mesh[:vertices].each_slice(3) do |x, y, z|
+        p = axis[0] * x + axis[1] * y + axis[2] * z
+        min = p if p < min
+        max = p if p > max
+      end
+      [ min, max ]
+    end
+
+    # A rectangular board has, besides its thickness (dominant normal), a
+    # LENGTH and a WIDTH — its two other real dimensions, unequal in
+    # practice. Its non-main (chant) faces are either an END (perpendicular
+    # to the length, at one of its two ends) or a SIDE (perpendicular to the
+    # width, running the board's full length) — told apart by comparing the
+    # panel's own extent along the given plane normal (large for an END, it
+    # runs the board's length) to its extent along the plane's other in-plane
+    # axis (large for a SIDE, the board's length lying IN the plane there).
+    # See the class doc (ENVELOPE REDUCTION) for why the distinction matters.
+    def _reduction_side_plane?(normal, panel_mesh)
+      u, v = _reduction_plane_basis(normal)
+      pn0, pn1 = _mesh_extent(panel_mesh, normal)
+      pu0, pu1 = _mesh_extent(panel_mesh, u)
+      pv0, pv1 = _mesh_extent(panel_mesh, v)
+      (pn1 - pn0) <= [ pu1 - pu0, pv1 - pv0 ].max
+    end
+
+    # Which side of the given plane (unit normal pointing toward the KEPT
+    # side, n.p = d) the given panel lies on : :kept when it stops at the
+    # plane, :removed when it lies entirely past it, :crossing when it
+    # straddles it. See #_detect_reduction_planes, where both extremes are
+    # evidence :
+    #
+    # - :kept says the plane is where that board ENDS, not a step it happens
+    #   to expose halfway along its body — a panel merely notched (a case
+    #   stepped in plan, a top cut back over part of its width) comes out
+    #   :crossing, and a clip there would amputate the deeper compartment it
+    #   still bounds ;
+    # - :removed says the clip would throw that panel's wall away
+    #   altogether, which no genuine recess ever does : a recess recedes an
+    #   OPENING, and there is nothing of the assembly left in front of it.
+    def _reduction_panel_side(normal, d, panel_mesh)
+      min, max = _mesh_extent(panel_mesh, normal)
+      return :kept if min >= d - REDUCTION_MIN_DEPTH
+      return :removed if max <= d + REDUCTION_MIN_DEPTH
+      :crossing
+    end
+
+    # Whether the given plane (unit normal pointing toward the KEPT side,
+    # n.p = d) makes one of the cavity's own OPENINGS recede : a cap plane
+    # antiparallel to it (REDUCTION_OPENING_DOT), lying on the REMOVED side,
+    # and weighing at least REDUCTION_BEVEL_CAP_RATIO of the cavity's whole
+    # cap area. Required of every reduction plane — see the class doc.
+    #
+    # Where the cap lies is read off its CENTROID, never off its own offset :
+    # the band admits a cap a few degrees off antiparallel (a hull face
+    # spanning a notched front, the rest of the compartment set back), and
+    # the offsets of two planes that are not parallel only compare at the
+    # origin. The error grows with the cavity's distance from it - 0.075 per
+    # unit on a 4° cap - so a recess was found on one compartment and missed
+    # on its mirror image, the one nearer the origin.
+    #
+    # This is what a recess IS — a panel set back BEHIND an opening — read
+    # off the cavity itself rather than guessed from the panel's proportions,
+    # which #_reduction_side_plane? can only do as long as a board is longer
+    # along its opening than it is deep. It also subsumes the weaker test it
+    # replaced (SOME cap area beyond the plane, whatever its orientation),
+    # which a chant cutting across the cavity passes just by having the
+    # cavity's real opening somewhere off to its side. The minor caps are
+    # left out for the very reason #_detect_bevel_planes leaves them out : an
+    # incidental leak faces the envelope on a few square millimetres and
+    # would justify receding the whole cross section on a plane the assembly
+    # never asked for.
+    #
+    # A hull BRIDGE (see #_reduction_opening_caps) is let through a wider
+    # band, REDUCTION_BRIDGE_OPENING_DOT : a notched front - dividers running
+    # out to the front, the rest of the case set back - caps each compartment
+    # on a face slanted by the step over the compartment's width, steeper the
+    # narrower the compartment, while every board is square to the opening.
+    # Past REDUCTION_OPENING_DOT, the WHOLE cap must then lie beyond the plane
+    # (on it at most) : the recess is the foot of the bridge, where it rests
+    # on the panel set back, never a plane cutting across it.
+    #
+    # +opening_caps+ : the cavity's major caps, see #_reduction_opening_caps.
+    def _reduction_recedes_opening?(normal, d, opening_caps)
+      opening_caps.any? { |cap_normal, _cap_d, cap_centroid, bridge_points|
+        dot = normal[0] * cap_normal[0] + normal[1] * cap_normal[1] + normal[2] * cap_normal[2]
+        next false unless dot <= (bridge_points ? REDUCTION_BRIDGE_OPENING_DOT : REDUCTION_OPENING_DOT)
+        # The opening must sit beyond the plane, on the side the clip removes
+        next false unless normal[0] * cap_centroid[0] + normal[1] * cap_centroid[1] + normal[2] * cap_centroid[2] - d < -REDUCTION_MIN_DEPTH
+        next true if dot <= REDUCTION_OPENING_DOT
+        bridge_points.all? { |x, y, z| normal[0] * x + normal[1] * y + normal[2] * z - d <= REDUCTION_MIN_DEPTH }
+      }
+    end
+
+    # Whether the given candidate plane (n.p = d, the normal pointing toward
+    # the kept side) is the FOOT of one of the cavity's hull bridges - see the
+    # class doc, BRIDGE FOOT : antiparallel to it within
+    # REDUCTION_BRIDGE_FOOT_OPENING_DOT, the whole bridge beyond the plane (on
+    # it at most), resting on it by at least one point and reaching past it
+    # by another. A bridge no point of which lies on the plane spans
+    # something else than the step this plane stands for.
+    #
+    # +opening_caps+ : the cavity's major caps, see #_reduction_opening_caps.
+    def _reduction_bridge_foot?(normal, d, opening_caps)
+      opening_caps.any? { |cap_normal, _cap_d, _cap_centroid, bridge_points|
+        next false if bridge_points.nil?
+        next false unless normal[0] * cap_normal[0] + normal[1] * cap_normal[1] + normal[2] * cap_normal[2] <= REDUCTION_BRIDGE_FOOT_OPENING_DOT
+        distances = bridge_points.map { |x, y, z| normal[0] * x + normal[1] * y + normal[2] * z - d }
+        distances.all? { |distance| distance <= REDUCTION_MIN_DEPTH } &&
+          distances.any? { |distance| distance.abs <= REDUCTION_MIN_DEPTH } &&
+          distances.any? { |distance| distance < -REDUCTION_MIN_DEPTH }
+      }
+    end
+
+    # Whether the given accepted plane (n.p = d, the normal pointing toward
+    # the kept side) is exposed by chants facing the OTHER way as well, one
+    # of whose panels lies wholly on the removed side - see the class doc,
+    # OPPOSED RECESSES.
+    #
+    # +candidates+ : the cavity's chant planes, as #_detect_reduction_planes
+    # gathers them ([ normal, d, area, triangle indices ] by plane key), and
+    # +triangle_mesh_position+ the panel of each of their triangles.
+    def _reduction_opposed_plane?(normal, d, candidates, triangle_mesh_position, panel_meshes)
+      candidates.each_value.any? { |other_normal, other_d, area, triangle_indices|
+        next false if area < REDUCTION_MIN_AREA
+        next false unless normal[0] * other_normal[0] + normal[1] * other_normal[1] + normal[2] * other_normal[2] < -0.9999
+        next false unless (d + other_d).abs < REDUCTION_MIN_DEPTH
+        triangle_indices.map { |triangle_index| triangle_mesh_position[triangle_index] }.uniq.any? { |mesh_position|
+          _reduction_panel_side(normal, d, panel_meshes[mesh_position]) == :removed
+        }
+      }
+    end
+
+    # The [ normal, offset, centroid, bridge points ] of the cavity's MAJOR
+    # caps — at least REDUCTION_BEVEL_CAP_RATIO of the whole cap area, see
+    # #_reduction_recedes_opening? — out of its +cap_planes+ ([ normal,
+    # offset, area, area-weighted centroid sums x, y, z, vertex indices into
+    # +vertices+ ] by plane key). Read once per cavity : the test asks it
+    # for every tilted triangle and every candidate plane.
+    #
+    # A cap no face of the assembly lies in (+face_planes+, see
+    # #_panel_face_planes) is a hull BRIDGE : the hull only rests on panel
+    # EDGES there, spanning whatever lies between them. Its points ([ x, y, z ]
+    # each) come along, nil for a cap some face does lie in - the flush front
+    # of an ordinary case, the sloped chants of a lectern.
+    def _reduction_opening_caps(cap_planes, face_planes, vertices)
+      total_area = cap_planes.values.reduce(0.0) { |sum, cap_plane| sum + cap_plane[2] }
+      return [] if total_area <= 0
+      cap_planes.values.reject { |_cap_normal, _cap_d, area| area / total_area < REDUCTION_BEVEL_CAP_RATIO }
+                       .map { |cap_normal, cap_d, area, sx, sy, sz, vertex_indices|
+                         anchored = face_planes.each_value.any? { |face_normal, face_d|
+                           dot = cap_normal[0] * face_normal[0] + cap_normal[1] * face_normal[1] + cap_normal[2] * face_normal[2]
+                           dot.abs > 0.9999 && (dot > 0 ? face_d - cap_d : -face_d - cap_d).abs < REDUCTION_MIN_DEPTH
+                         }
+                         bridge_points = anchored ? nil : vertex_indices.uniq.map { |index| vertices[index * 3, 3] }
+                         [ cap_normal, cap_d, [ sx, sy, sz ].map { |sum| sum / (6.0 * area) }, bridge_points ]
+                       }
+    end
+
+    # The given cavities with the openings their FRONT PANELS fill receded behind
+    # them — see the class doc, INSET FRONT PANELS.
+    #
+    # +fragment_defs+ are the OPEN cavities as the collection left them,
+    # +deferred_fragment_defs+ the ones the opening filter deferred. The
+    # clipped pieces go back through +fn_collect+, so a cavity the recess
+    # brings under the opening budget changes bucket on the way — and one a
+    # front panel fills WHOLE comes back from neither, which is what it is : no
+    # compartment left to fit anything into.
+    #
+    # Returns [ open, deferred ], or nil when a clip failed — the errors then
+    # being in +result_def+.
+    def _recess_front_panel_openings(fragment_defs, deferred_fragment_defs, envelope_mesh, result_def, fn_collect)
+      recessed_fragment_defs = []
+      recessed_deferred_fragment_defs = []
+
+      [ [ fragment_defs, recessed_fragment_defs ], [ deferred_fragment_defs, recessed_deferred_fragment_defs ] ].each do |source_fragment_defs, unchanged_fragment_defs|
+        source_fragment_defs.each do |fragment_def|
+
+          planes = _front_panel_recess_planes(fragment_def)
+          if planes.empty?
+            # No front panel fills this one : it stays as it is, in the very bucket
+            # it came from
+            unchanged_fragment_defs << fragment_def
+            next
+          end
+
+          # One operation for the lot : a SUBTRACTION removes the union of its
+          # cuts, so a cavity open on two sides, each closed by a front panel
+          # of its own, is recessed by both at once. They belong to different
+          # openings, so — unlike the reduction planes, which may well be
+          # about the same part of one cavity — neither can impose its depth
+          # on what the other recedes.
+          output = Meshy.operate(
+            :operation => Meshy::OPERATION_SUBTRACTION,
+            :validate => false,
+            :tolerance => SolidMeshDef::TOLERANCE,
+            :src_meshes => [ _reduction_fragment_mesh(fragment_def) ],
+            :cut_meshes => planes.map { |normal, d, opening_def, front_panel_indices| _front_panel_recess_mesh(normal, d, opening_def, front_panel_indices, envelope_mesh) }
+          )
+          return nil if _report_errors(output, result_def)
+          planes.each { |normal, d, _opening_def, _front_panel_indices| _restore_clipped_vertices(output['fragments'], normal, d) }
+
+          recessed, recessed_deferred = fn_collect.call(output, false)
+          recessed_fragment_defs.concat(recessed)
+          recessed_deferred_fragment_defs.concat(recessed_deferred)
+
+        end
+      end
+
+      [ recessed_fragment_defs, recessed_deferred_fragment_defs ]
+    end
+
+    # The planes the front panels filling the openings of the given cavity recede
+    # them to, as [ [ normal, d, opening_def, front_panel_indices ], ... ] —
+    # the plane in the contract of one entry of #_detect_reduction_planes (the
+    # normal pointing toward the KEPT side), then the opening it recedes and
+    # the front panels filling it, which together bound the recess (see
+    # #_front_panel_recess_mesh). Empty when no front panel
+    # intrudes, which is the ordinary answer : a front panel laid ON the front
+    # stands beyond the cap — the hull closes the mouth flush with the panel
+    # edges — and meets no cavity at all.
+    #
+    # A front panel has a say on ONE opening : the one it stands SQUARE to (its own
+    # dominant normal against the opening's, sign aside — see
+    # #_panel_dominant_normals) and reaches farthest out on, which is the
+    # mouth it fills whatever else the cavity may be open on. How deep it
+    # intrudes is then read off what of it is actually INSIDE the cavity, the
+    # intersection answering "is it inset ?" and "by how much ?" at once.
+    #
+    # Read along the front panel's OWN normal, not the opening's : square to
+    # it means within REDUCTION_OPENING_DOT, and a hull cap slanted over a
+    # stepped front stays within it - see the class doc, INSET FRONT PANELS.
+    #
+    # One opening yields ONE plane, at the DEEPEST of the front panels filling it,
+    # so that neither the joint between two doors nor the extra depth behind
+    # the shallower of two lets the cavity through. The first of them sets
+    # the normal the others are read along.
+    def _front_panel_recess_planes(fragment_def)
+
+      # Cheap reject first : a front panel whose bounds do not overlap the cavity's
+      # cannot be inside it, and one merely TOUCHING it is laid on the mouth
+      # rather than fitted in it. The ordinary cavity has no front panel of its own
+      # and is done with here, before its openings are even chained.
+      bounds = _vertices_bounds(fragment_def.vertices)
+      front_panel_indices = (0...@front_panel_meshes.length).select { |front_panel_index| _bounds_overlap?(bounds, @front_panel_bounds[front_panel_index]) }
+      return [] if front_panel_indices.empty?
+
+      opening_defs = fragment_def.opening_defs
+      return [] if opening_defs.empty?
+
+      fragment_mesh = nil
+      recess_by_opening = {}  # opening index => [ outward normal, depth, front panel indices ]
+
+      front_panel_indices.each do |front_panel_index|
+
+        front_panel_mesh = @front_panel_meshes[front_panel_index]
+        front_panel_vertices = front_panel_mesh[:vertices]
+        front_panel_normal = @front_panel_normals[front_panel_index]
+
+        opening_index = nil
+        opening_gap = nil
+        opening_defs.each_with_index do |opening_def, index|
+          normal = [ opening_def.normal.x.to_f, opening_def.normal.y.to_f, opening_def.normal.z.to_f ]
+          unless front_panel_normal.nil?
+            dot = normal[0] * front_panel_normal[0] + normal[1] * front_panel_normal[1] + normal[2] * front_panel_normal[2]
+            next if dot.abs < -REDUCTION_OPENING_DOT
+          end
+          _min, max = _projection_range(front_panel_vertices, normal)
+          next if max.nil?
+          gap = max - _plane_offset(normal, opening_def.origin)
+          next unless opening_gap.nil? || gap > opening_gap
+          opening_index = index
+          opening_gap = gap
+        end
+        next if opening_index.nil?
+
+        opening_def = opening_defs[opening_index]
+        normal = recess_by_opening.key?(opening_index) ? recess_by_opening[opening_index].first : nil
+        if normal.nil?
+          normal = [ opening_def.normal.x.to_f, opening_def.normal.y.to_f, opening_def.normal.z.to_f ]
+          unless front_panel_normal.nil?
+            # The front panel's, turned OUT of the cavity like the opening's
+            sign = normal[0] * front_panel_normal[0] + normal[1] * front_panel_normal[1] + normal[2] * front_panel_normal[2] < 0 ? -1.0 : 1.0
+            normal = front_panel_normal.map { |v| v * sign }
+          end
+        end
+
+        fragment_mesh ||= _reduction_fragment_mesh(fragment_def)
+        output = Meshy.operate(
+          :operation => Meshy::OPERATION_INTERSECTION,
+          :validate => false,
+          :tolerance => SolidMeshDef::TOLERANCE,
+          :src_meshes => [ fragment_mesh ],
+          :cut_meshes => [ front_panel_mesh ]
+        )
+        # A front panel whose intersection cannot be taken says nothing, and is not
+        # reported either : it is no operand of the caller's own operation,
+        # and the cavities stand exactly as they stood without it.
+        next unless output.is_a?(Hash) && output['fragments'].is_a?(Array)
+
+        depth = nil
+        output['fragments'].each do |fragment|
+          vertices = fragment['vertices']
+          next unless vertices.is_a?(Array)
+          min, _max = _projection_range(vertices, normal)
+          depth = min if !min.nil? && (depth.nil? || min < depth)
+        end
+        next if depth.nil?
+        # Deep enough to be a pose, not the wafer a boolean leaves where a
+        # front panel laid on the mouth touches it - measured from the
+        # outermost point of the opening, which a slanted one does not hold
+        # at its origin
+        mouth = opening_def.loops.flatten(1).map { |point| _plane_offset(normal, point) }.max
+        next if mouth.nil? || mouth - depth <= REDUCTION_MIN_DEPTH
+
+        current = recess_by_opening[opening_index]
+        if current.nil?
+          recess_by_opening[opening_index] = [ normal, depth, [ front_panel_index ] ]
+        else
+          current[1] = depth if depth < current[1]
+          current[2] << front_panel_index
+        end
+
+      end
+
+      recess_by_opening.map { |opening_index, (normal, depth, indices)|
+        # The clip keeps the side its normal points to, and what is kept is
+        # what stands BEHIND the front panel : the plane faces the cavity, i.e. the
+        # other way round from the opening it recedes.
+        [ normal.map { |v| -v }, -depth, opening_defs[opening_index], indices ]
+      }
+    end
+
+    # The volume a front panel recess removes from a cavity : what lies on
+    # the REMOVED side of the given plane (unit normal toward the kept side,
+    # n.p = d) over the given opening only, as a box serialized like the
+    # envelope meshes (face id 0, so the faces it leaves are caps - an
+    # opening still).
+    #
+    # The box spans, in the plane, the opening's contours AND the given front
+    # panels, a hair wider, and runs from the plane out past the envelope : a
+    # pair of doors on one opening is recessed as one, the joint between them
+    # included, and the opening BESIDE it - the compartment next door, still
+    # part of the same cavity at this stage - is left alone. The panels count
+    # for what they hold BEYOND the opening's contours : a back slid in its
+    # grooves runs past them into the sides, and the grooves in front of its
+    # face - with the unbounded clip, cut away like the rest - would otherwise
+    # survive as a ring of a cavity of their own (T41). See the class doc,
+    # INSET FRONT PANELS.
+    def _front_panel_recess_mesh(normal, d, opening_def, front_panel_indices, envelope_mesh)
+
+      u, v = _reduction_plane_basis(normal)
+
+      points = opening_def.loops.flatten(1)
+      u0, u1 = points.map { |point| _plane_offset(u, point) }.minmax
+      v0, v1 = points.map { |point| _plane_offset(v, point) }.minmax
+      front_panel_indices.each do |front_panel_index|
+        vertices = @front_panel_meshes[front_panel_index][:vertices]
+        min, max = _projection_range(vertices, u)
+        u0 = min if !min.nil? && min < u0 ; u1 = max if !max.nil? && max > u1
+        min, max = _projection_range(vertices, v)
+        v0 = min if !min.nil? && min < v0 ; v1 = max if !max.nil? && max > v1
+      end
+      u0 -= REDUCTION_MIN_DEPTH ; u1 += REDUCTION_MIN_DEPTH
+      v0 -= REDUCTION_MIN_DEPTH ; v1 += REDUCTION_MIN_DEPTH
+
+      n0, _ = _mesh_extent(envelope_mesh, normal)
+      n0 -= ENVELOPE_MARGIN
+
+      # Cut a hair inside the kept side, as the reduction does - see
+      # REDUCTION_CLIP_EROSION
+      _basis_box_mesh(u, v, normal, u0, u1, v0, v1, n0, d + REDUCTION_CLIP_EROSION)
+    end
+
+    # Offset of the plane the given unit normal and point define : n.p on it.
+    def _plane_offset(normal, point)
+      normal[0] * point.x.to_f + normal[1] * point.y.to_f + normal[2] * point.z.to_f
+    end
+
+    # [ min x, min y, min z, max x, max y, max z ] of the given flat vertex
+    # array, nil when it is empty.
+    def _vertices_bounds(vertices)
+      return nil if vertices.nil? || vertices.empty?
+      min_x = min_y = min_z = nil
+      max_x = max_y = max_z = nil
+      vertices.each_slice(3) do |x, y, z|
+        min_x = x if min_x.nil? || x < min_x
+        min_y = y if min_y.nil? || y < min_y
+        min_z = z if min_z.nil? || z < min_z
+        max_x = x if max_x.nil? || x > max_x
+        max_y = y if max_y.nil? || y > max_y
+        max_z = z if max_z.nil? || z > max_z
+      end
+      [ min_x, min_y, min_z, max_x, max_y, max_z ]
+    end
+
+    # Whether the two bounds overlap on EVERY axis by more than the mesh
+    # tolerance. A mere contact is no overlap : the panel a boolean would
+    # meet on a plane alone shares no volume with the cavity.
+    def _bounds_overlap?(bounds, other_bounds)
+      return false if bounds.nil? || other_bounds.nil?
+      3.times do |axis|
+        return false if bounds[axis] >= other_bounds[axis + 3] - SolidMeshDef::TOLERANCE
+        return false if other_bounds[axis] >= bounds[axis + 3] - SolidMeshDef::TOLERANCE
+      end
+      true
+    end
+
+    # Box covering the envelope on the KEPT side of the given plane (unit
+    # normal, n.p = d), serialized like the envelope meshes (face id 0) :
+    # intersecting a cavity with these boxes clips it at the recessed panel
+    # edges, the new faces inheriting the cap id. Unbounded in the plane (full
+    # envelope extent, so any cavity is covered) : only planes that represent
+    # a group-wide depth reach here (see #_reduction_side_plane? /
+    # #_reduction_recedes_opening?), and the whole connected group must recede
+    # together.
+    def _reduction_slab_mesh(normal, d, envelope_mesh)
+
+      u, v = _reduction_plane_basis(normal)
+
+      # Cut a hair inside the kept side, clear of the very face this plane was
+      # read from — see REDUCTION_CLIP_EROSION
+      d += REDUCTION_CLIP_EROSION
+
+      # Envelope extent in that basis, inflated clear of the envelope planes
+      u0, u1 = _mesh_extent(envelope_mesh, u)
+      v0, v1 = _mesh_extent(envelope_mesh, v)
+      _, n1 = _mesh_extent(envelope_mesh, normal)
+      u0 -= ENVELOPE_MARGIN ; u1 += ENVELOPE_MARGIN
+      v0 -= ENVELOPE_MARGIN ; v1 += ENVELOPE_MARGIN
+      n1 += ENVELOPE_MARGIN
+
+      _basis_box_mesh(u, v, normal, u0, u1, v0, v1, d, n1)
+    end
+
+    # Box [ u0, u1 ] x [ v0, v1 ] x [ n0, n1 ] in the given orthonormal basis
+    # (u x v = n, see #_reduction_plane_basis), serialized like the envelope
+    # meshes (face id 0), its faces wound outward.
+    def _basis_box_mesh(u, v, normal, u0, u1, v0, v1, n0, n1)
+      vertices = []
+      [ [ u0, v0, n0 ], [ u1, v0, n0 ], [ u1, v1, n0 ], [ u0, v1, n0 ],
+        [ u0, v0, n1 ], [ u1, v0, n1 ], [ u1, v1, n1 ], [ u0, v1, n1 ] ].each do |pu, pv, pn|
+        vertices << u[0] * pu + v[0] * pv + normal[0] * pn
+        vertices << u[1] * pu + v[1] * pv + normal[1] * pn
+        vertices << u[2] * pu + v[2] * pv + normal[2] * pn
+      end
+
+      _envelope_mesh_hash(
+        vertices,
+        [
+          0, 2, 1, 0, 3, 2,
+          4, 5, 6, 4, 6, 7,
+          0, 1, 5, 0, 5, 4,
+          2, 3, 7, 2, 7, 6,
+          1, 2, 6, 1, 6, 5,
+          3, 0, 4, 3, 4, 7
+        ]
+      )
+    end
+
+    # Cavity fragment, serialized back to the mesh format expected by
+    # Fiddle::Meshy.operate, so the cavity of one operation can be an operand
+    # of the next. Face ids are carried over : the clipped cavity still knows
+    # which panel bounds it where, and the slabs it is cut by bring in id 0
+    # (envelope cap) for the new faces, keeping #openness meaningful.
+    def _reduction_fragment_mesh(fragment_def)
+      {
+        :vertices => fragment_def.vertices,
+        :face_indices => fragment_def.face_indices,
+        :face_ids => fragment_def.face_ids,
+        :tolerance => SolidMeshDef::TOLERANCE
+      }
+    end
+
+  end
+
+end

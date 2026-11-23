@@ -1,12 +1,10 @@
-#include <cstddef>
-#include <cstdint>
-#include <cstdbool>
+#pragma once
 
 #include "clipper2/clipper.wrapper.hpp"
 
 using namespace Clipper2Lib;
 
-constexpr auto CLIPPY_VERSION = "1.0.0";
+constexpr auto CLIPPY_VERSION = "8.0.0";
 
 constexpr auto CLIPPY_PRECISION = 8;
 

@@ -11,6 +11,8 @@
 
         this.$iframe = $('iframe', this.$element);
 
+        this.loaded = false;
+
     };
 
     LadbThreeViewer.DEFAULTS = {
@@ -57,38 +59,54 @@
     LadbThreeViewer.prototype.bind = function () {
         const that = this;
 
-        // Bind iframe
-        this.$iframe
-            .on('load', function () {
+        // The viewer ready : told by the viewer itself - the iframe 'load'
+        // alone is sometimes missed - , handled once per loaded document
+        const fnReady = function () {
 
+            const contentWindow = that.$iframe.get(0).contentWindow;
+            if (!contentWindow || !contentWindow.ladbViewerReady || contentWindow.ladbViewerBound) {
+                return; // Not the viewer yet, or already handled
+            }
+            contentWindow.ladbViewerBound = true;
+
+            that.loaded = true;
+
+            // No model : the scene is given by commands - see 'loaded.ladb.threeviewer'
+            if (!that.options.modelDef) {
+                that.$element.trigger('loaded.ladb.threeviewer');
+                return;
+            }
+
+            that.callCommand(
+                'setup_model',
+                {
+                    modelDef: that.options.modelDef,
+                    partsColored: that.options.partsColored,
+                    partsOpacity: that.options.partsOpacity,
+                    pinsHidden: that.options.pinsHidden,
+                    pinsColored: that.options.pinsColored,
+                    pinsRounded: that.options.pinsRounded,
+                    pinsText: that.options.pinsText,
+                    pinsLength: that.options.pinsLength,
+                    pinsDirection: that.options.pinsDirection,
+                    cameraView: that.options.cameraView,
+                    cameraZoom: that.options.cameraZoom,
+                    cameraTarget: that.options.cameraTarget,
+                    explodeFactor: that.options.explodeFactor,
+                }
+            );
+            if (that.options.showBoxHelper) {
                 that.callCommand(
-                    'setup_model',
+                    'set_box_helper_visible',
                     {
-                        modelDef: that.options.modelDef,
-                        partsColored: that.options.partsColored,
-                        partsOpacity: that.options.partsOpacity,
-                        pinsHidden: that.options.pinsHidden,
-                        pinsColored: that.options.pinsColored,
-                        pinsRounded: that.options.pinsRounded,
-                        pinsText: that.options.pinsText,
-                        pinsLength: that.options.pinsLength,
-                        pinsDirection: that.options.pinsDirection,
-                        cameraView: that.options.cameraView,
-                        cameraZoom: that.options.cameraZoom,
-                        cameraTarget: that.options.cameraTarget,
-                        explodeFactor: that.options.explodeFactor,
+                        visible: true,
                     }
                 );
-                if (that.options.showBoxHelper) {
-                    that.callCommand(
-                        'set_box_helper_visible',
-                        {
-                            visible: true,
-                        }
-                    );
-                }
+            }
 
-            });
+        };
+        this.$iframe.on('load', fnReady);
+        this.$iframe.get(0).addEventListener('ready.viewer', fnReady);
 
         this.$iframe.get(0).addEventListener('changed.controls', function (e) {
 
@@ -122,6 +140,18 @@
             that.$element.trigger('changed.controls', [ e.data ]);
 
         });
+        this.$iframe.get(0).addEventListener('hovered.bench', function (e) {
+
+            // Forward event : { label, rect } in the iframe, or null
+            that.$element.trigger('hovered.bench', [ e.data ]);
+
+        });
+        this.$iframe.get(0).addEventListener('clicked.bench', function (e) {
+
+            // Forward event : { slot, part, key, index } of the primitive clicked
+            that.$element.trigger('clicked.bench', [ e.data ]);
+
+        });
         this.$iframe.get(0).addEventListener('changed.helpers', function (e) {
 
             // Update buttons status
@@ -152,6 +182,17 @@
                     $btn.removeClass('active');
                 }
             });
+            $('[data-command="set_bench_slot_visible"]', that.$element).each(function (index, el) {
+                const $btn = $(el);
+                const params = $btn.data('params');
+                const slotVisible = e.data.benchSlotsVisible ? e.data.benchSlotsVisible[params.slot] : undefined;
+                $btn.toggle(slotVisible !== undefined);   // Only the slots on the bench
+                if (params.visible == null && slotVisible) {
+                    $btn.addClass('active');
+                } else {
+                    $btn.removeClass('active');
+                }
+            });
 
             // Forward event
             that.$element.trigger('changed.helpers', [ e.data ]);
@@ -176,7 +217,7 @@
             that.callCommand(command, params);
         });
 
-        if (this.options.modelDef.part_instance_count <= 1) {
+        if (!this.options.modelDef || this.options.modelDef.part_instance_count <= 1) {
             $('[data-command="set_explode_factor"]', this.$element).closest('.ladb-three-viewer-explode-factor-slider-wrapper').hide();
         }
 

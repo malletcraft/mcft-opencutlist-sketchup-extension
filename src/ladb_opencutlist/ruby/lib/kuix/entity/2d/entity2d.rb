@@ -2,11 +2,18 @@ module Ladb::OpenCutList::Kuix
 
   class Entity2d < Entity
 
+    # Style application order at equal specificity : the last one wins
+    PSEUDO_CLASS_PRIORITIES = [ :hover, :selected, :active, :disabled ].freeze
+
     attr_reader :bounds
     attr_reader :margin, :border, :padding, :gap
     attr_reader :min_size
     attr_reader :background_color, :border_color, :color
     attr_accessor :layout, :layout_data
+
+    # The entity a mouse drag on this one moves - nil if it is not a drag
+    # handle - and the cursor shown over it - nil for the default one
+    attr_accessor :drag_target, :cursor
 
     def initialize(id = nil)
       super(id)
@@ -33,6 +40,9 @@ module Ladb::OpenCutList::Kuix
       @layout_data = nil
 
       @hittable = true
+
+      @drag_target = nil
+      @cursor = nil
 
     end
 
@@ -69,6 +79,20 @@ module Ladb::OpenCutList::Kuix
       size
     end
 
+    # The bounds in the root entity's space, margin excluded - as the hit test
+    # sees them. Valid once laid out.
+    def absolute_bounds
+      x = @bounds.x + @margin.left
+      y = @bounds.y + @margin.top
+      entity = @parent
+      while entity.is_a?(Entity2d)
+        x += entity.bounds.x + entity.margin.left + entity.border.left + entity.padding.left
+        y += entity.bounds.y + entity.margin.top + entity.border.top + entity.padding.top
+        entity = entity.parent
+      end
+      Bounds2d.new(x, y, @bounds.width - @margin.left - @margin.right, @bounds.height - @margin.top - @margin.bottom)
+    end
+
     def hittable=(value)
       @hittable = value
     end
@@ -83,15 +107,16 @@ module Ladb::OpenCutList::Kuix
 
     # -- STYLE --
 
-    def propagable_pseudo_class(pseudo_class, depth)
+    def propagable_pseudo_class?(pseudo_class, depth)
       true
     end
 
     def activate_pseudo_class(pseudo_class, depth = 0)
       unless @active_pseudo_classes.include?(pseudo_class)
         @active_pseudo_classes.push(pseudo_class)
-        @child.activate_pseudo_class(pseudo_class, depth + 1) if @child && @child.propagable_pseudo_class(pseudo_class, depth + 1)
-        @next.activate_pseudo_class(pseudo_class, depth) if @next && @next.propagable_pseudo_class(pseudo_class, depth) && depth > 0
+        @children.each do |child|
+          child.activate_pseudo_class(pseudo_class, depth + 1) if child.propagable_pseudo_class?(pseudo_class, depth + 1)
+        end
         invalidate
       end
     end
@@ -99,8 +124,9 @@ module Ladb::OpenCutList::Kuix
     def deactivate_pseudo_class(pseudo_class, depth = 0)
       if @active_pseudo_classes.include?(pseudo_class)
         @active_pseudo_classes.delete(pseudo_class)
-        @child.deactivate_pseudo_class(pseudo_class, depth + 1) if @child && @child.propagable_pseudo_class(pseudo_class, depth + 1)
-        @next.deactivate_pseudo_class(pseudo_class, depth) if @next && @next.propagable_pseudo_class(pseudo_class, depth) && depth > 0
+        @children.each do |child|
+          child.deactivate_pseudo_class(pseudo_class, depth + 1) if child.propagable_pseudo_class?(pseudo_class, depth + 1)
+        end
         invalidate
       end
     end
@@ -109,11 +135,10 @@ module Ladb::OpenCutList::Kuix
       @active_pseudo_classes.include?(pseudo_class)
     end
 
+    # pseudo_class can be a Symbol (ex: :hover) or an Array of Symbols (ex: [ :selected, :hover ])
+    # to define a style applied only when all given pseudo classes are active.
     def set_style_attribute(attribute, value, pseudo_class = :default)
-      unless @styles.has_key?(pseudo_class)
-        @styles[pseudo_class] = {}
-      end
-      @styles[pseudo_class][attribute] = value
+      (@styles[_normalize_style_key(pseudo_class)] ||= {})[attribute] = value
       invalidate
     end
 
@@ -124,22 +149,43 @@ module Ladb::OpenCutList::Kuix
       @border_color = @styles[:default][:border_color]
       @color = @styles[:default][:color]
 
-      @active_pseudo_classes.each do |pseudo_class|
-        style = @styles[pseudo_class]
-        if style
-          @background_color = style[:background_color] if style.has_key?(:background_color)
-          @border_color = style[:border_color] if style.has_key?(:border_color)
-          @color = style[:color] if style.has_key?(:color)
-        end
+      return if @active_pseudo_classes.empty?
+
+      # Styles whose pseudo classes are all active, from the least to the most specific
+      keys = @styles.keys.select { |key| key != :default && Array(key).all? { |pseudo_class| @active_pseudo_classes.include?(pseudo_class) } }
+      keys.sort_by! { |key| [ Array(key).size, Array(key).map { |pseudo_class| _pseudo_class_priority(pseudo_class) }.max ] }
+      keys.each do |key|
+        style = @styles[key]
+        @background_color = style[:background_color] if style.key?(:background_color)
+        @border_color = style[:border_color] if style.key?(:border_color)
+        @color = style[:color] if style.key?(:color)
       end
 
+    end
+
+    def _pseudo_class_priority(pseudo_class)
+      PSEUDO_CLASS_PRIORITIES.index(pseudo_class) || PSEUDO_CLASS_PRIORITIES.length
+    end
+
+    def _normalize_style_key(pseudo_class)
+      return pseudo_class unless pseudo_class.is_a?(Array)
+      pseudo_classes = pseudo_class.uniq.sort_by { |pc| [ _pseudo_class_priority(pc), pc.to_s ] }
+      pseudo_classes.size == 1 ? pseudo_classes.first : pseudo_classes
     end
 
     # -- DOM --
 
     # Append given entity to self and returns self
     def append(entity)
-      raise 'Widget.append only supports Widget' unless entity.is_a?(Entity2d)
+      raise 'Entity2d.append only supports Entity2d' unless entity.is_a?(Entity2d)
+      @active_pseudo_classes.each { |pseudo_class| entity.activate_pseudo_class(pseudo_class, 1) if entity.propagable_pseudo_class?(pseudo_class, 1) } if @active_pseudo_classes.any?
+      super
+    end
+
+    # Prepend given entity to self and returns self
+    def prepend(entity)
+      raise 'Entity2d.prepend only supports Entity2d' unless entity.is_a?(Entity2d)
+      @active_pseudo_classes.each { |pseudo_class| entity.activate_pseudo_class(pseudo_class, 1) if entity.propagable_pseudo_class?(pseudo_class, 1) } if @active_pseudo_classes.any?
       super
     end
 
@@ -177,7 +223,7 @@ module Ladb::OpenCutList::Kuix
       end
     end
 
-    def paint_itself(graphics)
+    def paint_content(graphics)
 
       graphics.translate(@bounds.x + @margin.left, @bounds.y + @margin.top)
       paint_border(graphics)
@@ -194,8 +240,8 @@ module Ladb::OpenCutList::Kuix
 
     # -- Hit --
 
-    def hit_widget(x, y, event = nil)
-      widget = nil
+    def hit_entity(x, y, event = nil)
+      entity = nil
       hit_bounds = Bounds2d.new(   # Exclude margin from hit test
         @bounds.origin.x + @margin.left,
         @bounds.origin.y + @margin.top,
@@ -203,17 +249,17 @@ module Ladb::OpenCutList::Kuix
         @bounds.size.height - @margin.top - @margin.bottom
       )
       if self.visible? && hit_bounds.inside?(x, y)
-        if @last_child
-          widget = @last_child.hit_widget(
+        @children.reverse_each do |child|
+          entity = child.hit_entity(
             x - hit_bounds.origin.x - @border.left - @padding.left,
             y - hit_bounds.origin.y - @border.top - @padding.top,
             event
           )
+          break if entity
         end
-        widget = self if widget.nil? && self.hittable?(event)
+        entity = self if entity.nil? && self.hittable?(event)
       end
-      widget = @previous.hit_widget(x, y, event) if widget.nil? && @previous
-      widget
+      entity
     end
 
     # -- Events --
@@ -240,6 +286,14 @@ module Ladb::OpenCutList::Kuix
     end
 
     def onMouseWheel(flags, delta)
+    end
+
+    # Moves the entity by the given offset - a statically laid out one only
+    def onDragBy(dx, dy)
+      return unless @layout_data.is_a?(StaticLayoutData)
+      @layout_data.x += dx
+      @layout_data.y += dy
+      invalidate
     end
 
     # --

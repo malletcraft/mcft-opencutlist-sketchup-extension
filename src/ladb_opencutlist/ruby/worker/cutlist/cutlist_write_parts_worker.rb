@@ -1,7 +1,7 @@
 module Ladb::OpenCutList
 
   require_relative '../../helper/part_drawing_helper'
-  require_relative '../../helper/sanitizer_helper'
+  require_relative '../../utils/file_path_utils'
   require_relative '../common/common_write_definition_worker'
   require_relative '../common/common_write_drawing2d_worker'
   require_relative '../common/common_write_drawing3d_worker'
@@ -9,12 +9,12 @@ module Ladb::OpenCutList
   class CutlistWritePartsWorker
 
     include PartDrawingHelper
-    include SanitizerHelper
 
     def initialize(cutlist,
 
                    part_ids: ,
                    file_format: ,
+                   dxf_depth_to_z: true,
                    part_drawing_type: PART_DRAWING_TYPE_2D_TOP,
 
                    unit: Length::Millimeter,
@@ -41,6 +41,7 @@ module Ladb::OpenCutList
 
       @part_ids = part_ids
       @file_format = file_format
+      @dxf_depth_to_z = dxf_depth_to_z
       @part_drawing_type = part_drawing_type.to_i
 
       @unit = unit
@@ -91,12 +92,12 @@ module Ladb::OpenCutList
           folder_name = group.material_display_name
           folder_name = PLUGIN.get_i18n_string('tab.cutlist.material_undefined') if folder_name.nil? || folder_name.empty?
           folder_name += " - #{group.std_dimension}" unless group.std_dimension.empty?
-          folder_name = _sanitize_filename(folder_name)
+          folder_name = FilePathUtils.sanitize_folder_name(folder_name)
           folder_path = File.join(dir, folder_name)
 
           count.times do |i|
 
-            file_name = "#{part.number} - #{_sanitize_filename(part.name)}"
+            file_name = "#{part.number} - #{FilePathUtils.sanitize_file_name(part.name)}"
             file_name += " - #{i + 1} of #{count}" if @use_count
 
             begin
@@ -143,6 +144,7 @@ module Ladb::OpenCutList
                                                         folder_path: folder_path,
                                                         file_name: file_name,
                                                         file_format: @file_format,
+                                                        dxf_depth_to_z: @dxf_depth_to_z,
                                                         unit: @unit,
                                                         anchor: @anchor,
                                                         smoothing: @smoothing,

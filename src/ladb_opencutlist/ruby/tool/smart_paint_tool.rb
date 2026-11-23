@@ -11,8 +11,6 @@ module Ladb::OpenCutList
 
   class SmartPaintTool < SmartTool
 
-    include FaceTrianglesHelper
-
     ACTION_PAINT_PARTS = 0
     ACTION_PAINT_EDGES = 1
     ACTION_PAINT_FACES = 2
@@ -101,17 +99,6 @@ module Ladb::OpenCutList
         end
       end
 
-      # Create cursors
-      @cursor_paint_part_id = create_cursor('paint-part', 2, 15)
-      @cursor_paint_edge_1_id = create_cursor('paint-edge-1', 2, 15)
-      @cursor_paint_edge_2_id = create_cursor('paint-edge-2', 2, 15)
-      @cursor_paint_edge_4_id = create_cursor('paint-edge-4', 2, 15)
-      @cursor_paint_face_1_id = create_cursor('paint-face-1', 2, 15)
-      @cursor_paint_face_2_id = create_cursor('paint-face-2', 2, 15)
-      @cursor_paint_clean_id = create_cursor('paint-clean', 2, 15)
-      @cursor_picker_id = create_cursor('picker', 0, 0)
-      @cursor_paint_error_id = create_cursor('paint-error', 2, 15)
-
     end
 
     def get_stripped_name
@@ -123,10 +110,16 @@ module Ladb::OpenCutList
 
       # Materials panel
 
+      # Below the notifications, the validation and the status. Its static container
+      # gives it the bottom width : the bottom panel would take its preferred one.
+      materials_container = Kuix::Panel.new
+      materials_container.layout = Kuix::StaticLayout.new
+      @bottom_panel.append(materials_container)
+
       @materials_panel = Kuix::Panel.new
-      @materials_panel.layout_data = Kuix::StaticLayoutData.new(0, 1.0, 1.0, -1, Kuix::Anchor.new(Kuix::Anchor::BOTTOM_LEFT))
+      @materials_panel.layout_data = Kuix::StaticLayoutData.new(0, 0, 1.0, -1)
       @materials_panel.layout = Kuix::BorderLayout.new
-      @canvas.append(@materials_panel)
+      materials_container.append(@materials_panel)
 
       # Material Infos panel
 
@@ -376,75 +369,32 @@ module Ladb::OpenCutList
       ACTIONS
     end
 
-    def get_action_status(action)
-
-      case action
-      when ACTION_PAINT_PARTS
-        return super +
-          ' | ↑↓ + ' + PLUGIN.get_i18n_string('tool.default.transparency') + ' = ' + PLUGIN.get_i18n_string('tool.default.toggle_depth') + '.' +
-          ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_1') + '.' +
-          ' | ' + PLUGIN.get_i18n_string("default.alt_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.'
-      when ACTION_PAINT_EDGES
-        return super +
-          ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_2') + '.' +
-          ' | ' + PLUGIN.get_i18n_string("default.alt_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.'
-      when ACTION_PAINT_FACES
-        return super +
-          ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.' +
-          ' | ' + PLUGIN.get_i18n_string("default.alt_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.'
-      when ACTION_PICK
-        return super +
-          ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_0') + '.'
-      when ACTION_PAINT_CLEAN
-        return super +
-          ' | ↑↓ + ' + PLUGIN.get_i18n_string('tool.default.transparency') + ' = ' + PLUGIN.get_i18n_string('tool.default.toggle_depth') + '.' +
-          ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_0') + '.' +
-          ' | ' + PLUGIN.get_i18n_string("default.alt_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.'
-      end
-
-      super
-    end
-
     def get_action_cursor(action)
 
-      # Update status text and root cursor
       case action
       when ACTION_PAINT_PARTS
-        return @cursor_paint_part_id
+        return SmartCursorManager.cursor_paint_part
       when ACTION_PAINT_EDGES
         if fetch_action_option_boolean(ACTION_PAINT_EDGES, ACTION_OPTION_EDGES, ACTION_OPTION_EDGES_4)
-          return @cursor_paint_edge_4_id
+          return SmartCursorManager.cursor_paint_edge_4
         elsif fetch_action_option_boolean(ACTION_PAINT_EDGES, ACTION_OPTION_EDGES, ACTION_OPTION_EDGES_2)
-          return @cursor_paint_edge_2_id
+          return SmartCursorManager.cursor_paint_edge_2
         else
-          return @cursor_paint_edge_1_id
+          return SmartCursorManager.cursor_paint_edge_1
         end
       when ACTION_PAINT_FACES
         if fetch_action_option_boolean(ACTION_PAINT_FACES, ACTION_OPTION_FACES, ACTION_OPTION_FACES_2)
-          return @cursor_paint_face_2_id
+          return SmartCursorManager.cursor_paint_face_2
         else
-          return @cursor_paint_face_1_id
+          return SmartCursorManager.cursor_paint_face_1
         end
       when ACTION_PICK
-        return @cursor_picker_id
+        return SmartCursorManager.cursor_picker
       when ACTION_PAINT_CLEAN
-        return @cursor_paint_clean_id
-      else
-        return @cursor_paint_error_id
+        return SmartCursorManager.cursor_paint_clean
       end
 
-      super
-    end
-
-
-    def get_action_picker(action)
-
-      case action
-      when ACTION_PAINT_PARTS, ACTION_PAINT_EDGES, ACTION_PAINT_FACES, ACTION_PICK, ACTION_PAINT_CLEAN
-        return SmartPicker.new(tool: self)
-      end
-
-      super
+      SmartCursorManager.cursor_paint_error
     end
 
     def get_action_option_group_unique?(action, option_group)
@@ -647,6 +597,9 @@ module Ladb::OpenCutList
         }
       end
 
+      # Update the action preview
+      @action_handler.onToolCurrentMaterialChanged(self) if !@action_handler.nil? && @action_handler.respond_to?(:onToolCurrentMaterialChanged)
+
     end
 
     def get_current_material
@@ -658,22 +611,21 @@ module Ladb::OpenCutList
     # -- Events --
 
     def onActivate(view)
-      super
 
-      # Clear current selection
-      Sketchup.active_model.selection.clear if Sketchup.active_model
-
-      # Force global current material to be valid
-      unless get_current_material.nil?
+      # Force action materials to be valid, before the startup action handler uses them
+      @@action_materials.each do |action, material|
+        next unless material
         begin
-          get_current_material.model == Sketchup.active_model
+          @@action_materials[action] = nil unless material.model == view.model
         rescue => e # Reference to deleted Entity
-          store_action_material(fetch_action, nil)
+          @@action_materials[action] = nil
         end
       end
 
-      # Observe model events
-      view.model.add_observer(self)
+      super
+
+      # Clear current selection
+      view.model.selection.clear
 
       # Observe materials events
       view.model.materials.add_observer(self)
@@ -682,9 +634,6 @@ module Ladb::OpenCutList
 
     def onDeactivate(view)
       super
-
-      # Stop observing model events
-      view.model.remove_observer(self)
 
       # Stop observing materials events
       view.model.materials.remove_observer(self)
@@ -718,6 +667,19 @@ module Ladb::OpenCutList
 
       end
 
+      case action
+      when ACTION_PAINT_PARTS
+        set_action_handler(SmartPaintPartsActionHandler.new(self, fetch_action_handler))
+      when ACTION_PAINT_EDGES
+        set_action_handler(SmartPaintEdgesActionHandler.new(self, fetch_action_handler))
+      when ACTION_PAINT_FACES
+        set_action_handler(SmartPaintFacesActionHandler.new(self, fetch_action_handler))
+      when ACTION_PICK
+        set_action_handler(SmartPaintPickActionHandler.new(self, fetch_action_handler))
+      when ACTION_PAINT_CLEAN
+        set_action_handler(SmartPaintCleanActionHandler.new(self, fetch_action_handler))
+      end
+
       super
     end
 
@@ -725,14 +687,14 @@ module Ladb::OpenCutList
       return true if super
       if key == VK_LEFT
         button = _get_selected_material_button
-        if button && button.previous && button.previous.is_a?(Kuix::Button)
-          button.previous.fire(:click, flags)
+        if button && (prev_sibling = button.prev_sibling).is_a?(Kuix::Button)
+          prev_sibling.fire(:click, flags)
           return true
         end
       elsif key == VK_RIGHT
         button = _get_selected_material_button
-        if button && button.next && button.next.is_a?(Kuix::Button)
-          button.next.fire(:click, flags)
+        if button && (next_sibling = button.next_sibling).is_a?(Kuix::Button)
+          next_sibling.fire(:click, flags)
           return true
         end
       elsif is_key_alt_or_command?(key)
@@ -754,39 +716,6 @@ module Ladb::OpenCutList
         return true
       end
       false
-    end
-
-    def onLButtonDown(flags, x, y, view)
-      return true if super
-      _handle_mouse_event(:l_button_down) unless is_action_none?
-      false
-    end
-
-    def onLButtonUp(flags, x, y, view)
-      return true if super
-      _handle_mouse_event(:l_button_up) unless is_action_none?
-      false
-    end
-
-    def onMouseLeave(view)
-      return true if super
-      _reset_active_part
-      false
-    end
-
-    def onMouseLeaveSpace(view)
-      return true if super
-      _reset_active_part
-      false
-    end
-
-    def onPickerChanged(picker, view)
-      super
-      _handle_mouse_event(:move)
-    end
-
-    def onTransactionUndo(model)
-      _refresh_active_part
     end
 
     def onMaterialAdd(materials, material)
@@ -812,280 +741,9 @@ module Ladb::OpenCutList
       _setup_material_buttons
     end
 
-    # -----
-
-    protected
-
-    def _set_active_part(part_entity_path, part, highlighted = false)
+    def onActionOptionStored(action, option_group, option)
       super
-
-      @active_instances = []
-      @active_faces = []
-      @active_material = nil
-
-      if part
-
-        model = Sketchup.active_model
-
-        if is_action_paint_parts?
-
-          @active_material = get_current_material
-          color = @active_material ? @active_material.color : MaterialUtils::get_color_from_path(@active_part_entity_path[0...-1]) # [0...-1] returns array without last element
-          color.alpha = highlighted ? 255 : 200
-
-          # Show part infos
-          show_tooltip([ "##{_get_active_part_name}", _get_active_part_material_name ], @active_material && @active_material.name == part.material_name ? MESSAGE_TYPE_SUCCESS : MESSAGE_TYPE_DEFAULT)
-
-          active_instance = @active_part_entity_path.last
-          instances = fetch_action_option_boolean(ACTION_PAINT_PARTS, ACTION_OPTION_INSTANCES, ACTION_OPTION_INSTANCES_ALL) ? active_instance.definition.instances : [ active_instance ]
-          instance_paths = []
-          _instances_to_paths(instances, instance_paths, model.active_entities, model.active_path ? model.active_path : [])
-
-          triangles = _compute_children_faces_triangles(active_instance.definition.entities)
-
-          instance_paths.each do |path|
-
-            k_mesh = Kuix::Mesh.new
-            k_mesh.add_triangles(triangles)
-            k_mesh.background_color = color
-            k_mesh.transformation = PathUtils::get_transformation(path)
-            @overlay_layer.append(k_mesh)
-
-          end
-
-          if fetch_action_option_boolean(ACTION_PAINT_PARTS, ACTION_OPTION_INSTANCES, ACTION_OPTION_INSTANCES_ALL)
-            definition = Sketchup.active_model.definitions[part.def.definition_id]
-            if definition && definition.count_used_instances > 1
-              show_message("⚠ #{PLUGIN.get_i18n_string('tool.smart_axes.warning.more_entities', { :count_used => definition.count_used_instances })}", MESSAGE_TYPE_WARNING)
-            end
-          end
-
-          @active_instances = instances
-
-        elsif is_action_paint_edges?
-
-          if part.group.material_type != MaterialAttributes::TYPE_SHEET_GOOD
-            show_tooltip("⚠ #{PLUGIN.get_i18n_string('tool.smart_paint.error.wrong_material_type', { :type => PLUGIN.get_i18n_string("tab.materials.type_#{MaterialAttributes::TYPE_SHEET_GOOD}") })}", MESSAGE_TYPE_ERROR)
-            push_cursor(@cursor_paint_error_id)
-          else
-
-            edge_faces = {}
-            part.def.edge_entity_ids.each { |k, v| edge_faces[k] = model.find_entity_by_id(v) if v.is_a?(Array) && !v.empty? }
-
-            sides = []
-            faces = []
-            if fetch_action_option_boolean(fetch_action, ACTION_OPTION_EDGES, ACTION_OPTION_EDGES_1) || fetch_action_option_boolean(fetch_action, ACTION_OPTION_EDGES, ACTION_OPTION_EDGES_2)
-
-              picked_side = nil
-              edge_faces.each { |k, v|
-                v.each { |face|
-                  if face == @picker.picked_face
-                    picked_side = k
-                    break
-                  end
-                }
-                break unless picked_side.nil?
-              }
-
-              if picked_side
-                sides << picked_side unless edge_faces[picked_side].nil?
-                if fetch_action_option_boolean(fetch_action, ACTION_OPTION_EDGES, ACTION_OPTION_EDGES_2)
-                  sides << :ymin if picked_side == :ymax && !edge_faces[:ymin].nil?
-                  sides << :ymax if picked_side == :ymin && !edge_faces[:ymax].nil?
-                  sides << :xmin if picked_side == :xmax && !edge_faces[:xmin].nil?
-                  sides << :xmax if picked_side == :xmin && !edge_faces[:xmax].nil?
-                end
-              end
-
-            elsif fetch_action_option_boolean(fetch_action, ACTION_OPTION_EDGES, ACTION_OPTION_EDGES_4)
-              sides << :ymin unless edge_faces[:ymin].nil?
-              sides << :ymax unless edge_faces[:ymax].nil?
-              sides << :xmin unless edge_faces[:xmin].nil?
-              sides << :xmax unless edge_faces[:xmax].nil?
-            end
-
-            sides.each do |side|
-              faces << edge_faces[side]
-            end
-            faces = faces.flatten
-
-            if faces.empty?
-              show_tooltip("⚠ #{PLUGIN.get_i18n_string('tool.smart_paint.error.not_edge')}", MESSAGE_TYPE_ERROR)
-              push_cursor(@cursor_paint_error_id)
-            else
-
-              @active_material = get_current_material
-              color = @active_material ? @active_material.color : MaterialUtils::get_color_from_path(@active_part_entity_path)
-              color.alpha = highlighted ? 255 : 200
-
-              # Show edges infos
-              show_tooltip([
-                             "##{_get_active_part_name}",
-                             '-',
-                             PLUGIN.get_i18n_string('tool.smart_paint.edges', { :count => sides.length }) + (sides.length < 4 ? " → #{sides.map { |side| PLUGIN.get_i18n_string("tool.smart_paint.edge_#{side}") }.join(' + ')}" : '')
-                           ], faces.find { |f| f.material != @active_material }.nil? ? MESSAGE_TYPE_SUCCESS : MESSAGE_TYPE_DEFAULT)
-
-              active_instance = @active_part_entity_path.last
-              instances = active_instance.definition.instances
-              instance_paths = []
-              _instances_to_paths(instances, instance_paths, model.active_entities, model.active_path ? model.active_path : [])
-
-              triangles = _compute_children_faces_triangles(active_instance.definition.entities, nil, faces)
-
-              instance_paths.each do |path|
-
-                k_mesh = Kuix::Mesh.new
-                k_mesh.add_triangles(triangles)
-                k_mesh.background_color = color
-                k_mesh.transformation = PathUtils::get_transformation(path)
-                @overlay_layer.append(k_mesh)
-
-              end
-
-              definition = Sketchup.active_model.definitions[part.def.definition_id]
-              if definition && definition.count_used_instances > 1
-                show_message("⚠ #{PLUGIN.get_i18n_string('tool.smart_axes.warning.more_entities', { :count_used => definition.count_used_instances })}", MESSAGE_TYPE_WARNING)
-              end
-
-              @active_instances = instances
-              @active_faces = faces
-
-            end
-
-          end
-
-        elsif is_action_paint_faces?
-
-          if part.group.material_type != MaterialAttributes::TYPE_SHEET_GOOD
-            show_tooltip("⚠ #{PLUGIN.get_i18n_string('tool.smart_paint.error.wrong_material_type', { :type => PLUGIN.get_i18n_string("tab.materials.type_#{MaterialAttributes::TYPE_SHEET_GOOD}") })}", MESSAGE_TYPE_ERROR)
-            push_cursor(@cursor_paint_error_id)
-          else
-
-            face_faces = {}
-            part.def.face_entity_ids.each { |k, v| face_faces[k] = model.find_entity_by_id(v) if v.is_a?(Array) && !v.empty? }
-
-            sides = []
-            faces = []
-            if fetch_action_option_boolean(fetch_action, ACTION_OPTION_FACES, ACTION_OPTION_EDGES_1)
-
-              picked_side = nil
-              face_faces.each { |k, v|
-                v.each { |face|
-                  if face == @picker.picked_face
-                    picked_side = k
-                    break
-                  end
-                }
-                break unless picked_side.nil?
-              }
-
-              if picked_side
-                sides << picked_side unless face_faces[picked_side].nil?
-              end
-
-            elsif fetch_action_option_boolean(fetch_action, ACTION_OPTION_FACES, ACTION_OPTION_FACES_2)
-              sides << :zmax unless face_faces[:zmax].nil?
-              sides << :zmin unless face_faces[:zmin].nil?
-            end
-
-            sides.each do |side|
-              faces << face_faces[side]
-            end
-            faces = faces.flatten
-
-            if faces.empty?
-              show_tooltip("⚠ #{PLUGIN.get_i18n_string('tool.smart_paint.error.not_face')}", MESSAGE_TYPE_ERROR)
-              push_cursor(@cursor_paint_error_id)
-            else
-
-              @active_material = get_current_material
-              color = @active_material ? @active_material.color : MaterialUtils::get_color_from_path(@active_part_entity_path)
-              color.alpha = highlighted ? 255 : 200
-
-              # Show faces infos
-              show_tooltip([
-                             "##{_get_active_part_name}",
-                             '-',
-                             "#{PLUGIN.get_i18n_string('tool.smart_paint.faces', { :count => sides.length })} → #{sides.map { |side| PLUGIN.get_i18n_string("tool.smart_paint.face_#{side}") }.join(' + ')}"
-                           ], faces.find { |f| f.material != @active_material }.nil? ? MESSAGE_TYPE_SUCCESS : MESSAGE_TYPE_DEFAULT)
-
-              active_instance = @active_part_entity_path.last
-              instances = active_instance.definition.instances
-              instance_paths = []
-              _instances_to_paths(instances, instance_paths, model.active_entities, model.active_path ? model.active_path : [])
-
-              triangles = _compute_children_faces_triangles(active_instance.definition.entities, nil, faces)
-
-              instance_paths.each do |path|
-
-                k_mesh = Kuix::Mesh.new
-                k_mesh.add_triangles(triangles)
-                k_mesh.background_color = color
-                k_mesh.transformation = PathUtils::get_transformation(path)
-                @overlay_layer.append(k_mesh)
-
-              end
-
-              definition = Sketchup.active_model.definitions[part.def.definition_id]
-              if definition && definition.count_used_instances > 1
-                show_message("⚠ #{PLUGIN.get_i18n_string('tool.smart_axes.warning.more_entities', { :count_used => definition.count_used_instances })}", MESSAGE_TYPE_WARNING)
-              end
-
-              @active_instances = instances
-              @active_faces = faces
-
-            end
-
-          end
-
-        elsif is_action_paint_clean?
-
-          # Show part infos
-          show_tooltip([ "##{_get_active_part_name}", _get_active_part_material_name ])
-
-          color = MaterialUtils::get_color_from_path(@active_part_entity_path[0...-1]) # [0...-1] returns array without last element
-          color.alpha = highlighted ? 255 : 200
-
-          active_instance = @active_part_entity_path.last
-          instances = active_instance.definition.instances
-          instance_paths = []
-          _instances_to_paths(instances, instance_paths, model.active_entities, model.active_path ? model.active_path : [])
-
-          triangles = _compute_children_faces_triangles(active_instance.definition.entities)
-
-          instance_paths.each do |path|
-
-            k_mesh = Kuix::Mesh.new
-            k_mesh.add_triangles(triangles)
-            k_mesh.background_color = color
-            k_mesh.transformation = PathUtils::get_transformation(path)
-            @overlay_layer.append(k_mesh)
-
-          end
-
-          definition = model.definitions[part.def.definition_id]
-          if definition && definition.count_used_instances > 1
-            show_message("⚠ #{PLUGIN.get_i18n_string('tool.smart_axes.warning.more_entities', { :count_used => definition.count_used_instances })}", MESSAGE_TYPE_WARNING)
-          end
-
-          @active_instances = instances
-
-        end
-
-      end
-
-    end
-
-    def _can_pick_deeper?
-      super && !is_action_paint_edges? && !is_action_paint_faces? && !is_action_pick?
-    end
-
-    def _reset_ui
-      super
-
-      # Hide previous overlays
-      hide_material_infos
-
+      set_root_cursor(get_action_cursor(fetch_action))
     end
 
     # -----
@@ -1122,7 +780,7 @@ module Ladb::OpenCutList
 
     def _setup_material_buttons
 
-      @materials_btns_panel.remove_all
+      @materials_btns_panel.clear
 
       @material_buttons = []
 
@@ -1230,169 +888,1105 @@ module Ladb::OpenCutList
       nil
     end
 
-    def _handle_mouse_event(event = nil)
-      if is_action_part?
+  end
 
-        if event == :move
+  # -----
 
-          if @picker.picked_face_path
-            input_part_entity_path = _get_part_entity_path_from_path(@picker.picked_face_path)
-            if input_part_entity_path
+  class SmartPaintActionHandler < SmartSelectActionHandler
 
-              part = _generate_part_from_path(input_part_entity_path)
-              if part
-                _set_active_part(input_part_entity_path, part)
-              else
-                _reset_active_part
-                show_tooltip("⚠ #{PLUGIN.get_i18n_string('tool.smart_paint.error.not_part')}", MESSAGE_TYPE_ERROR)
-                push_cursor(@cursor_paint_error_id)
-              end
-              return
+    STATE_SELECT_FILTER = 8
 
+    LAYER_3D_ACTION_PREVIEW = 3
+
+    # The parts of a rectangle selection sharing a material : their paths,
+    # painted or not as the filter dropup ticks them.
+    # A locked entry is the applied material : always painted, as a click
+    # would do - its parts may inherit it from a container.
+    SelectionMaterialEntry = Struct.new(:material_name, :display_name, :color, :type, :paths, :selected, :locked)
+
+    # The GroupDef and MaterialAttributes properties GroupDef.group_order
+    # reads, to sort the entries as the cut list groups
+    SelectionMaterialAttributes = Struct.new(:type)
+    SelectionMaterialGroupDef = Struct.new(:material_attributes, :material_name, :std_width, :std_thickness)
+
+    def initialize(action, tool, previous_action_handler = nil)
+      super
+
+      @selection_material_entries = nil
+      @selection_part_paths = nil
+      @hovered_selection_material_entry = nil
+      @instance_parts = {}
+      @select_rect_preview_part_paths = nil
+      @triangles_by_definition = {}
+
+      # Create 3D layers
+      tool.create_3d(LAYER_3D_PART_PREVIEW)
+      tool.create_3d(LAYER_3D_ACTION_PREVIEW)
+
+    end
+
+    # -----
+
+    def stop
+      @tool.clear_all_3d
+      @tool.hide_message
+      @tool.remove_root_tooltip
+      super
+    end
+
+    # -- STATE --
+
+    def get_state_cursor(state)
+
+      case state
+
+      when STATE_SELECT
+        return @tool.get_action_cursor(@action)
+
+      end
+
+      super
+    end
+
+    def get_state_status(state)
+
+      case state
+
+      when STATE_SELECT_FILTER
+        return PLUGIN.get_i18n_string('tool.smart_paint.state_8_status') + '.'
+
+      end
+
+      super
+    end
+
+    # -----
+
+    def onToolLButtonDown(tool, flags, x, y, view)
+      return true if @state == STATE_SELECT_FILTER  # Handled on button up
+      consumed = super
+      @mouse_down_point_2d = nil unless _allows_rect_selection?  # No rectangle selection on drag
+      _preview_action(true)
+      consumed
+    end
+
+    def onToolLButtonUp(tool, flags, x, y, view)
+      if @state == STATE_SELECT_FILTER
+        # A click on a part to paint validates, anywhere else cancels
+        if _picked_selection_filter_part?(view, x, y)
+          _validate_selection_filter
+        else
+          _restart
+        end
+        return true
+      end
+      UI.beep if @state == STATE_SELECT && !has_active_part? && !@select_rect_canceled
+      super
+    end
+
+    def onToolCancel(tool, reason, view)
+      if @state == STATE_SELECT_FILTER
+        _restart
+        return true
+      end
+      super
+    end
+
+    def onToolValidate(tool, view)
+      _validate_selection_filter if @state == STATE_SELECT_FILTER
+    end
+
+    def onToolReturn(tool, view)
+      _validate_selection_filter if @state == STATE_SELECT_FILTER
+    end
+
+    def onToolActionOptionStored(tool, action, option_group, option)
+      return _preview_selection_filter if @state == STATE_SELECT_FILTER
+      _preview_action
+    end
+
+    def onToolCurrentMaterialChanged(tool)
+      return _preview_selection_filter if @state == STATE_SELECT_FILTER
+      _preview_action
+    end
+
+    def onStateChanged(old_state, new_state)
+      super
+
+      if old_state == STATE_SELECT_FILTER
+        @tool.clear_2d(LAYER_2D_FLOATING_TOOLS) # Close the dropup
+        @selection_filter_validate_btn = nil
+      end
+
+      _clear_select_rect_preview if old_state == STATE_SELECT_RECT && new_state != STATE_SELECT_FILTER
+
+      if new_state == STATE_SELECT_FILTER
+        @tool.clear_all_2d
+        @tool.clear_all_3d
+        _show_selection_filter_dropup
+        _preview_selection_filter
+      end
+
+    end
+
+    def onToolTransactionUndo(tool, model)
+      _restart  # The active part is outdated
+    end
+
+    def onToolTransactionRedo(tool, model)
+      _restart  # The active part is outdated
+    end
+
+    def onPickerChanged(picker, view)
+      @previewed = false
+      super
+      _preview_action unless @previewed  # Already done if the active part changed
+    end
+
+    def onActivePartChanged(part_entity_path, part, highlighted = false)
+      super
+      _preview_action(highlighted)
+    end
+
+    def onSelected
+      if has_active_part?
+        _do_action
+      elsif has_active_selection? && _allows_rect_selection?
+        @selection_material_entries = _get_selection_material_entries
+        if @selection_material_entries.empty?
+          UI.beep
+        elsif (choice_entries = @selection_material_entries.reject(&:locked)).size > 1 || choice_entries.any? { |entry| !entry.selected }
+          # Several materials, or one not painted by default : let the user
+          # choose - the applied one isn't a choice
+          set_state(STATE_SELECT_FILTER)
+          return
+        else
+          _do_selection_action(*_get_selection_part_instances_and_containers)
+        end
+      end
+      _restart
+    end
+
+    # -----
+
+    protected
+
+    def _start_with_previous_selection?
+      false
+    end
+
+    def _start_with_model_selection?
+      false
+    end
+
+    def _can_activate_locked?
+      false
+    end
+
+    def _preview_part_mesh?
+      false # The action preview draws it
+    end
+
+    def _get_part_error_cursor
+      SmartCursorManager.cursor_paint_error
+    end
+
+    def _pick_part(picker, view)
+      if picker.picked_face_path.is_a?(Array)
+        if (picked_part_entity_path = _get_part_entity_path_from_path(picker.picked_face_path)).is_a?(Array)
+          if (picked_part = _generate_part_from_path(picked_part_entity_path)).is_a?(Part)
+            can_activate, error_key, error_vars = _can_activate_part?(picked_part_entity_path, picked_part)
+            if can_activate
+              _set_active_part(picked_part_entity_path, picked_part)
             else
               _reset_active_part
-              show_tooltip("⚠ #{PLUGIN.get_i18n_string('tool.smart_paint.error.not_part')}", MESSAGE_TYPE_ERROR)
-              push_cursor(@cursor_paint_error_id)
-              return
+              @tool.set_root_tooltip(PLUGIN.get_i18n_string(error_key, error_vars), SmartTool::MESSAGE_TYPE_ERROR) if error_key.is_a?(String)
+              @tool.push_cursor(_get_part_error_cursor)
             end
+            return
           end
-          _reset_active_part  # No input
+        end
+        _reset_active_part
+        @tool.set_root_tooltip("⚠ #{PLUGIN.get_i18n_string('tool.smart_paint.error.not_part')}", SmartTool::MESSAGE_TYPE_ERROR)
+        @tool.push_cursor(_get_part_error_cursor)
+        return
+      end
+      _reset_active_part
+    end
 
-        elsif event == :l_button_down
+    # -----
 
-          _refresh_active_part(true)
+    def _preview_action(highlighted = false)
+      @previewed = true
+      @tool.clear_3d(LAYER_3D_ACTION_PREVIEW)
+      return @tool.hide_message unless has_active_part?
+      @tool.pop_to_root_cursor
+      _preview_action_draw(highlighted)
+    end
 
-        elsif event == :l_button_up || event == :l_button_dblclick
+    def _preview_action_draw(highlighted)
+    end
 
-          model = Sketchup.active_model
+    def _preview_instances(instances, highlighted, filtered_faces: nil)
+      model = Sketchup.active_model
 
-          if is_action_paint_parts?
+      instance_paths = []
+      _instances_to_paths(instances.to_set, instance_paths, model.active_entities, model.active_path.to_a)
 
-            if @active_instances.nil? || @active_instances.empty?
-              UI.beep
-              return
+      triangles_by_definition = {}
+
+      material = _get_preview_material
+      instance_paths.each do |path|
+
+        triangles = triangles_by_definition[path.last.definition] ||= _compute_children_faces_triangles(path.last.definition.entities, filtered_faces: filtered_faces)
+
+        color = material ? material.color : MaterialUtils::get_color_from_path(_get_preview_color_path(path))
+        color.alpha = highlighted ? 255 : 200
+
+        k_mesh = Kuix::Mesh.new
+        k_mesh.add_triangles(triangles)
+        k_mesh.background_color = color
+        k_mesh.transformation = PathUtils::get_transformation(path)
+        @tool.append_3d(k_mesh, LAYER_3D_ACTION_PREVIEW)
+
+      end
+    end
+
+    def _get_preview_material
+      @tool.get_current_material
+    end
+
+    # The path the color of an instance path without material comes from
+    def _get_preview_color_path(path)
+      path[0...-1]
+    end
+
+    def _show_shared_definition_warning(definition)
+      if definition && definition.count_used_instances > 1
+        @tool.show_message("⚠ #{PLUGIN.get_i18n_string('tool.smart_axes.warning.more_entities', { :count_used => definition.count_used_instances })}", SmartTool::MESSAGE_TYPE_WARNING)
+      else
+        @tool.hide_message
+      end
+    end
+
+    # -----
+
+    # Paints the active part
+    def _do_action
+    end
+
+    # Paints the parts of the rectangle selection, given their instances and
+    # the instances between the selected ones and them
+    def _do_selection_action(part_instances, containers)
+    end
+
+    def _allows_rect_selection?
+      false
+    end
+
+    # The parts are picked one by one, at any depth
+    def _select_rect_deep_inside?
+      true
+    end
+
+    # The instances of the ticked parts of the rectangle selection, and the
+    # instances between the selected ones and these parts - the selected ones
+    # included. A container holding a part left out is not one : the part
+    # would no more inherit its material.
+    def _get_selection_part_instances_and_containers
+      selection_path = get_active_selection_path
+      part_paths = @selection_material_entries.select(&:selected).map(&:paths).flatten(1).uniq
+      part_path_set = part_paths.to_set
+      left_out_containers = @selection_part_paths.reject { |path| part_path_set.include?(path) }.map { |path| path[selection_path.length...-1] }.flatten.to_set
+      [
+        part_paths.map(&:last).uniq,
+        part_paths.map { |path| path[selection_path.length...-1] }.flatten.uniq.reject { |container| left_out_containers.include?(container) }
+      ]
+    end
+
+    # The parts of the rectangle selection, by material, in the cut list
+    # groups order. The parts are the cut list ones : a selected group or
+    # component can hold several. Only the parts without material and the
+    # materials of the applied material type are ticked, or all but the
+    # hardware if none is applied. The applied material is ticked and locked.
+    # Drawn, the rectangle picks the parts themselves, not their containers :
+    # inside, the fully inside ones - or the ones of a fully inside container ;
+    # crossing, the touched ones.
+    def _get_selection_material_entries
+      selection_path = get_active_selection_path
+      parts = _get_selected_instances.map { |instance| _get_instance_parts(instance, selection_path) }.flatten(1)
+      @selection_part_paths = parts.map(&:last).uniq  # All the parts of the selected instances, picked or not
+      _get_material_entries(parts, _get_select_rect_fn_picked(@select_rect_pick_paths, @select_rect_pick_inside))
+    end
+
+    # The given [ group, path ] parts - the picked ones only if 'fn_picked'
+    # isn't nil - by material, in the cut list groups order.
+    def _get_material_entries(parts, fn_picked = nil)
+      target_material = _get_preview_material
+      target_type = target_material ? MaterialAttributes.new(target_material).type : nil
+      fn_locked = lambda { |group| !target_material.nil? && group.material_name == target_material.name }
+      fn_selected = lambda { |group| fn_locked.call(group) || group.material_name.empty? || (target_type.nil? ? group.material_type != MaterialAttributes::TYPE_HARDWARE : group.material_type == target_type) }
+      entries = {}
+      parts.each do |group, path|
+        next unless fn_picked.nil? || fn_picked.call(path)
+        entry = entries[group.material_name] ||= SelectionMaterialEntry.new(
+          group.material_name,
+          group.material_name.empty? ? PLUGIN.get_i18n_string('tab.cutlist.material_undefined') : group.material_display_name,
+          group.material_color.nil? ? nil : Sketchup::Color.new(group.material_color),
+          group.material_type,
+          [],
+          fn_selected.call(group),
+          fn_locked.call(group)
+        )
+        entry.paths << path
+      end
+      entries.values.each { |entry| entry.paths.uniq! }
+
+      # Sorted as the cut list groups : each selected instance has its own cut
+      # list. An entry is a material, its groups' std dimensions don't apply.
+      group_order_strategy = PLUGIN.get_model_preset('cutlist_options')['group_order_strategy']
+      fn_group_def = lambda { |entry| SelectionMaterialGroupDef.new(SelectionMaterialAttributes.new(entry.type), entry.material_name) }
+      entries.values.sort { |entry_a, entry_b| GroupDef.group_order(fn_group_def.call(entry_a), fn_group_def.call(entry_b), group_order_strategy) }
+    end
+
+    # The cut list parts of the given instance as [ group, path ] - memoized :
+    # the rectangle preview and the selection share them.
+    def _get_instance_parts(instance, path)
+      @instance_parts[[ path, instance ]] ||= begin
+        worker = CutlistGenerateWorker.new(**HashUtils.symbolize_keys(PLUGIN.get_model_preset('cutlist_options')).merge({ active_entity: instance, active_path: path, part_folding: false }))
+        cutlist = worker.run
+        cutlist.groups.map { |group| group.parts.map { |part| part.def.instance_infos.values.map { |instance_info| [ group, instance_info.path ] } } }.flatten(2)
+      end
+    end
+
+    # Is the part at the given absolute path picked by the rectangle ? Picked
+    # paths are absolute too : inside, they stop at the highest fully inside
+    # entity ; crossing, they end at a touched leaf - or a fully inside
+    # entity. Looked up in sets : a rectangle preview runs it on every part
+    # at each move. nil without rectangle.
+    def _get_select_rect_fn_picked(pick_paths, pick_inside)
+      return nil if pick_paths.nil?
+      # A picked path or one of its ancestors is fully inside
+      pick_path_set = pick_paths.to_set
+      # Crossing : the part holds a touched leaf
+      pick_prefix_set = pick_inside ? Set[] : pick_paths.map { |pick_path| (1..pick_path.length).map { |n| pick_path.first(n) } }.flatten(1).to_set
+      lambda { |path| pick_prefix_set.include?(path) || (1..path.length).any? { |n| pick_path_set.include?(path.first(n)) } }
+    end
+
+    # -- Rect preview --
+
+    def _preview_select_rect(view)
+      super
+      _preview_select_rect_parts(view) if _allows_rect_selection?
+    end
+
+    # Draws the parts the rectangle picks as the filter would paint them by
+    # default - redrawn only when they change.
+    def _preview_select_rect_parts(view)
+      pick_inside = @mouse_down_point_2d.x < @mouse_move_point_2d.x
+      fn_picked = _get_select_rect_fn_picked(_window_pick_paths(view, @mouse_down_point_2d, @mouse_move_point_2d, pick_inside), pick_inside)
+
+      model = Sketchup.active_model
+      active_path = model.active_path.to_a
+      parts = model.active_entities.select { |entity| entity.respond_to?(:definition) }.map { |instance| _get_instance_parts(instance, active_path) }.flatten(1)
+      parts = parts.select { |_group, path| fn_picked.call(path) }
+      part_paths = parts.map(&:last).to_set
+      return if part_paths == @select_rect_preview_part_paths
+      @select_rect_preview_part_paths = part_paths
+
+      @selection_material_entries = _get_material_entries(parts)
+      _preview_selection_filter
+    end
+
+    def _clear_select_rect_preview
+      @select_rect_preview_part_paths = nil
+      @selection_material_entries = nil
+      @tool.clear_3d(LAYER_3D_ACTION_PREVIEW)
+    end
+
+    # -- Filter --
+
+    def _show_selection_filter_dropup
+
+      k_dropup = SmartDropup.new(
+        @tool,
+        @selection_material_entries.map { |entry|
+
+          text_defs = [
+            SmartDropup::SmartDropupTextDef.new(entry.display_name, Kuix::COLOR_BLACK, true),
+            SmartDropup::SmartDropupTextDef.new("(x#{entry.paths.size})", Kuix::COLOR_DARK_GREY)
+          ]
+
+          on_click = lambda { |k_btn|
+            next if entry.locked
+            if (k_tick_btn = k_btn.children.find { |child| child.is_a?(Kuix::Button) })
+              k_tick_btn.fire(:click)
             end
+          }
+          on_tick_click = lambda { |k_tick_btn|
+            next if entry.locked
+            k_tick_btn.selected = entry.selected = !entry.selected
+            _preview_selection_filter
+          }
+          on_enter = lambda { |k_btn|
+            @hovered_selection_material_entry = entry
+            _preview_selection_filter
+          }
+          on_leave = lambda { |k_btn|
+            @hovered_selection_material_entry = nil
+            _preview_selection_filter
+          }
 
-            # Start undoable model modification operation
-            model.start_operation('OCL Paint Parts', true, false, false)
+          SmartDropup::SmartDropupBtnDef.new(
+            text_defs,
+            on_click,
+            on_enter,
+            on_leave,
+            0,
+            false,
+            SmartDropup::SmartDropupTickDef.new(
+              entry.selected,
+              on_tick_click,
+              entry.locked
+            ),
+            entry.color.nil? ? SmartDropup::SWATCH_NONE_MATERIAL : entry.color
+          )
+        },
+        nil,
+        anchor: @select_rect_points_2d.nil? ? Kuix::Anchor::BOTTOM_RIGHT : SmartDropup.anchor_beside_drag(*@select_rect_points_2d),
+        title: PLUGIN.get_i18n_string('tool.smart_paint.select_filter_title'),
+        footer_btn_defs: [
+          SmartDropup::SmartDropupFooterBtnDef.new(nil, lambda { |k_btn| _restart }, SmartTool::MESSAGE_TYPE_ERROR, false, SmartDropup::MOTIF_CANCEL_PATH),
+          SmartDropup::SmartDropupFooterBtnDef.new(nil, lambda { |k_btn| _validate_selection_filter }, SmartTool::MESSAGE_TYPE_SUCCESS, false, SmartDropup::MOTIF_VALIDATE_PATH)
+        ]
+      )
+      @selection_filter_validate_btn = k_dropup.footer_btns.last
+      @tool.append_2d(k_dropup, LAYER_2D_FLOATING_TOOLS)
 
-            # Paint instances
-            @active_instances.each do |instance|
-              instance.material = @active_material
-            end
+    end
 
-            # Commit model modification operation
-            model.commit_operation
+    # Draws the ticked parts as painted - the hovered entry ones opaque.
+    def _preview_selection_filter
+      @tool.clear_3d(LAYER_3D_ACTION_PREVIEW)
+      return if @selection_material_entries.nil?
 
-            # Fire event
-            PLUGIN.app_observer.model_observer.onDrawingChange
+      material = _get_preview_material
 
-            # Refresh active
-            _refresh_active_part
+      @selection_material_entries.select(&:selected).each do |entry|
+        hovered = entry == @hovered_selection_material_entry
+        entry.paths.each do |path|
 
-          elsif is_action_paint_edges?
+          triangles = @triangles_by_definition[path.last.definition] ||= _compute_children_faces_triangles(path.last.definition.entities)
 
-            if @active_faces.nil? || @active_faces.empty?
-              UI.beep
-              return
-            end
+          color = material ? material.color : MaterialUtils::get_color_from_path(_get_preview_color_path(path))
+          color.alpha = hovered ? 255 : 200
 
-            # Start undoable model modification operation
-            model.start_operation('OCL Paint Edges', true, false, false)
-
-            @active_faces.each { |face| face.material = @active_material }
-
-            # Commit model modification operation
-            model.commit_operation
-
-            # Fire event
-            PLUGIN.app_observer.model_observer.onDrawingChange
-
-            # Refresh active
-            _refresh_active_part
-
-          elsif is_action_paint_faces?
-
-            if @active_faces.nil? || @active_faces.empty?
-              UI.beep
-              return
-            end
-
-            # Start undoable model modification operation
-            model.start_operation('OCL Paint Faces', true, false, false)
-
-            @active_faces.each { |face| face.material = @active_material }
-
-            # Commit model modification operation
-            model.commit_operation
-
-            # Fire event
-            PLUGIN.app_observer.model_observer.onDrawingChange
-
-            # Refresh active
-            _refresh_active_part
-
-          elsif is_action_paint_clean?
-
-            if @active_instances.nil? || @active_instances.empty?
-              UI.beep
-              return
-            end
-
-            # Start undoable model modification operation
-            model.start_operation('OCL Paint Clean', true, false, false)
-
-            # Clean definition
-            _propagate_material(@active_instances.first.definition.entities, nil)
-
-            # Clean instances
-            @active_instances.each do |instance|
-              instance.material = nil
-            end
-
-            # Commit model modification operation
-            model.commit_operation
-
-            # Fire event
-            PLUGIN.app_observer.model_observer.onDrawingChange
-
-            # Refresh active
-            _refresh_active_part
-
-          end
+          k_mesh = Kuix::Mesh.new
+          k_mesh.add_triangles(triangles)
+          k_mesh.background_color = color
+          k_mesh.transformation = PathUtils::get_transformation(path)
+          @tool.append_3d(k_mesh, LAYER_3D_ACTION_PREVIEW)
 
         end
+      end
 
-      elsif is_action_pick?
+      # Nothing to validate without a ticked material
+      @selection_filter_validate_btn[:button].disabled = @selection_material_entries.none?(&:selected) unless @selection_filter_validate_btn.nil?
 
-        material = MaterialUtils::get_material_from_path(@picker.picked_face_path)
-        if @picker.picked_face
-          if event == :move
+    end
 
-            # Refresh UI
-            _reset_ui
+    # Is a ticked part under the given screen point ?
+    def _picked_selection_filter_part?(view, x, y)
+      instances = @selection_material_entries.select(&:selected).map { |entry| entry.paths.map(&:last) }.flatten.to_set
+      ph = view.pick_helper
+      ph.do_pick(x, y)
+      (0...ph.count).any? { |i| (ph.path_at(i) || []).any? { |entity| instances.include?(entity) } }
+    end
 
-            # Display material infos
-            if material
-              show_tooltip("##{material.name} (#{PLUGIN.get_i18n_string("tab.materials.type_#{MaterialAttributes.new(material).type}")})")
-            else
-              show_tooltip("##{PLUGIN.get_i18n_string('tool.smart_paint.default_material')}")
-            end
+    def _validate_selection_filter
+      part_instances, containers = _get_selection_part_instances_and_containers
+      if part_instances.empty?
+        UI.beep
+        return
+      end
+      _do_selection_action(part_instances, containers)
+      _restart
+    end
 
-          elsif event == :l_button_up
+    def _paint(operation_name)
+      model = Sketchup.active_model
+      model.start_operation(operation_name, true, false, false)
+      begin
 
-            # Set picked material as current
-            set_current_material(material.nil? ? false : material, true, true)
+        yield
 
+        model.commit_operation
+
+      rescue Exception => e
+        PLUGIN.dump_exception(e)
+        model.abort_operation
+      end
+
+      # Fire event
+      PLUGIN.app_observer.model_observer.onDrawingChange
+
+    end
+
+    def _get_selected_instances
+      (get_active_selection_instances || []).select { |entity| entity.respond_to?(:definition) }
+    end
+
+  end
+
+  class SmartPaintPartsActionHandler < SmartPaintActionHandler
+
+    def initialize(tool, previous_action_handler = nil)
+      super(SmartPaintTool::ACTION_PAINT_PARTS, tool, previous_action_handler)
+    end
+
+    # -----
+
+    def get_state_status(state)
+
+      case state
+
+      when STATE_SELECT
+        return super +
+               ' | ↑↓ + ' + PLUGIN.get_i18n_string('tool.default.transparency') + ' = ' + PLUGIN.get_i18n_string('tool.default.toggle_depth') + '.' +
+               ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_1') + '.' +
+               ' | ' + PLUGIN.get_i18n_string("default.alt_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.'
+      end
+
+      super
+    end
+
+    # -----
+
+    def onToolActionOptionStored(tool, action, option_group, option)
+      if fetch_state == STATE_SELECT_TREE
+        _preview_tree_item(*@tree_hovered_item) unless @tree_hovered_item.nil?
+        return
+      end
+      super
+      _warn_if_instances_all if option_group == SmartPaintTool::ACTION_OPTION_INSTANCES && fetch_state == STATE_SELECT_FILTER
+    end
+
+    def onToolCurrentMaterialChanged(tool)
+      if fetch_state == STATE_SELECT_TREE
+        _refresh_tree_swatches
+        _preview_tree_item(*@tree_hovered_item) unless @tree_hovered_item.nil?
+        return
+      end
+      super
+    end
+
+    def onSelected
+      _warn_if_instances_all if !has_active_part? && has_active_selection?
+      super
+    end
+
+    protected
+
+    def _preview_action_draw(highlighted)
+
+      part = get_active_part
+      material = @tool.get_current_material
+
+      # Show part infos
+      @tool.set_root_tooltip([ "##{_get_active_part_name}", _get_active_part_material_name ], material && material.name == part.material_name ? SmartTool::MESSAGE_TYPE_SUCCESS : SmartTool::MESSAGE_TYPE_DEFAULT)
+
+      _preview_instances(_get_instances, highlighted)
+
+      if _fetch_option_instances_all
+        _show_shared_definition_warning(get_active_part_entity_path.last.definition)
+      else
+        @tool.hide_message
+      end
+
+    end
+
+    def _do_action
+      _paint_instances(_get_instances)
+    end
+
+    # The rectangle selection paints what it holds : the instances option
+    # doesn't apply
+    def _do_selection_action(part_instances, containers)
+      _paint_instances(part_instances)
+    end
+
+    def _allows_rect_selection?
+      true
+    end
+
+    def _allows_tree_selection?
+      true
+    end
+
+    # -- Tree --
+
+    # A parent picked in the tree is painted itself - as the instances option
+    # says : its parts without material inherit it
+    def _select_tree_item(path, part, depth)
+      return super if depth == path.size - 1
+      Sketchup.active_model.selection.clear
+      _paint_instances(_get_option_instances(path[depth]))
+      _restart
+    end
+
+    # Draws what a click on the item would paint : the part itself, or the
+    # parts inheriting the material of the parent - the parent outlined
+    def _preview_tree_item(path, part, depth)
+      @tree_hovered_item = [ path, part, depth ]  # Previewed again if the material changes
+      @tool.clear_3d(LAYER_3D_ACTION_PREVIEW)
+      @tool.hide_message
+      if depth == path.size - 1
+        @tree_preview_part_paths = nil
+        _preview_instances(_get_option_instances(path.last), true)
+      else
+
+        parent = path[depth]
+        selection = Sketchup.active_model.selection
+        selection.clear
+        selection.add(parent)
+
+        # The parts reached by no material between the parent and them, as
+        # paths relative to the parent
+        relative_part_paths = _get_instance_parts(parent, path[0...depth]).map { |_group, part_path| part_path[(depth + 1)..-1] }.uniq
+        relative_part_paths = relative_part_paths.select { |relative_path| relative_path.all? { |entity| entity.material.nil? } }
+
+        @tree_preview_part_paths = []
+        material = _get_preview_material
+        _get_option_instance_paths(parent, path[0..depth]).each do |parent_path|
+          # Without material, the parts inherit from above the parent
+          color = material ? material.color : MaterialUtils::get_color_from_path(parent_path[0...-1])
+          color.alpha = 255
+          relative_part_paths.each do |relative_path|
+            part_path = parent_path + relative_path
+            @tree_preview_part_paths << part_path
+            triangles = @triangles_by_definition[part_path.last.definition] ||= _compute_children_faces_triangles(part_path.last.definition.entities)
+            k_mesh = Kuix::Mesh.new
+            k_mesh.add_triangles(triangles)
+            k_mesh.background_color = color
+            k_mesh.transformation = PathUtils::get_transformation(part_path)
+            @tool.append_3d(k_mesh, LAYER_3D_ACTION_PREVIEW)
           end
+        end
+
+        _show_shared_definition_warning(parent.definition) if _fetch_option_instances_all
+
+      end
+    end
+
+    # The own material of each level - not the inherited one : what a click changes
+    def _get_tree_item_swatch_color(path, depth)
+      _get_swatch_color(path[depth].material)
+    end
+
+    # Hovered, the material a click would apply
+    def _get_tree_item_swatch_hover_color(path, depth)
+      _get_swatch_color(_get_preview_material)
+    end
+
+    def _get_swatch_color(material)
+      return SmartDropup::SWATCH_NONE_MATERIAL if material.nil?
+      color = material.color
+      color.alpha = 255
+      color
+    end
+
+    def _clear_tree_item_preview
+      @tree_hovered_item = nil
+      @tree_preview_part_paths = nil
+      Sketchup.active_model.selection.clear
+      @tool.clear_3d(LAYER_3D_ACTION_PREVIEW)
+      @tool.hide_message
+    end
+
+    # The paths of the instances the given instance stands for, as the
+    # instances option says - groups included, the active context ones only
+    def _get_option_instance_paths(instance, instance_path)
+      return [ instance_path ] unless _fetch_option_instances_all
+      model = Sketchup.active_model
+      instances = _get_option_instances(instance).to_set
+      paths = []
+      fn_walk = lambda { |entities, path|
+        entities.each do |entity|
+          next unless entity.respond_to?(:definition) && entity.visible? && entity.layer.visible?
+          path.push(entity)
+          if instances.include?(entity)
+            paths << path.dup
+          else
+            fn_walk.call(entity.definition.entities, path)
+          end
+          path.pop
+        end
+      }
+      fn_walk.call(model.active_entities, model.active_path.to_a)
+      paths
+    end
+
+    # -----
+
+    def _paint_instances(instances)
+      material = @tool.get_current_material
+      _paint('OCL Paint Parts') do
+        instances.each { |instance| instance.material = material }
+      end
+    end
+
+    def _get_instances
+      _get_option_instances(get_active_part_entity_path.last)
+    end
+
+    # The instances the given instance stands for, as the instances option says
+    def _get_option_instances(instance)
+      _fetch_option_instances_all ? instance.definition.instances : [ instance ]
+    end
+
+    # -----
+
+    def _fetch_option_instances_all
+      @tool.fetch_action_option_boolean(@action, SmartPaintTool::ACTION_OPTION_INSTANCES, SmartPaintTool::ACTION_OPTION_INSTANCES_ALL)
+    end
+
+    def _warn_if_instances_all
+      @tool.notify_warnings([ [ 'tool.smart_paint.warning.selection_disable_instances_all' ] ]) if _fetch_option_instances_all
+    end
+
+  end
+
+  # Edges or faces of a sheet good part : its sides
+  class SmartPaintSidesActionHandler < SmartPaintActionHandler
+
+    # -----
+
+    protected
+
+    def _can_activate_part?(part_entity_path, part)
+      if part.is_a?(Part) && part.group.material_type != MaterialAttributes::TYPE_SHEET_GOOD
+        return [ false, 'tool.default.error.wrong_material_type', { :type => PLUGIN.get_i18n_string("tab.materials.type_#{MaterialAttributes::TYPE_SHEET_GOOD}") } ]
+      end
+      super
+    end
+
+    def _can_pick_deeper?
+      false
+    end
+
+    def _get_preview_color_path(path)
+      path
+    end
+
+    def _preview_action_draw(highlighted)
+
+      sides, faces = _get_sides_and_faces
+
+      if faces.empty?
+        @tool.set_root_tooltip("⚠ #{PLUGIN.get_i18n_string(_get_no_side_error_key)}", SmartTool::MESSAGE_TYPE_ERROR)
+        @tool.push_cursor(SmartCursorManager.cursor_paint_error)
+        @tool.hide_message
+        return
+      end
+
+      material = @tool.get_current_material
+
+      # Show sides infos
+      @tool.set_root_tooltip([
+                           "##{_get_active_part_name}",
+                           '-',
+                           _get_sides_text(sides)
+                         ], faces.find { |face| face.material != material }.nil? ? SmartTool::MESSAGE_TYPE_SUCCESS : SmartTool::MESSAGE_TYPE_DEFAULT)
+
+      definition = get_active_part_entity_path.last.definition
+      _preview_instances(definition.instances, highlighted, filtered_faces: faces)
+      _show_shared_definition_warning(definition)
+
+    end
+
+    def _do_action
+      _, faces = _get_sides_and_faces
+      return UI.beep if faces.empty?
+      material = @tool.get_current_material
+      _paint(_get_operation_name) do
+        faces.each { |face| face.material = material }
+      end
+    end
+
+    # -----
+
+    def _get_sides_and_faces
+      model = Sketchup.active_model
+
+      side_faces = {}
+      _get_side_entity_ids(get_active_part).each { |side, ids| side_faces[side] = model.find_entity_by_id(ids).compact if ids.is_a?(Array) && !ids.empty? }
+
+      sides = _get_sides(side_faces)
+      [ sides, sides.map { |side| side_faces[side] }.flatten ]
+    end
+
+    def _get_picked_side(side_faces)
+      return nil if @picker.nil? || (picked_face = @picker.picked_face).nil?
+      side_faces.each { |side, faces| return side if faces.include?(picked_face) }
+      nil
+    end
+
+    def _get_side_entity_ids(part)  # { side => Array<entity_id> }
+      {}
+    end
+
+    def _get_sides(side_faces)
+      []
+    end
+
+    def _get_sides_text(sides)
+      ''
+    end
+
+    def _get_no_side_error_key
+      ''
+    end
+
+    def _get_operation_name
+      ''
+    end
+
+  end
+
+  class SmartPaintEdgesActionHandler < SmartPaintSidesActionHandler
+
+    OPPOSITE_SIDES = { :ymin => :ymax, :ymax => :ymin, :xmin => :xmax, :xmax => :xmin }.freeze
+
+    def initialize(tool, previous_action_handler = nil)
+      super(SmartPaintTool::ACTION_PAINT_EDGES, tool, previous_action_handler)
+    end
+
+    # -----
+
+    def get_state_status(state)
+
+      case state
+
+      when STATE_SELECT
+        return super +
+               ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_2') + '.' +
+               ' | ' + PLUGIN.get_i18n_string("default.alt_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.'
+      end
+
+      super
+    end
+
+    protected
+
+    def _get_side_entity_ids(part)
+      part.def.edge_entity_ids
+    end
+
+    def _get_sides(side_faces)
+      sides = []
+      if @tool.fetch_action_option_boolean(@action, SmartPaintTool::ACTION_OPTION_EDGES, SmartPaintTool::ACTION_OPTION_EDGES_4)
+        [ :ymin, :ymax, :xmin, :xmax ].each { |side| sides << side unless side_faces[side].nil? }
+      elsif (picked_side = _get_picked_side(side_faces))
+        sides << picked_side
+        if @tool.fetch_action_option_boolean(@action, SmartPaintTool::ACTION_OPTION_EDGES, SmartPaintTool::ACTION_OPTION_EDGES_2)
+          opposite_side = OPPOSITE_SIDES[picked_side]
+          sides << opposite_side unless side_faces[opposite_side].nil?
+        end
+      end
+      sides
+    end
+
+    def _get_sides_text(sides)
+      PLUGIN.get_i18n_string('tool.smart_paint.edges', { :count => sides.length }) + (sides.length < 4 ? " → #{sides.map { |side| PLUGIN.get_i18n_string("tool.smart_paint.edge_#{side}") }.join(' + ')}" : '')
+    end
+
+    def _get_no_side_error_key
+      'tool.smart_paint.error.not_edge'
+    end
+
+    def _get_operation_name
+      'OCL Paint Edges'
+    end
+
+  end
+
+  class SmartPaintFacesActionHandler < SmartPaintSidesActionHandler
+
+    def initialize(tool, previous_action_handler = nil)
+      super(SmartPaintTool::ACTION_PAINT_FACES, tool, previous_action_handler)
+    end
+
+    # -----
+
+    def get_state_status(state)
+
+      case state
+
+      when STATE_SELECT
+        return super +
+               ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.' +
+               ' | ' + PLUGIN.get_i18n_string("default.alt_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.'
+      end
+
+      super
+    end
+
+    protected
+
+    def _get_side_entity_ids(part)
+      part.def.face_entity_ids
+    end
+
+    def _get_sides(side_faces)
+      sides = []
+      if @tool.fetch_action_option_boolean(@action, SmartPaintTool::ACTION_OPTION_FACES, SmartPaintTool::ACTION_OPTION_FACES_2)
+        [ :zmax, :zmin ].each { |side| sides << side unless side_faces[side].nil? }
+      elsif (picked_side = _get_picked_side(side_faces))
+        sides << picked_side
+      end
+      sides
+    end
+
+    def _get_sides_text(sides)
+      "#{PLUGIN.get_i18n_string('tool.smart_paint.faces', { :count => sides.length })} → #{sides.map { |side| PLUGIN.get_i18n_string("tool.smart_paint.face_#{side}") }.join(' + ')}"
+    end
+
+    def _get_no_side_error_key
+      'tool.smart_paint.error.not_face'
+    end
+
+    def _get_operation_name
+      'OCL Paint Faces'
+    end
+
+  end
+
+  class SmartPaintPickActionHandler < SmartActionHandler
+
+    def initialize(tool, previous_action_handler = nil)
+      super(SmartPaintTool::ACTION_PICK, tool, previous_action_handler)
+    end
+
+    # -----
+
+    def stop
+      @tool.remove_root_tooltip
+      super
+    end
+
+    # -- STATE --
+
+    def get_state_picker(state)
+      SmartPicker.new(tool: @tool, observer: self, lockable: false)
+    end
+
+    def get_state_status(state)
+      super +
+        ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_4') + '.'
+    end
+
+    # -----
+
+    def onToolLButtonUp(tool, flags, x, y, view)
+      if @picker.nil? || @picker.picked_face.nil?
+        UI.beep # Feedback for "no material"
+        return true
+      end
+
+      # Set picked material as current
+      material = MaterialUtils::get_material_from_path(@picker.picked_face_path)
+      @tool.set_current_material(material.nil? ? false : material, true, true)
+
+      true
+    end
+
+    def onPickerChanged(picker, view)
+
+      if picker.picked_face
+
+        # Display material infos
+        material = MaterialUtils::get_material_from_path(picker.picked_face_path)
+        if material
+          @tool.set_root_tooltip("##{material.name} (#{PLUGIN.get_i18n_string("tab.materials.type_#{MaterialAttributes.new(material).type}")})")
         else
-          if event == :move
-            _reset_ui
-          elsif event == :l_button_up
-            UI.beep # Feedback for "no material"
-          end
+          @tool.set_root_tooltip("##{PLUGIN.get_i18n_string('tool.smart_paint.default_material')}")
         end
 
+      else
+        @tool.remove_root_tooltip
+      end
+
+      super
+    end
+
+  end
+
+  class SmartPaintCleanActionHandler < SmartPaintActionHandler
+
+    def initialize(tool, previous_action_handler = nil)
+      super(SmartPaintTool::ACTION_PAINT_CLEAN, tool, previous_action_handler)
+    end
+
+    # -----
+
+    def get_state_status(state)
+
+      case state
+
+      when STATE_SELECT
+        return super +
+               ' | ↑↓ + ' + PLUGIN.get_i18n_string('tool.default.transparency') + ' = ' + PLUGIN.get_i18n_string('tool.default.toggle_depth') + '.' +
+               ' | ' + PLUGIN.get_i18n_string("default.tab_key") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_0') + '.' +
+               ' | ' + PLUGIN.get_i18n_string("default.alt_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_paint.action_3') + '.'
+      end
+
+      super
+    end
+
+    protected
+
+    def _preview_action_draw(highlighted)
+
+      # Show part infos
+      @tool.set_root_tooltip([ "##{_get_active_part_name}", _get_active_part_material_name ])
+
+      definition = get_active_part_entity_path.last.definition
+      _preview_instances(definition.instances, highlighted)
+      _show_shared_definition_warning(definition)
+
+    end
+
+    def _get_preview_material
+      nil
+    end
+
+    def _do_action
+      _clean_definitions([ get_active_part_entity_path.last.definition ])
+    end
+
+    def _do_selection_action(part_instances, containers)
+      _clean_definitions(part_instances.map(&:definition).uniq, containers)
+    end
+
+    def _allows_rect_selection?
+      true
+    end
+
+    def _clean_definitions(definitions, containers = [])
+      _paint('OCL Paint Clean') do
+
+        # Clean the containers : the parts would inherit their material
+        containers.each { |container| container.material = nil }
+
+        definitions.each do |definition|
+
+          # Clean definition
+          _propagate_material(definition.entities, nil)
+
+          # Clean instances
+          definition.instances.each { |instance| instance.material = nil }
+
+        end
       end
     end
 
@@ -1418,24 +2012,7 @@ module Ladb::OpenCutList
   end
 
   class NoneButton < Kuix::Button
-
-    def paint_background(graphics)
-      super
-
-      width = @bounds.width - @margin.left - @border.left - @margin.right - @border.right
-      height = @bounds.height - @margin.top - @border.top - @margin.bottom - @border.bottom
-
-      graphics.draw_triangle(
-        x1: 0,
-        y1: 0,
-        x2: 0,
-        y2: height,
-        x3: width,
-        y3: height,
-        fill_color: @background_color.blend(Sketchup::Color.new(0, 0, 0), 0.9)
-      )
-    end
-
+    include SmartNoneMaterialBackground
   end
 
 end

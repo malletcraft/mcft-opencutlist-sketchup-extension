@@ -87,6 +87,8 @@ module Ladb::OpenCutList
     def onActivateModel(model)
       # puts "onActivateModel: #{model}"
 
+      return if model.nil? # Prevent event fired sometimes with nil model
+
       # Clear model presets cache
       PLUGIN.clear_model_presets_cache
 
@@ -105,6 +107,9 @@ module Ladb::OpenCutList
     end
 
     def onQuit
+
+      # Stop local HTTP server used to serve dialog assets
+      PLUGIN.stop_local_http_server
 
       # Trigger event to JS
       PLUGIN.trigger_event(ON_QUIT)

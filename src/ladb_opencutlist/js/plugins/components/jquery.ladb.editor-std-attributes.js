@@ -90,7 +90,7 @@
 
         // Bind
         $select
-            .selectpicker(SELECT_PICKER_OPTIONS)
+            .selectpicker(SELECT_PICKER_TABS_OPTIONS)
             .selectpicker('val', stdAttribute.dim)
         ;
         $select
@@ -313,6 +313,7 @@
                         has0 = true;
                     }
                 } else if (stdAttribute.val != null && stdAttribute.val.length > 0 && stdAttribute.dim.length > 0) {
+                    stdAttribute.dim = stdAttribute.dim.replace(/\d+\.\d+/g, m => Number(parseFloat(m).toFixed(10)).toString());   // Use round(10) as a workaround against the SU 2026 to_f precision change
                     this.stdAttributes.push(stdAttribute);
                 }
             }

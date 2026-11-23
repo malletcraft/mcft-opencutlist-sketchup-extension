@@ -1,0 +1,1307 @@
+//
+// Hardware Editor
+//
+
+.modal {
+
+  .ladb-hardware-editor-readonly-badge {
+    margin-left: 30px;
+  }
+
+  .modal-body.ladb-hardware-editor {
+    display: flex;
+    padding: 0;
+    overflow: hidden;
+  }
+
+}
+
+.ladb-hardware-editor-bench {
+  flex: 0 0 550px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #ccc;
+}
+
+.ladb-hardware-editor-viewer {
+  flex: 0 1 550px;
+  min-height: 200px;
+  position: relative;
+
+  .ladb-three-viewer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+
+    iframe {
+      height: 100%;
+    }
+
+  }
+
+  // Accepted or refused, over the viewer's top right corner - its right
+  // buttons are centered vertically
+  .ladb-hardware-editor-verdict {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 1;
+    padding: 3px 9px;
+    border-radius: 4px;
+    color: #fff;
+    font-size: 12px;
+    font-weight: bold;
+    white-space: nowrap;
+    pointer-events: none;
+
+    &.ladb-hardware-editor-verdict-accepted { background-color: @ladb-brand-success; }
+    &.ladb-hardware-editor-verdict-refused {
+      background-color: @ladb-brand-danger;
+      pointer-events: auto;   // Clicked : the assert that fails shown
+      cursor: pointer;
+    }
+
+  }
+
+  // Its length unit, over the viewer's top left corner
+  .ladb-hardware-editor-unit {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 1;
+    padding: 3px 9px;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.8);
+    color: @ladb-global-light-color;
+    font-size: 12px;
+    font-weight: bold;
+    white-space: nowrap;
+  }
+
+  // Around the solid hovered in the viewer : its tooltip beside it
+  .ladb-hardware-editor-hover-anchor {
+    position: absolute;
+    pointer-events: none;
+  }
+
+  // The trial, over the viewer - added after it
+  .ladb-hardware-editor-trial {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+
+    .ladb-hardware-editor-topologies {
+      display: flex;
+
+      &:empty {
+        display: none;
+      }
+
+    }
+
+  }
+
+  // Over the trial, right-aligned with its button
+  .ladb-hardware-editor-bench-settings {
+    position: absolute;
+    right: 0;
+    bottom: ~"calc(100% + 6px)";
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+    .ladb-hardware-editor-bench-settings-title {
+      color: @ladb-global-light-color;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+    }
+
+    .ladb-hardware-editor-bench-setting {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+
+      label {
+        margin: 0;
+        font-weight: normal;
+      }
+
+      // Same colors as its pin in the viewer
+      .ladb-hardware-editor-slot-pin {
+        display: inline-block;
+        min-width: 18px;
+        line-height: 18px;
+        margin-right: 4px;
+        border-radius: 9px;
+        text-align: center;
+        font-size: 11px;
+        font-weight: bold;
+        color: #fff;
+
+        &.ladb-hardware-editor-slot-pin-a { background-color: #c98a1c; }
+        &.ladb-hardware-editor-slot-pin-b { background-color: #4e9442; }
+
+      }
+
+      div.ladb-textinput {
+        flex: 0 0 100px;
+        width: 100px;
+      }
+
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-unsupported {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: @ladb-gutter;
+  text-align: center;
+  color: @ladb-global-light-color;
+}
+
+.ladb-hardware-editor-computations {
+  flex: 1 1 20%;   // Grows into the height the viewer leaves
+  overflow-y: auto;
+  border-top: 1px solid #ccc;
+  padding: 10px;
+
+  &:empty {
+    display: none;
+  }
+
+  table.table {
+    margin: 0;
+    font-size: 12px;
+
+    > tbody > tr {
+
+      &.ladb-hardware-editor-computations-header > th {
+        background-color: #f9f9f9;
+        color: @ladb-global-light-color;
+        font-weight: normal;
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.05em;
+      }
+
+      > td {
+        vertical-align: top;
+      }
+
+    }
+
+  }
+
+  // A measure : its cote in the viewer when hovered
+  tr.ladb-hardware-editor-measure:hover > td {
+    background-color: #f5f5f5;
+  }
+
+  // The assert the verdict points to
+  tr.ladb-hardware-editor-flash > td {
+    animation: ladb-hardware-editor-flash 1.2s ease-out;
+  }
+
+  .ladb-hardware-editor-computation-name {
+    font-family: monospace;
+    white-space: nowrap;
+
+    i {
+      color: @ladb-brand-primary;
+    }
+
+  }
+
+  .ladb-hardware-editor-computation-expression {
+    font-family: monospace;
+    color: @ladb-global-light-color;
+    word-break: break-word;
+  }
+
+  .ladb-hardware-editor-computation-value {
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .ladb-hardware-editor-slots {
+    color: @ladb-global-light-color;
+    font-size: 90%;
+  }
+
+}
+
+@keyframes ladb-hardware-editor-flash {
+  0%, 30% { background-color: fade(@ladb-brand-danger, 45%); }
+}
+
+.ladb-hardware-editor-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: #f9f9f9;
+
+  // Over the tab content's top border by 1px : the active tab's white bottom
+  // border hides it, the others let it show
+  > .nav-tabs {
+    position: relative;
+    z-index: 1;
+    margin-top: 8px;
+    margin-bottom: -1px;
+    padding: 0 10px;
+  }
+
+  > .tab-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background-color: #fff;
+    border-top: 1px solid #ccc;
+
+    > .tab-pane {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 10px 10px;
+
+      &#ladb_hardware_editor_tab_json.active {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        padding: 0;
+      }
+
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-json {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+
+  &.ladb-hardware-editor-json-readonly .CodeMirror {
+    background-color: #f5f5f5;
+    color: @ladb-global-light-color;
+  }
+
+  .CodeMirror {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: auto;
+    max-height: none;   // Not the 300px of the other editors
+    font-size: 12px;
+    padding: 0;
+
+    .CodeMirror-scroll {
+      max-height: none;
+    }
+
+  }
+
+  .ladb-hardware-editor-error-line {
+    background-color: fade(@ladb-brand-danger, 15%);
+  }
+
+}
+
+.ladb-hardware-editor-errors {
+  flex: 0 0 auto;
+
+  .alert {
+    margin: 10px;
+    max-height: 150px;
+    overflow-y: auto;
+
+    ul {
+      margin: 0;
+      padding-left: 15px;
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-empty {
+  padding: @ladb-gutter;
+  text-align: center;
+  color: @ladb-global-light-color;
+
+  code {
+    white-space: nowrap;
+  }
+
+}
+
+// File
+
+.ladb-hardware-editor-file-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 10px 0;
+  min-width: 0;
+
+  label {
+    flex: 0 0 auto;
+    min-width: 50px;
+    margin: 0 5px 0 0;
+  }
+
+  div.ladb-textinput {
+    flex: 1 1 auto;
+    min-width: 80px;
+  }
+
+  input.form-control {
+    width: 100%;
+    font-family: monospace;
+  }
+
+  &.ladb-hardware-editor-name-bar input.form-control {
+    font-family: inherit;
+  }
+
+}
+
+.ladb-hardware-editor-file-dir, .ladb-hardware-editor-file-ext {
+  font-family: monospace;
+  font-size: 12px;
+  color: @ladb-global-light-color;
+  white-space: nowrap;
+}
+
+.ladb-hardware-editor-file-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;   // The end of the path shows
+  text-align: left;
+}
+
+.ladb-hardware-editor-file-extends {
+  padding: 3px 10px 0;
+  font-size: 12px;
+
+  i {
+    font-size: 120%;
+  }
+
+}
+
+.ladb-hardware-editor-file-extends-name {
+  font-family: monospace;
+  color: @ladb-global-light-color;
+}
+
+.ladb-hardware-editor-file-renamed {
+  padding: 3px 10px 0;
+  font-size: 11px;
+}
+
+.ladb-hardware-editor-readonly, .ladb-hardware-editor-abstract {
+  margin: 8px 10px 0;
+  padding: 6px 10px;
+}
+
+// Settings
+
+.ladb-hardware-editor-settings {
+
+  .ladb-hardware-editor-settings-title {
+    margin: 0 0 10px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #ccc;
+    color: @ladb-global-light-color;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+
+    &:not(:first-child) {
+      margin-top: 20px;
+    }
+
+  }
+
+  .ladb-hardware-editor-settings-help {
+    margin: -4px 0 10px;
+    font-size: 12px;
+  }
+
+  .ladb-hardware-editor-tool-options {
+    display: flex;
+    gap: 8px;
+
+    .ladb-hardware-editor-tool-option {
+      flex: 1 1 0;
+      min-width: 0;
+
+      .ladb-hardware-editor-tool-option-field {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .help-block {
+        margin: 2px 0 0;
+        font-size: 11px;
+      }
+
+    }
+
+  }
+
+}
+
+// Parts
+
+.ladb-hardware-editor-slot {
+  border: 1px solid #ccc;
+
+  & + & {
+    margin-top: 12px;
+  }
+
+  > .ladb-hardware-editor-slot-head .ladb-hardware-editor-primitive-caret {
+    transform: rotate(90deg);
+  }
+
+  // Folded : its head only
+  &.ladb-hardware-editor-slot-closed {
+
+    > :not(.ladb-hardware-editor-slot-head) {
+      display: none;
+    }
+
+    > .ladb-hardware-editor-slot-head {
+      border-bottom: none;
+      border-radius: 4px;
+
+      .ladb-hardware-editor-primitive-caret {
+        transform: none;
+      }
+
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-slot-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 10px;
+  background-color: #f9f9f9;
+  border-bottom: 1px solid #ccc;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+}
+
+.ladb-hardware-editor-slot-letter {
+  padding: 1px 7px;
+  border-radius: 3px;
+  background-color: @ladb-brand-dark;
+  color: #fff;
+  font-weight: bold;
+  font-size: 12px;
+}
+
+.ladb-hardware-editor-slot-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+.ladb-hardware-editor-slot-note {
+  padding: 8px 10px;
+  color: @ladb-global-light-color;
+  font-size: 12px;
+}
+
+.ladb-hardware-editor-part {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;   // Its label, its controls, where they come from - see "extends"
+  gap: 6px 10px;
+  align-items: start;
+  padding: 9px 10px;
+
+  & + & {
+    border-top: 1px solid #eee;
+  }
+
+  > .control-label {
+    padding-top: 5px;
+    font-size: 12px;
+  }
+
+}
+
+.ladb-hardware-editor-part-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+// The slots a part can be the same as : checked, not pressed - set apart after its add buttons
+.ladb-hardware-editor-part-link {
+
+  &.active {
+    background-color: #fff;
+    box-shadow: none;
+  }
+
+  .ladb-hardware-editor-add-buttons > :not(.ladb-hardware-editor-part-link) + & {
+    margin-left: 6px;
+  }
+
+}
+
+// Kinematics of a hinge
+
+.ladb-hardware-editor-slot-subtitle {
+  padding: 9px 10px 0;
+  border-top: 1px solid #eee;
+  color: @ladb-global-light-color;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+
+  + .ladb-hardware-editor-slot-note {
+    padding-top: 2px;
+  }
+
+}
+
+.ladb-hardware-editor-hinge-pivot {
+  display: flex;
+  gap: 8px;
+
+  .ladb-hardware-editor-hinge-pivot-coord {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+}
+
+.ladb-hardware-editor-part-body {
+
+  .help-block {
+    margin: 2px 0 0;
+    font-size: 11px;
+  }
+
+  .checkbox {
+    margin: 5px 0 0;
+    font-size: 12px;
+  }
+
+}
+
+.ladb-hardware-editor-part-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+
+  // The "+ ..." add buttons sit on the right
+  &.ladb-hardware-editor-add-buttons {
+    justify-content: flex-end;
+  }
+
+}
+
+.ladb-hardware-editor-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  justify-content: space-between;
+
+  code {
+    font-size: 11px;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+}
+
+.ladb-hardware-editor-placement {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 8px;
+  border: 1px solid #ccc;
+  background-color: #f9f9f9;
+  font-size: 12px;
+}
+
+.ladb-hardware-editor-placement-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  strong {
+    flex: 1 1 auto;
+  }
+
+  i {
+    color: @ladb-global-light-color;
+    cursor: help;
+  }
+
+}
+
+.ladb-hardware-editor-placement-triad {
+  flex: none;
+
+  line {
+    stroke-width: 2.4;
+    stroke-linecap: round;
+  }
+
+  circle {
+    fill: @ladb-global-light-color;
+  }
+
+}
+
+// The axis colors : X red, Y green, Z blue
+.ladb-hardware-editor-placement-x { --ladb-axis-color: @ladb-axis-x-color; --ladb-axis-soft-color: fade(@ladb-axis-x-color, 12%); stroke: @ladb-axis-x-color; }
+.ladb-hardware-editor-placement-y { --ladb-axis-color: @ladb-axis-y-color; --ladb-axis-soft-color: fade(@ladb-axis-y-color, 12%); stroke: @ladb-axis-y-color; }
+.ladb-hardware-editor-placement-z { --ladb-axis-color: @ladb-axis-z-color; --ladb-axis-soft-color: fade(@ladb-axis-z-color, 12%); stroke: @ladb-axis-z-color; }
+
+// A label column, then one column per axis
+.ladb-hardware-editor-placement-grid {
+  display: grid;
+  grid-template-columns: 60px repeat(3, minmax(0, 1fr));
+  gap: 5px 6px;
+  align-items: center;
+}
+
+.ladb-hardware-editor-placement-label {
+  color: @ladb-global-light-color;
+  font-size: 11px;
+}
+
+.ladb-hardware-editor-placement-axis {
+  padding: 1px 0;
+  background-color: var(--ladb-axis-color);
+  color: #fff;
+  font-size: 11px;
+  font-weight: bold;
+  text-align: center;
+}
+
+.ladb-hardware-editor-placement-cell {
+  display: flex;
+  min-width: 0;
+  height: 26px;
+  border: 1px solid #ccc;
+  border-left: 3px solid var(--ladb-axis-color);
+  background-color: @ladb-global-bg;
+  overflow: hidden;
+
+  &:focus-within {
+    border-color: var(--ladb-axis-color);
+  }
+
+  > button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    & + button {
+      border-left: 1px solid #ccc;
+    }
+
+    &:hover {
+      background-color: var(--ladb-axis-soft-color);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--ladb-axis-color);
+      outline-offset: -2px;
+    }
+
+  }
+
+  div.ladb-textinput {
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: center;
+    border: 0;
+
+    &:focus-within {
+      box-shadow: none;
+    }
+
+    > .ladb-textinput-input > input.form-control {
+      height: 24px;
+      padding: 2px 4px;
+      text-align: right;
+    }
+
+    > .ladb-textinput-tools {
+      display: flex;
+      align-items: center;
+      align-self: stretch;
+      line-height: 1.6;
+
+      &.ladb-textinput-tools-right .ladb-textinput-tool {
+        margin-right: 0;
+      }
+
+    }
+
+  }
+
+}
+
+// On the Transform button : the part is laid
+.ladb-hardware-editor-placement-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background-color: @ladb-brand-warning;
+  vertical-align: 1px;
+}
+
+// Primitives of a part : one row each, the open one edited in place
+
+.ladb-hardware-editor-primitives {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.ladb-hardware-editor-primitive-list {
+  border: 1px solid #ccc;
+  background-color: #fff;
+}
+
+.ladb-hardware-editor-primitive {
+
+  & + & {
+    border-top: 1px solid #ccc;
+  }
+
+  &.ladb-hardware-editor-primitive-open > .ladb-hardware-editor-primitive-head {
+    background-color: #f5f5f5;
+
+    .ladb-hardware-editor-primitive-caret {
+      transform: rotate(90deg);
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-primitive-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 4px 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover {
+    background-color: #f5f5f5;
+  }
+
+}
+
+// The row of an empty part : as high as a closed one - its xs button - inert
+.ladb-hardware-editor-primitive-none {
+  min-height: 28px;
+  color: @ladb-global-light-color;
+  cursor: default;
+  padding-left: 10px;
+
+  &:hover {
+    background-color: transparent;
+  }
+
+}
+
+.ladb-hardware-editor-primitive-caret {
+  flex: none;
+  width: 9px;
+  color: @ladb-global-light-color;
+  font-size: 10px;
+  transition: transform .12s;
+}
+
+// In the color of its part on the bench
+.ladb-hardware-editor-primitive-icon {
+  display: inline-flex;
+  flex: none;
+  vertical-align: -3px;
+
+  &.ladb-hardware-editor-primitive-hardware { color: #8c8c8c; }
+  &.ladb-hardware-editor-primitive-machining { color: #2e7fd9; }
+
+}
+
+.ladb-hardware-editor-primitive-name {
+  flex: none;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.ladb-hardware-editor-primitive-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: @ladb-global-light-color;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ladb-hardware-editor-primitive-errors {
+  flex: none;
+  color: @ladb-brand-danger;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ladb-hardware-editor-primitive-tools {
+  display: flex;
+  flex: none;
+
+  > .btn {
+    border-color: transparent;
+    background: transparent;
+    color: @ladb-global-light-color;
+
+    &:hover:not([disabled]) {
+      border-color: #ccc;
+      background-color: @ladb-global-bg;
+      color: @ladb-global-color;
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-primitive-editor {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 6px 8px;
+  align-items: center;
+  padding: 8px 8px 8px 10px;
+  border-top: 1px dashed #ccc;
+  background-color: #f9f9f9;
+
+  // What its lengths can use : shown while one is typed - not when a button has the focus
+  &.ladb-hardware-editor-primitive-typing > .ladb-hardware-editor-primitive-names {
+    display: flex;
+  }
+
+}
+
+.ladb-hardware-editor-primitive-label {
+  color: @ladb-global-light-color;
+  font-size: 11px;
+}
+
+.ladb-hardware-editor-primitive-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+// A point of a prism's outline : its two lengths, the radius of its
+// rounding narrower, then its delete button
+.ladb-hardware-editor-primitive-point {
+  display: flex;
+  align-items: center;
+
+  > * {
+    flex: 3 1 0;
+    min-width: 0;
+  }
+
+  > :nth-child(3) {
+    flex-grow: 2;
+  }
+
+  > .btn {
+    flex: none;
+  }
+
+}
+
+// Through : a checkbox beside the depth
+.ladb-hardware-editor-primitive-through {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  font-size: 12px;
+}
+
+.ladb-hardware-editor-primitive-segments {
+  display: flex;
+  grid-column: ~"1 / -1";
+  justify-self: start;
+}
+
+.ladb-hardware-editor-primitive-cell {
+  align-items: center;
+
+  &.ladb-hardware-editor-primitive-neutral {
+    --ladb-axis-color: #ccc;
+
+    &:focus-within {
+      border-color: #66afe9;
+    }
+
+  }
+
+  // Greyed, without value - a through depth
+  &.ladb-hardware-editor-primitive-disabled {
+    background-color: #eee;
+  }
+
+  &.ladb-hardware-editor-primitive-invalid,
+  &.ladb-hardware-editor-primitive-invalid:focus-within {   // Over the focus border of a neutral one
+    border-color: @ladb-brand-danger;
+    background-color: fade(@ladb-brand-danger, 8%);
+  }
+
+  > input.form-control {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 24px;
+    padding: 2px 4px;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+    text-align: right;
+  }
+
+  // A plain text value - a name - reads from the left
+  &.ladb-hardware-editor-primitive-text > input.form-control {
+    text-align: left;
+  }
+
+}
+
+// An axis segment : its letter in the axis color
+.ladb-hardware-editor-primitive-axis {
+  color: var(--ladb-axis-color);
+  font-weight: bold;
+}
+
+.ladb-hardware-editor-primitive-tag {
+  flex: none;
+  padding-left: 5px;
+  color: var(--ladb-axis-color);
+  font-size: 10px;
+  font-weight: bold;
+}
+
+.ladb-hardware-editor-primitive-neutral .ladb-hardware-editor-primitive-tag {
+  color: @ladb-global-light-color;
+}
+
+// Its value on the bench, when it is an expression
+.ladb-hardware-editor-primitive-value {
+  flex: none;
+  padding: 0 2px 0 2px;
+  color: @ladb-global-light-color;
+  font-size: 11px;
+  white-space: nowrap;
+
+  .ladb-hardware-editor-primitive-invalid & {
+    color: @ladb-brand-danger;
+  }
+
+}
+
+.ladb-hardware-editor-primitive-separator {
+  grid-column: ~"1 / -1";
+  border-top: 1px solid #ccc;
+  margin: 5px 0;
+}
+
+.ladb-hardware-editor-primitive-names {
+  display: none;
+  grid-column: ~"1 / -1";
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  color: @ladb-global-light-color;
+  font-size: 11px;
+
+  // On its own line, the chips below
+  > .ladb-hardware-editor-primitive-names-title {
+    flex-basis: 100%;
+  }
+
+  > .btn {
+    padding: 0 7px;
+    border-radius: 10px;
+    font-size: 11px;
+
+    em {
+      color: @ladb-global-light-color;
+      font-style: normal;
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-primitive-error {
+  grid-column: ~"1 / -1";
+  color: @ladb-brand-danger;
+  font-size: 11px;
+}
+
+// Shaping - a part edited in SketchUp : the editor waits, small
+
+.ladb-hardware-editor-shaping-panel {
+  display: none;
+  flex: 1 1 auto;
+  flex-direction: column;
+  padding: 10px 15px;
+
+  .ladb-hardware-editor-shaping-name {
+    font-weight: bold;
+  }
+
+  .ladb-hardware-editor-shaping-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 5px;
+    margin-top: auto;
+  }
+}
+
+.modal.ladb-hardware-editor-shaping {
+  .ladb-hardware-editor-bench,
+  .ladb-hardware-editor-editor,
+  .modal-footer {
+    display: none;
+  }
+  .ladb-hardware-editor-shaping-panel {
+    display: flex;
+  }
+}
+
+// Inherited from the parent - see "extends" : greyed, but for its icon
+.ladb-hardware-editor-inherited > :not(.ladb-hardware-editor-inheritance-icon):not(.ladb-hardware-editor-inheritance-cell) {
+  opacity: 0.5;
+}
+.ladb-hardware-editor-inheritance-icon {
+  color: @ladb-global-light-color;
+  font-size: 12px;
+  line-height: 1;
+  a& {
+    cursor: pointer;
+    &:hover,
+    &:focus {
+      color: @ladb-brand-primary;
+      text-decoration: none;
+    }
+  }
+}
+.ladb-hardware-editor-part > .ladb-hardware-editor-inheritance-icon {
+  padding-top: 7px;
+}
+// An inherited hardware part : greyed but for the info of its articles,
+// overridden one by one
+.ladb-hardware-editor-part.ladb-hardware-editor-inherited > .ladb-hardware-editor-part-body.ladb-hardware-editor-part-body-own-info {
+  opacity: 1;
+  .ladb-hardware-editor-primitive-head,
+  .ladb-hardware-editor-part-buttons,
+  .ladb-hardware-editor-article-editor > :not(.ladb-hardware-editor-inheritance-own) {
+    opacity: 0.5;
+  }
+}
+.ladb-hardware-editor-article-editor > .ladb-hardware-editor-primitive-fields > .ladb-hardware-editor-inheritance-icon {
+  flex: none;
+}
+.ladb-hardware-editor-slot-note.ladb-hardware-editor-inheritance-row {
+  display: flex;
+  gap: 10px;
+  > span {
+    flex: 1;
+  }
+}
+.ladb-hardware-editor-settings .ladb-hardware-editor-inheritance-cell {
+  padding-top: 9px;
+  padding-left: 0;
+}
+.ladb-hardware-editor-inheritance {
+  margin: 0 0 10px;
+  font-size: 12px;
+  .ladb-hardware-editor-inherited-sample {
+    opacity: 0.5;
+    font-style: italic;
+  }
+}
+
+// Articles /////
+
+.ladb-hardware-editor-article-editor {
+
+  // Its rows : their fields side by side, a button at the end
+  > .ladb-hardware-editor-primitive-fields {
+    display: flex;
+    align-items: center;
+
+    > * {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+
+    > .btn,
+    > .btn-group {
+      flex: none;
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-article-wide {
+  grid-column: ~"1 / -1";
+}
+
+.ladb-hardware-editor-article-key {
+
+  .help-block {
+    margin: 0;
+    font-size: 11px;
+
+    &:not(:empty) {
+      margin-top: 2px;
+    }
+
+  }
+
+}
+
+.ladb-hardware-editor-article-chip {
+  flex: none;
+}
+
+// A setting of the connector overridden for this use only
+.ladb-hardware-editor-article-overridden.ladb-hardware-editor-primitive-cell {
+  border-color: #8e5bd0;
+  background-color: fade(#8e5bd0, 6%);
+}
+
+.ladb-hardware-editor-article-setting-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ladb-hardware-editor-article-assert {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+
+  // In the color of its state, not Bootstrap's
+  code {
+    padding: 0;
+    color: inherit;
+    background: none;
+    font-size: 11px;
+  }
+
+}
+
+.ladb-hardware-editor-article-assert-state {
+  flex: none;
+}
+
+.ladb-hardware-editor-article-assert-values {
+  color: @ladb-global-light-color;
+}
+
+// The connectors library, browsed for an article
+.ladb-hardware-editor-library {
+  grid-column: ~"1 / -1";
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  background-color: #fff;
+  font-size: 12px;
+}
+
+.ladb-hardware-editor-library-path {
+  padding: 4px 8px;
+  border-bottom: 1px solid #eee;
+  color: @ladb-global-light-color;
+}
+
+.ladb-hardware-editor-library-items {
+  display: flex;
+  flex-direction: column;
+  max-height: 180px;
+  padding: 2px 0;
+  overflow-y: auto;
+
+  > a {
+    padding: 2px 8px;
+    color: @ladb-global-color;
+
+    &:hover {
+      background-color: #f5f5f5;
+      text-decoration: none;
+    }
+
+  }
+
+  > .ladb-hardware-editor-empty {
+    padding: 4px 8px;
+  }
+
+}

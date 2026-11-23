@@ -1,12 +1,22 @@
 module Ladb::OpenCutList
 
+  require_relative '../helper/layer0_caching_helper'
+
   class Manipulator
 
-    attr_reader :transformation
+    include Layer0CachingHelper
 
-    def initialize(transformation = IDENTITY)
+    attr_reader :transformation,
+                :material,
+                :layer
+
+    def initialize(transformation = IDENTITY, material = nil, layer = nil)
       raise "transformation must be a Geom::Transformation." unless transformation.is_a?(Geom::Transformation)
       @transformation = transformation
+      raise "material must be a Sketchup::Material." unless material.nil? || material.is_a?(Sketchup::Material)
+      @material = material
+      raise "layer must be a Sketchup::Layer." unless layer.nil? || layer.is_a?(Sketchup::Layer)
+      @layer = layer
     end
 
     # -----
@@ -25,19 +35,29 @@ module Ladb::OpenCutList
 
     def flipped?
       @flipped ||= TransformationUtils.flipped?(@transformation)
-      @flipped
     end
 
     def skewed?
       @skewed ||= TransformationUtils.skewed?(@transformation)
-      @skewed
     end
 
     # -----
 
     def ==(other)
       return false unless other.is_a?(Manipulator)
-      (@transformation * other.transformation.inverse).identity?
+      TransformationUtils.equal?(@transformation, other.transformation)
+    end
+
+    # -----
+
+    protected
+
+    def _combine_material(material, parent_material)
+      material || parent_material
+    end
+
+    def _combine_layer(layer, parent_layer)
+      layer == cached_layer0 ? parent_layer : layer
     end
 
   end

@@ -2,6 +2,7 @@ module Ladb::OpenCutList
 
   require_relative '../../helper/layer0_caching_helper'
   require_relative '../../model/attributes/definition_attributes'
+  require_relative '../../model/attributes/instance_attributes'
 
   class OutlinerUpdateWorker
 
@@ -12,10 +13,17 @@ module Ladb::OpenCutList
       :name,
       :layer_name,
       :material_name,
+      :is_grain_group,
       :definition_name,
       :description,
       :url,
-      :tags
+      :tags,
+      :is2d,
+      :snapto,
+      :cuts_opening,
+      :always_face_camera,
+      :shadows_face_sun,
+      :no_scale_mask,
     )
 
     def initialize(outliner_def,
@@ -34,10 +42,17 @@ module Ladb::OpenCutList
           fn_sanitize_string.call(node_data.fetch('name')),
           fn_sanitize_string.call(node_data.fetch('layer_name', nil)),
           fn_sanitize_string.call(node_data.fetch('material_name', nil)),
+          node_data.fetch('is_grain_group', false),
           fn_sanitize_string.call(node_data.fetch('definition_name', nil)),
           fn_sanitize_string.call(node_data.fetch('description', nil)),
           fn_sanitize_string.call(node_data.fetch('url', nil)),
           DefinitionAttributes.valid_tags(node_data.fetch('tags', nil)),
+          node_data.fetch('is2d', nil),
+          node_data.fetch('snapto', nil).to_i,
+          node_data.fetch('cuts_opening', false),
+          node_data.fetch('always_face_camera', false),
+          node_data.fetch('shadows_face_sun', false),
+          node_data.fetch('no_scale_mask', []).each_with_index.map { |v, i| v ? (1 << i) : 0 }.reduce(0, :+), # .reduce(0, :+) == .sum for Ruby < 2.4
         )
       }
 
@@ -53,6 +68,7 @@ module Ladb::OpenCutList
 
       # Start a model modification operation
       model.start_operation('OCL Outliner Update', true, false, true)
+
 
       @nodes_data.each do |node_data|
 
@@ -74,6 +90,12 @@ module Ladb::OpenCutList
               entity.material = material
             end
           end
+        end
+
+        instance_attributes = InstanceAttributes.new(entity)
+        if node_data.is_grain_group != instance_attributes.is_grain_group
+          instance_attributes.is_grain_group = node_data.is_grain_group
+          instance_attributes.write_to_attributes
         end
 
         if entity.is_a?(Sketchup::ComponentInstance) && node_data.definition_name.is_a?(String) && node_data.definition_name != entity.definition.name
@@ -99,15 +121,45 @@ module Ladb::OpenCutList
 
         if entity.is_a?(Sketchup::Drawingelement) && node_data.layer_name.is_a?(String) && node_data.layer_name != entity.layer.name
           node_data.layer_name.strip!
-          if node_data.layer_name.empty?
-            entity.layer = cached_layer0
-          else
-            layer = model.layers[node_data.layer_name]
-            if layer.nil?
-              layer = model.layers.add(node_data.layer_name)
+          unless node_data.layer_name.empty? && entity.layer == cached_layer0
+            if node_data.layer_name.empty?
+              entity.layer = cached_layer0
+            else
+              layer = model.layers[node_data.layer_name]
+              if layer.nil?
+                layer = model.layers.add(node_data.layer_name)
+              end
+              entity.layer = layer
             end
-            entity.layer = layer
           end
+        end
+
+        if entity.respond_to?(:definition) &&
+           (
+             node_data.is2d != entity.definition.behavior.is2d? ||
+             node_data.snapto != entity.definition.behavior.snapto ||
+             node_data.cuts_opening != entity.definition.behavior.cuts_opening? ||
+             node_data.always_face_camera != entity.definition.behavior.always_face_camera? ||
+             node_data.shadows_face_sun != entity.definition.behavior.shadows_face_sun?
+           )
+          entity.definition.behavior.is2d = node_data.is2d
+          entity.definition.behavior.snapto = node_data.snapto
+          entity.definition.behavior.cuts_opening = node_data.cuts_opening
+          entity.definition.behavior.always_face_camera = node_data.always_face_camera
+          entity.definition.behavior.shadows_face_sun = node_data.shadows_face_sun
+        end
+
+        if entity.respond_to?(:definition) &&
+           (
+             node_data.no_scale_mask != entity.definition.behavior.no_scale_mask?
+           )
+
+          # Workaround for triggering the behavior modified event
+          entity.definition.behavior.is2d = !entity.definition.behavior.is2d?
+          entity.definition.behavior.is2d = !entity.definition.behavior.is2d?
+          # Workaround for triggering the behavior modified event
+
+          entity.definition.behavior.no_scale_mask = node_data.no_scale_mask
         end
 
       end

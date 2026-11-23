@@ -6,9 +6,9 @@ module Ladb::OpenCutList
 
     attr_reader :cline
 
-    def initialize(cline, transformation = IDENTITY)
-      super([ cline.position, cline.direction ], transformation)
+    def initialize(cline, transformation = IDENTITY, material = nil, layer = nil)
       raise "cline must be a Sketchup::ConstructionLine." unless cline.is_a?(Sketchup::ConstructionLine)
+      super([ cline.position, cline.direction ], transformation, _combine_material(cline.material, material), _combine_layer(cline.layer, layer))
       @cline = cline
     end
 
@@ -22,29 +22,28 @@ module Ladb::OpenCutList
       @third_points = nil
       @points = nil
     end
-    
+
     # -----
 
     def infinite?
       @cline.start.nil?
     end
 
+    # -----
+
     def start_point
       return nil if infinite?
       @start_point ||= @cline.start.transform(@transformation)
-      @start_point
     end
 
     def end_point
       return nil if infinite?
       @end_point ||= @cline.end.transform(@transformation)
-      @end_point
     end
 
     def middle_point
       return nil if infinite?
       @middle_point ||= Geom::linear_combination(0.5, start_point, 0.5, end_point)
-      @middle_point
     end
 
     def third_points
@@ -53,15 +52,12 @@ module Ladb::OpenCutList
         Geom::linear_combination(1 / 3.0, start_point, 2 / 3.0, end_point),
         Geom::linear_combination(2 / 3.0, start_point, 1 / 3.0, end_point),
       ]
-      @third_points
     end
 
     def points
       return nil if infinite?
       @points ||= [ start_point, end_point ]
-      @points
     end
-
     alias_method :segment, :points
 
     def length

@@ -4,10 +4,10 @@
 // ======================
 
 const DOCS_URL = 'https://www.lairdubois.fr/opencutlist/docs';
-const DOCS_DEV_URL = 'https://www.lairdubois.fr/opencutlist/docs-dev';
+const DOCS_LAB_URL = 'https://www.lairdubois.fr/opencutlist/docs-lab';
 
 const CHANGELOG_URL = 'https://www.lairdubois.fr/opencutlist/changelog';
-const CHANGELOG_DEV_URL = 'https://www.lairdubois.fr/opencutlist/changelog-dev';
+const CHANGELOG_LAB_URL = 'https://www.lairdubois.fr/opencutlist/changelog-lab';
 
 function LadbAbstractDialog(element, options) {
     this.options = options;
@@ -17,7 +17,7 @@ function LadbAbstractDialog(element, options) {
         version: options.version,
         build: options.build,
         is_rbz: options.is_rbz,
-        is_dev: options.is_dev,
+        is_lab: options.is_lab,
         sketchup_is_pro: options.sketchup_is_pro,
         sketchup_version: options.sketchup_version,
         sketchup_version_number: options.sketchup_version_number,
@@ -25,6 +25,7 @@ function LadbAbstractDialog(element, options) {
         chrome_version: options.chrome_version,
         platform_name: options.platform_name,
         is_64bit: options.is_64bit,
+        dialog_transport: options.dialog_transport,
         user_agent: window.navigator.userAgent,
         locale: options.locale,
         language: options.language,
@@ -235,20 +236,21 @@ LadbAbstractDialog.prototype.appendModal = function (id, twigFile, renderParams)
 
     // Bind modal
     this._$modal
-        .on('hidden.bs.modal', function () {
-            $(this)
-                .data('bs.modal', null)
-                .remove();
-            that._$modal = null;
+        .on('shown.bs.modal', function () {
             $('input[autofocus]', that._$modal).first().focus();
             that.setupTooltips(that._$modal);
             that.setupPopovers(that._$modal);
         })
         .on('hidden.bs.modal', function () {
+            $('select', that._$modal)
+                .selectpicker('destroy');
+            $(this)
+                .data('bs.modal', null)
+                .remove();
+            that._$modal = null;
             that.hideTooltips();
             that.hidePopovers();
         })
-
     ;
 
     // Append modal
@@ -329,7 +331,8 @@ LadbAbstractDialog.prototype.prompt = function (title, text, value, callback, op
     });
 
     options = $.extend({
-        emptyValueAllowed: false
+        emptyValueAllowed: false,
+        selected: false
     }, options);
 
     // Fetch UI elements
@@ -365,7 +368,12 @@ LadbAbstractDialog.prototype.prompt = function (title, text, value, callback, op
 
     // Bring focus to input
     $input.focus();
-    $input[0].selectionStart = $input[0].selectionEnd = $input.val().trim().length;
+    if (options.selected) {
+        $input[0].selectionStart = 0;
+        $input[0].selectionEnd = $input.val().trim().length;
+    } else {
+        $input[0].selectionStart = $input[0].selectionEnd = $input.val().trim().length;
+    }
 
 };
 
@@ -546,14 +554,14 @@ LadbAbstractDialog.prototype.appendOclMetasToUrlQueryParams = function (url, par
 
 LadbAbstractDialog.prototype.getDocsPageUrl = function (page) {
     return this.appendOclMetasToUrlQueryParams(
-        this.capabilities.is_dev ? DOCS_DEV_URL : DOCS_URL,
+        this.capabilities.is_lab ? DOCS_LAB_URL : DOCS_URL,
         (page && (typeof page  === "string")) ? { page: page } : null
     );
 }
 
 LadbAbstractDialog.prototype.getChangelogUrl = function () {
     return this.appendOclMetasToUrlQueryParams(
-        this.capabilities.is_dev ? CHANGELOG_DEV_URL : CHANGELOG_URL
+        this.capabilities.is_lab ? CHANGELOG_LAB_URL : CHANGELOG_URL
     );
 }
 
@@ -722,13 +730,34 @@ LadbAbstractDialog.prototype.init = function () {
             maximumFractionDigits: 0
         });
     });
+    // Remote HTML (OpenCollective, news) : every link opens outside the dialog
+    // DOMPurify is only bundled in the tabs dialog (the modal dialog never renders remote HTML)
+    const hasPurify = typeof DOMPurify !== 'undefined';
+    if (hasPurify) {
+        DOMPurify.addHook('afterSanitizeAttributes', function (node) {
+            if (node.tagName === 'A' && node.hasAttribute('href')) {
+                node.setAttribute('target', '_blank');
+            }
+        });
+    }
     Twig.extendFilter('sanitize_links', function (value, options) {
-        // Remove OpenCollective redirections
+        if (value === null || value === undefined) {
+            return '';
+        }
+        value = String(value);  // '|raw' passes a Twig.Markup (String object), not a primitive string
+        if (!hasPurify) {
+            return $('<div>').text(value).html();   // No sanitizer : render as plain text
+        }
+        // Remove OpenCollective redirections (the decoded URL is checked by DOMPurify below)
         value = value.replace(/<a href="https:\/\/opencollective.com\/redirect\?url=([^"']+)">/gm, (match, urlEncoded) => {
             return '<a href="' + decodeURIComponent(urlEncoded) + '">';
         });
-        // Add _blank target
-        return value.replace(/<a\s+(?:[^>]*?\s+)?href=(["'])(.*?)\1>/gm, '<a href="$2" target="_blank">');
+        // Remote HTML is untrusted : keep the formatting, drop scripts, event handlers and non http(s)/mailto URLs
+        return DOMPurify.sanitize(value, {
+            ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#)/i,
+            ADD_ATTR: [ 'target' ],
+            FORBID_TAGS: [ 'style', 'form', 'input', 'button', 'textarea', 'select' ],
+        });
     });
     Twig.extendFilter('type_of', function (value) {
         return typeof value;

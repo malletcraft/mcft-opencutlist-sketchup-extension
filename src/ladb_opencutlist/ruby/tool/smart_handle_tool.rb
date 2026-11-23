@@ -8,9 +8,11 @@ module Ladb::OpenCutList
   require_relative '../manipulator/face_manipulator'
   require_relative '../manipulator/plane_manipulator'
   require_relative '../manipulator/cline_manipulator'
-  require_relative '../helper/entities_helper'
   require_relative '../helper/user_text_helper'
   require_relative '../worker/common/common_drawing_decomposition_worker'
+  require_relative '../utils/component_utils'
+  require_relative '../model/door/door_def'
+  require_relative '../helper/smart_action_handler_door_helper'
 
   class SmartHandleTool < SmartTool
 
@@ -19,19 +21,15 @@ module Ladb::OpenCutList
     ACTION_COPY_GRID = 2
     ACTION_MOVE_LINE = 3
     ACTION_DISTRIBUTE = 4
+    ACTION_INTERACT = 5
 
     ACTION_OPTION_COPY_MEASURE_TYPE = 'copy_measure_type'
-    ACTION_OPTION_MOVE_MEASURE_TYPE = 'move_measure_type'
     ACTION_OPTION_AXES = 'axes'
     ACTION_OPTION_OPTIONS = 'options'
 
     ACTION_OPTION_COPY_MEASURE_TYPE_OUTSIDE = 'outside'
     ACTION_OPTION_COPY_MEASURE_TYPE_CENTERED = 'centered'
     ACTION_OPTION_COPY_MEASURE_TYPE_INSIDE = 'inside'
-
-    ACTION_OPTION_MOVE_MEASURE_TYPE_OUTSIDE = 'outside'
-    ACTION_OPTION_MOVE_MEASURE_TYPE_CENTERED = 'centered'
-    ACTION_OPTION_MOVE_MEASURE_TYPE_INSIDE = 'inside'
 
     ACTION_OPTION_AXES_ACTIVE = 'active'
     ACTION_OPTION_AXES_CONTEXT = 'context'
@@ -62,41 +60,36 @@ module Ladb::OpenCutList
       {
         :action => ACTION_MOVE_LINE,
         :options => {
-          ACTION_OPTION_MOVE_MEASURE_TYPE => [ ACTION_OPTION_MOVE_MEASURE_TYPE_OUTSIDE, ACTION_OPTION_MOVE_MEASURE_TYPE_CENTERED, ACTION_OPTION_MOVE_MEASURE_TYPE_INSIDE ],
           ACTION_OPTION_AXES => [ ACTION_OPTION_AXES_ACTIVE, ACTION_OPTION_AXES_CONTEXT, ACTION_OPTION_AXES_ENTITY ]
         }
       },
       {
         :action => ACTION_DISTRIBUTE,
         :options => {
+          ACTION_OPTION_COPY_MEASURE_TYPE => [ ACTION_OPTION_COPY_MEASURE_TYPE_CENTERED, ACTION_OPTION_COPY_MEASURE_TYPE_INSIDE ],
           ACTION_OPTION_AXES => [ ACTION_OPTION_AXES_ACTIVE, ACTION_OPTION_AXES_CONTEXT, ACTION_OPTION_AXES_ENTITY ]
         }
       }
     ].freeze
 
+    if Sketchup.debug_mode?
+      ACTIONS += [
+        {
+          :action => ACTION_INTERACT,
+        }
+      ]
+    end
+
     # -----
 
-    attr_reader :callback_action_handler,
-                :cursor_select, :cursor_select_part, :cursor_select_part_plus, :cursor_select_rect, :cursor_select_copy_line, :cursor_select_copy_grid, :cursor_select_move_line, :cursor_select_distribute, :cursor_move, :cursor_move_copy, :cursor_pin_1, :cursor_pin_2
+    attr_reader :callback_action_handler
+    attr_accessor :startup_selection
 
-    def initialize(current_action: nil, callback_action_handler: nil)
+    def initialize(current_action: nil, callback_action_handler: nil, startup_selection: nil)
       super(current_action: current_action)
 
       @callback_action_handler = callback_action_handler
-
-      # Create cursors
-      @cursor_select = create_cursor('select', 0, 0)
-      @cursor_select_part = create_cursor('select-part', 0, 0)
-      @cursor_select_part_plus = create_cursor('select-part-plus', 0, 0)
-      @cursor_select_rect = create_cursor('select-rect', 0, 0)
-      @cursor_select_copy_line = create_cursor('select-copy-line', 0, 0)
-      @cursor_select_copy_grid = create_cursor('select-copy-grid', 0, 0)
-      @cursor_select_move_line = create_cursor('select-move-line', 0, 0)
-      @cursor_select_distribute = create_cursor('select-distribute', 0, 0)
-      @cursor_move = create_cursor('move', 16, 16)
-      @cursor_move_copy = create_cursor('move-copy', 16, 16)
-      @cursor_pin_1 = create_cursor('pin-1', 11, 31)
-      @cursor_pin_2 = create_cursor('pin-2', 11, 31)
+      @startup_selection = startup_selection
 
     end
 
@@ -114,7 +107,9 @@ module Ladb::OpenCutList
 
       case action
       when ACTION_COPY_LINE, ACTION_COPY_GRID, ACTION_MOVE_LINE, ACTION_DISTRIBUTE
-          return @cursor_select
+          return SmartCursorManager.cursor_select
+      when ACTION_INTERACT
+          return SmartCursorManager.cursor_hand
       end
 
       super
@@ -122,6 +117,23 @@ module Ladb::OpenCutList
 
     def get_action_options_modal?(action)
       false
+    end
+
+    def get_action_option_sync_actions(action, option_group, option)
+
+      case option_group
+      when ACTION_OPTION_COPY_MEASURE_TYPE
+        return [ ACTION_COPY_LINE, ACTION_COPY_GRID ] unless action == ACTION_DISTRIBUTE
+      when ACTION_OPTION_AXES
+        return [ ACTION_COPY_LINE, ACTION_COPY_GRID, ACTION_MOVE_LINE, ACTION_DISTRIBUTE ]
+      when ACTION_OPTION_OPTIONS
+        case option
+        when ACTION_OPTION_OPTIONS_MIRROR
+          return [ ACTION_COPY_LINE, ACTION_COPY_GRID ]
+        end
+      end
+
+      super
     end
 
     def get_action_option_toggle?(action, option_group, option)
@@ -133,9 +145,6 @@ module Ladb::OpenCutList
       case option_group
 
       when ACTION_OPTION_COPY_MEASURE_TYPE
-        return true
-
-      when ACTION_OPTION_MOVE_MEASURE_TYPE
         return true
 
       when ACTION_OPTION_AXES
@@ -153,34 +162,25 @@ module Ladb::OpenCutList
       when ACTION_OPTION_COPY_MEASURE_TYPE
         case option
         when ACTION_OPTION_COPY_MEASURE_TYPE_OUTSIDE
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0,0.917L0,0.583L0.333,0.583L0.333,0.917L0,0.917M0.655,0.917L0.655,0.583L0.989,0.583L0.989,0.917L0.655,0.917 M0,0.25L1,0.25 M0,0.083L0,0.417 M1,0.083L1,0.417'))
+          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0,.917V.583H.333V.917ZM.655,.917V.583H.989V.917ZM0,.25H1M0,.083V.417M1,.083V.417'))
         when ACTION_OPTION_COPY_MEASURE_TYPE_CENTERED
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0,0.917L0,0.583L0.333,0.583L0.333,0.917L0,0.917 M0.655,0.917L0.655,0.583L0.989,0.583L0.989,0.917L0.655,0.917 M0.167,0.25L0.822,0.25 M0.167,0.083L0.167,0.417 M0.822,0.083L0.822,0.417'))
+          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0,.917V.583H.333V.917ZM.655,.917V.583H.989V.917ZM.167,.25H.822M.167,.083V.417M.822,.083V.417'))
         when ACTION_OPTION_COPY_MEASURE_TYPE_INSIDE
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0,0.917L0,0.583L0.333,0.583L0.333,0.917L0,0.917M0.655,0.917L0.655,0.583L0.989,0.583L0.989,0.917L0.655,0.917 M0.333,0.25L0.667,0.25 M0.333,0.083L0.333,0.417 M0.667,0.083L0.667,0.417'))
-        end
-      when ACTION_OPTION_MOVE_MEASURE_TYPE
-        case option
-        when ACTION_OPTION_COPY_MEASURE_TYPE_OUTSIDE
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.333,0.833L0.333,0.917L0.25,0.917M0.083,0.917L0,0.917L0,0.833M0.667,0.917L0.667,0.583L1.001,0.583L1.001,0.917L0.667,0.917M0,0.667L0,0.583L0.083,0.583M0.25,0.583L0.333,0.583L0.334,0.667 M0,0.25L1,0.25M0,0.083L0,0.417M1,0.083L1,0.417'))
-        when ACTION_OPTION_COPY_MEASURE_TYPE_CENTERED
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.333,0.833L0.333,0.917L0.25,0.917M0.083,0.917L0,0.917L0,0.833M0.667,0.917L0.667,0.583L1.001,0.583L1.001,0.917L0.667,0.917M0,0.667L0,0.583L0.083,0.583M0.25,0.583L0.333,0.583L0.334,0.667 M0,0.25L0.833,0.25M0,0.083L0,0.417M0.833,0.083L0.833,0.417'))
-        when ACTION_OPTION_COPY_MEASURE_TYPE_INSIDE
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.333,0.833L0.333,0.917L0.25,0.917M0.083,0.917L0,0.917L0,0.833M0.667,0.917L0.667,0.583L1.001,0.583L1.001,0.917L0.667,0.917M0,0.667L0,0.583L0.083,0.583M0.25,0.583L0.333,0.583L0.334,0.667 M0,0.25L0.667,0.25M0,0.083L0,0.417M0.667,0.083L0.667,0.417'))
+          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0,.917V.583H.333V.917ZM.655,.917V.583H.989V.917ZM.333,.25H.667M.333,.083V.417M.667,.083V.417'))
         end
       when ACTION_OPTION_AXES
         case option
         when ACTION_OPTION_AXES_ACTIVE
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.167,0L0.167,0.833L1,0.833 M0,0.167L0.167,0L0.333,0.167 M0.833,0.667L1,0.833L0.833,1'))
+          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M.167,0V.833H1M0,.167L.167,0L.333,.167M.833,.667L1,.833L.833,1'))
         when ACTION_OPTION_AXES_CONTEXT
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.167,0L0.167,0.833L1,0.833 M0,0.167L0.167,0L0.333,0.167 M0.833,0.667L1,0.833L0.833,1 M0.5,0.083L0.5,0.5L0.917,0.5L0.917,0.083L0.5,0.083'))
+          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M.167,0V.833H1M0,.167L.167,0L.333,.167M.833,.667L1,.833L.833,1M.5,.083V.5H.917V.083Z'))
         when ACTION_OPTION_AXES_ENTITY
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.25,0L0.25,0.75L1,0.75 M0.083,0.167L0.25,0L0.417,0.167 M0.833,0.583L1,0.75L0.833,0.917 M0.042,0.5L0.042,0.958L0.5,0.958L0.5,0.5L0.042,0.5'))
+          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M.25,0V.75H1M.083,.167L.25,0L.417,.167M.833,.583L1,.75L.833,.917M.042,.5V.958H.5V.5Z'))
         end
       when ACTION_OPTION_OPTIONS
         case option
         when ACTION_OPTION_OPTIONS_MIRROR
-          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M0.5,0L0.5,0.2 M0.5,0.4L0.5,0.6 M0.5,0.8L0.5,1 M0,0.2L0.3,0.5L0,0.8L0,0.2 M1,0.2L0.7,0.5L1,0.8L1,0.2'))
+          return Kuix::Motif2d.new(Kuix::Motif2d.patterns_from_svg_path('M.5,0V.2M.5,.4V.6M.5,.8V1M0,.2L.3,.5L0,.8ZM1,.2L.7,.5L1,.8Z'))
         end
       end
 
@@ -189,26 +189,10 @@ module Ladb::OpenCutList
 
     # -- Events --
 
-    def onActivate(view)
-      super
-
-      # Observe model events
-      view.model.add_observer(self)
-
-    end
-
-    def onDeactivate(view)
-      super
-
-      # Stop observing model events
-      view.model.remove_observer(self)
-
-    end
-
     def onActionChanged(action)
 
-      remove_all_2d
-      remove_all_3d
+      clear_all_2d
+      clear_all_3d
 
       case action
       when ACTION_SELECT
@@ -221,12 +205,11 @@ module Ladb::OpenCutList
         set_action_handler(SmartHandleMoveLineActionHandler.new(self, fetch_action_handler))
       when ACTION_DISTRIBUTE
         set_action_handler(SmartHandleDistributeActionHandler.new(self, fetch_action_handler))
+      when ACTION_INTERACT
+        set_action_handler(SmartHandleInteractActionHandler.new(self, fetch_action_handler))
       end
 
       super
-
-      refresh
-
     end
 
     def onViewChanged(view)
@@ -235,6 +218,7 @@ module Ladb::OpenCutList
     end
 
     def onTransactionUndo(model)
+      super
       refresh
     end
 
@@ -249,7 +233,6 @@ module Ladb::OpenCutList
   class SmartHandleActionHandler < SmartSelectActionHandler
 
     include UserTextHelper
-    include SmartActionHandlerPartHelper
 
     STATE_HANDLE_START = 1
     STATE_HANDLE = 2
@@ -275,6 +258,19 @@ module Ladb::OpenCutList
       @src_transformations = {}
       _reset_drawing_def
 
+      # Create 3D layers
+      tool.create_3d(LAYER_3D_HANDLE_PREVIEW)
+      tool.create_3d(LAYER_3D_AXES_PREVIEW)
+      tool.create_3d(LAYER_3D_PART_TWINS_PREVIEW)
+      tool.create_3d(LAYER_3D_PART_PREVIEW)
+
+    end
+
+    # -----
+
+    def stop
+      Sketchup.active_model.selection.clear
+      super
     end
 
     # -- STATE --
@@ -307,7 +303,7 @@ module Ladb::OpenCutList
         when STATE_HANDLE_START, STATE_HANDLE
           @picked_shape_start_point = nil
           _unhide_instances
-          _unhide_sibling_instances
+          _unhide_twin_instances
         end
 
         _reset
@@ -331,8 +327,8 @@ module Ladb::OpenCutList
         @mouse_snap_point = nil
         @mouse_ip.pick(view, x, y)
 
-        @tool.remove_all_2d
-        @tool.remove_3d([ LAYER_3D_HANDLE_PREVIEW, LAYER_3D_AXES_PREVIEW ])
+        @tool.clear_all_2d
+        @tool.clear_3d([ LAYER_3D_HANDLE_PREVIEW, LAYER_3D_AXES_PREVIEW ])
 
         _snap_handle_start(flags, x, y, view)
         _preview_handle_start(view)
@@ -342,8 +338,8 @@ module Ladb::OpenCutList
         @mouse_snap_point = nil
         @mouse_ip.pick(view, x, y)
 
-        @tool.remove_all_2d
-        @tool.remove_3d([ LAYER_3D_HANDLE_PREVIEW, LAYER_3D_AXES_PREVIEW ])
+        @tool.clear_all_2d
+        @tool.clear_3d([ LAYER_3D_HANDLE_PREVIEW, LAYER_3D_AXES_PREVIEW ])
 
         _snap_handle(flags, x, y, view)
         _preview_handle(view)
@@ -358,8 +354,8 @@ module Ladb::OpenCutList
 
     def onToolMouseLeave(tool, view)
       return true if super
-      @tool.remove_all_2d
-      @tool.remove_3d([ LAYER_3D_HANDLE_PREVIEW, LAYER_3D_AXES_PREVIEW ])
+      @tool.clear_all_2d
+      @tool.clear_3d([LAYER_3D_HANDLE_PREVIEW, LAYER_3D_AXES_PREVIEW ])
       @mouse_ip.clear
       view.tooltip = ''
     end
@@ -397,8 +393,8 @@ module Ladb::OpenCutList
     def onToolKeyUpExtended(tool, key, repeat, flags, view, after_down, is_quick)
       return true if super
 
-      if tool.is_key_alt_or_command?(key)
-        @tool.store_action_option_value(@action, SmartHandleTool::ACTION_OPTION_OPTIONS, SmartHandleTool::ACTION_OPTION_OPTIONS_MIRROR, !_fetch_option_mirror, true)
+      if tool.is_key_alt_or_command?(key) && is_quick
+        @tool.store_action_option_value(@action, SmartHandleTool::ACTION_OPTION_OPTIONS, SmartHandleTool::ACTION_OPTION_OPTIONS_MIRROR, !_fetch_option_mirror?, fire_event: true)
         _refresh
         return true
       end
@@ -431,25 +427,34 @@ module Ladb::OpenCutList
       false
     end
 
-    def onStateChanged(state)
+    def onStateChanged(old_state, new_state)
       super
 
-      @tool.remove_tooltip
-
-      case state
+      case old_state
 
       when STATE_HANDLE, STATE_HANDLE_START
-        @tool.remove_all_2d
+        Sketchup.active_model.selection.clear
+
+      end
+
+      case new_state
+
+      when STATE_HANDLE, STATE_HANDLE_START
+        unless has_active_part?
+          Sketchup.active_model.selection.clear
+          Sketchup.active_model.selection.add(get_active_selection_instances)
+        end
+        @tool.clear_all_2d
 
       end
 
     end
 
-    def onPartSelected
+    def onSelected
       return true if super
 
-      if (sibling_instances = _get_sibling_instances).is_a?(Array)
-        @cpy_instances.concat(sibling_instances)
+      if (twin_instances = _get_twin_instances).is_a?(Array)
+        @cpy_instances.concat(twin_instances)
       end
 
       @src_transformations = get_active_selection_instances.map { |instance| [ instance, Geom::Transformation.new(instance.transformation) ] }.to_h
@@ -500,7 +505,6 @@ module Ladb::OpenCutList
       @src_transformations.clear
       @cpy_instances.clear
       super
-      set_state(STATE_SELECT)
     end
 
     def _restart
@@ -522,6 +526,22 @@ module Ladb::OpenCutList
       true
     end
 
+    def _allows_tree_selection?
+      true
+    end
+
+    # -----
+
+    def _can_activate_locked?
+      false
+    end
+
+    # -----
+
+    def _preview_part_container?
+      false
+    end
+
     # -----
 
     def _locked_x?
@@ -538,20 +558,20 @@ module Ladb::OpenCutList
 
     # -----
 
-    def _preview_part(part_entity_path, part, layer = 0, highlighted = false)
+    def _preview_part(part_entity_path, part, layer = 0, highlighted: false, clear_before: true)
       super
       if part && fetch_state == STATE_SELECT
 
         # Show part infos
-        @tool.show_tooltip([ "##{_get_active_part_name}", _get_active_part_material_name, '-', _get_active_part_size, _get_active_part_icons ])
+        @tool.set_root_tooltip([ "##{_get_active_part_name}", _get_active_part_material_name, '-', _get_active_part_size, _get_active_part_icons ])
 
-        @tool.remove_3d(LAYER_3D_AXES_PREVIEW)
+        @tool.clear_3d(LAYER_3D_AXES_PREVIEW)
         _preview_edit_axes(true)
 
       else
 
-        @tool.remove_tooltip
-        @tool.remove_3d(LAYER_3D_AXES_PREVIEW)
+        @tool.remove_root_tooltip
+        @tool.clear_3d(LAYER_3D_AXES_PREVIEW)
 
       end
     end
@@ -594,7 +614,7 @@ module Ladb::OpenCutList
           k_box = Kuix::BoxMotif3d.new
           k_box.bounds.copy!(eb)
           k_box.line_stipple = Kuix::LINE_STIPPLE_DOTTED
-          k_box.color = Kuix::COLOR_BLACK
+          k_box.color = Kuix::COLOR_DARK_GREY
           k_box.transformation = et
           @tool.append_3d(k_box, LAYER_3D_AXES_PREVIEW)
 
@@ -638,15 +658,23 @@ module Ladb::OpenCutList
       @tool.fetch_action_option_value(@action, SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE)
     end
 
-    def _fetch_option_move_measure_type
-      @tool.fetch_action_option_value(@action, SmartHandleTool::ACTION_OPTION_MOVE_MEASURE_TYPE)
+    def _fetch_option_copy_measure_type_outside?
+      @tool.fetch_action_option_boolean(@action, SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE, SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE_OUTSIDE)
+    end
+
+    def _fetch_option_copy_measure_type_centered?
+      @tool.fetch_action_option_boolean(@action, SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE, SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE_CENTERED)
+    end
+
+    def _fetch_option_copy_measure_type_inside?
+      @tool.fetch_action_option_boolean(@action, SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE, SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE_INSIDE)
     end
 
     def _fetch_option_axes
       @tool.fetch_action_option_value(@action, SmartHandleTool::ACTION_OPTION_AXES)
     end
 
-    def _fetch_option_mirror
+    def _fetch_option_mirror?
       @tool.fetch_action_option_boolean(@action, SmartHandleTool::ACTION_OPTION_OPTIONS, SmartHandleTool::ACTION_OPTION_OPTIONS_MIRROR)
     end
 
@@ -686,9 +714,9 @@ module Ladb::OpenCutList
     def _get_drawing_def_segments(drawing_def)
       segments = []
       if drawing_def.is_a?(DrawingDef)
-        segments += drawing_def.cline_manipulators.flat_map { |manipulator| manipulator.segment }
-        segments += drawing_def.edge_manipulators.flat_map { |manipulator| manipulator.segment }
-        segments += drawing_def.curve_manipulators.flat_map { |manipulator| manipulator.segments }
+        segments += drawing_def.cline_manipulators.flat_map(&:segment)
+        segments += drawing_def.edge_manipulators.flat_map(&:segment)
+        segments += drawing_def.curve_manipulators.flat_map(&:segments)
       end
       segments
     end
@@ -701,27 +729,21 @@ module Ladb::OpenCutList
       dst_instance.layer = src_instance.layer
       dst_instance.casts_shadows = src_instance.casts_shadows?
       dst_instance.receives_shadows = src_instance.receives_shadows?
-      unless src_instance.attribute_dictionaries.nil?
-        src_instance.attribute_dictionaries.each do |attribute_dictionary|
-          attribute_dictionary.each do |key, value|
-            dst_instance.set_attribute(attribute_dictionary.name, key, value)
-          end
-        end
+      if src_instance.respond_to?(:glued_to) &&
+         (glued_to = src_instance.glued_to) &&
+         glued_to.is_a?(Sketchup::Face) &&
+         glued_to.classify_point(ORIGIN.transform(dst_instance.transformation)) != Sketchup::Face::PointNotOnPlane
+        # Copy glued_to attribute only if dst_instance origin in on the same plane as glued to src_instance face.
+        dst_instance.glued_to = src_instance.glued_to
       end
-    end
-
-    def _points_to_segments(points, closed = true, flatten = true)
-      segments = points.each_cons(2).to_a
-      segments << [ points.last, points.first ] if closed && !points.empty?
-      segments.flatten!(1) if flatten
-      segments
+      ComponentUtils.copy_attributes(src_instance, dst_instance)
     end
 
   end
 
   class SmartHandleOneStepActionHandler < SmartHandleActionHandler
 
-    def onPartSelected
+    def onSelected
       super
 
       set_state(STATE_HANDLE)
@@ -731,7 +753,7 @@ module Ladb::OpenCutList
 
     # -----
 
-    def _clear_selection_on_start
+    def _clear_selection_on_start?
       true
     end
 
@@ -745,9 +767,9 @@ module Ladb::OpenCutList
 
       case state
       when STATE_HANDLE_START
-        return @tool.cursor_pin_1
+        return SmartCursorManager.cursor_pin_1
       when STATE_HANDLE
-        return @tool.cursor_pin_2
+        return SmartCursorManager.cursor_pin_2
       end
 
       super
@@ -769,7 +791,7 @@ module Ladb::OpenCutList
       super
     end
 
-    def onPartSelected
+    def onSelected
       super
 
       set_state(STATE_HANDLE_START)
@@ -787,15 +809,17 @@ module Ladb::OpenCutList
 
     # -----
 
-    def onPartSelected
+    def onSelected
 
       Sketchup.active_model.selection.clear
       Sketchup.active_model.selection.add(get_active_selection_instances)
-      if (sibling_instances = _get_sibling_instances).is_a?(Array)
-        Sketchup.active_model.selection.add(sibling_instances)
+      if (twin_instances = _get_twin_instances).is_a?(Array)
+        Sketchup.active_model.selection.add(twin_instances)
       end
 
-      set_state(STATE_HANDLE)
+      _reset_active_part
+      _reset_active_selection
+
       set_state(STATE_SELECT)
       _refresh
 
@@ -805,7 +829,13 @@ module Ladb::OpenCutList
 
     protected
 
-    def _pick_part_siblings?
+    def _pick_part_twins?
+      true
+    end
+
+    # -----
+
+    def _can_activate_locked?
       true
     end
 
@@ -832,7 +862,7 @@ module Ladb::OpenCutList
     # -----
 
     def stop
-      _unhide_sibling_instances
+      _unhide_twin_instances
       super
     end
 
@@ -842,7 +872,7 @@ module Ladb::OpenCutList
 
       case state
       when STATE_SELECT, STATE_HANDLE
-        return @tool.cursor_select_copy_line
+        return SmartCursorManager.cursor_select_copy_line
       end
 
       super
@@ -879,6 +909,20 @@ module Ladb::OpenCutList
       return true if super
       return if @state != STATE_HANDLE
 
+      if tool.is_key_shift_down? && !tool.is_vcb_typing?
+        if key == Kuix::VK_ADD
+          _warn_if_mirrored(@number + 1) if @number == 1
+          @number += 1
+          _refresh
+          return true
+        end
+        if key == Kuix::VK_SUBTRACT
+          @number = [ @number - 1, 1 ].max
+          _refresh
+          return true
+        end
+      end
+
       if key == VK_RIGHT
         x_axis = _get_active_x_axis
         if @locked_axis == x_axis
@@ -888,7 +932,8 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_LEFT
+      end
+      if key == VK_LEFT
         y_axis = _get_active_y_axis.reverse # Reverse to keep z axis on top
         if @locked_axis == y_axis
           @locked_axis = nil
@@ -897,7 +942,8 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_UP
+      end
+      if key == VK_UP
         z_axis = _get_active_z_axis
         if @locked_axis == z_axis
           @locked_axis = nil
@@ -906,24 +952,26 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_DOWN
+      end
+      if key == VK_DOWN
         UI.beep
       end
 
+      false
     end
 
-    def onStateChanged(state)
+    def onStateChanged(old_state, new_state)
       super
 
       @locked_axis = nil
 
-      unless _get_instance.nil?
-        if state == STATE_HANDLE
-          @tool.set_3d_visibility(false, [ LAYER_3D_PART_SIBLING_PREVIEW ]) # Hide part preview
-          _hide_sibling_instances
+      if has_active_part?
+        if new_state == STATE_HANDLE
+          @tool.set_3d_visibility(false, [LAYER_3D_PART_TWINS_PREVIEW ]) # Hide part preview
+          _hide_twin_instances
         else
-          @tool.set_3d_visibility(true, [ LAYER_3D_PART_SIBLING_PREVIEW ]) # Unhide part preview
-          _unhide_sibling_instances
+          @tool.set_3d_visibility(true, [LAYER_3D_PART_TWINS_PREVIEW ]) # Unhide part preview
+          _unhide_twin_instances
         end
       end
 
@@ -937,12 +985,12 @@ module Ladb::OpenCutList
       end
 
       if option == SmartHandleTool::ACTION_OPTION_OPTIONS_MIRROR
-        tool.notify_warnings([ [ "tool.smart_handle.warning.copies_disable_mirror" ] ]) if @number != 1
+        _warn_if_mirrored(@number)
       end
 
     end
 
-    def onPartSelected
+    def onSelected
       super
       @operator = '/'
       @number = [ @cpy_instances.size, 1 ].max
@@ -960,7 +1008,7 @@ module Ladb::OpenCutList
 
     # -----
 
-    def _pick_part_siblings?
+    def _pick_part_twins?
       true
     end
 
@@ -1061,7 +1109,7 @@ module Ladb::OpenCutList
     end
 
     def _preview_handle(view)
-      return super if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point, _fetch_option_copy_measure_type)).nil?
+      return super if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point)).nil?
 
       drawing_def, et, eb, ve, mps, mpe, dps, dpe = move_def.values_at(:drawing_def, :et, :eb, :ve, :mps, :mpe, :dps, :dpe)
       drawing_def_segments = _get_drawing_def_segments(drawing_def)
@@ -1088,7 +1136,7 @@ module Ladb::OpenCutList
         mvu = Geom::Vector3d.new(ux * i, uy * i, uz * i)
 
         mt = Geom::Transformation.translation(mvu)
-        if _fetch_option_mirror && i == @number && @number == 1
+        if _fetch_option_mirror? && i == @number && @number == 1
           mt = Geom::Transformation.scaling(mpe, *mvu.normalize.to_a.map { |f| (f.abs * -1) > 0 ? 1 : -1 })
           mt *= Geom::Transformation.rotation(mpe, mvu, Geometrix::ONE_PI)
           mt *= Geom::Transformation.translation(mvu)
@@ -1101,13 +1149,12 @@ module Ladb::OpenCutList
         k_segments.transformation = mt * drawing_def.transformation
         @tool.append_3d(k_segments, LAYER_3D_HANDLE_PREVIEW)
 
-
         # Preview bounds
 
         k_box = Kuix::BoxMotif3d.new
         k_box.bounds.copy!(eb)
         k_box.line_stipple = Kuix::LINE_STIPPLE_DOTTED
-        k_box.color = color
+        k_box.color = Kuix::COLOR_BLACK
         k_box.transformation = et
         @tool.append_3d(k_box, LAYER_3D_HANDLE_PREVIEW)
 
@@ -1127,16 +1174,10 @@ module Ladb::OpenCutList
       k_edge.end.copy!(dpe)
       k_edge.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
       k_edge.line_width = 1.5 unless @locked_axis.nil?
-      k_edge.color = ColorUtils.color_translucent(color, 60)
-      k_edge.on_top = true
-      @tool.append_3d(k_edge, LAYER_3D_HANDLE_PREVIEW)
-
-      k_edge = Kuix::EdgeMotif3d.new
-      k_edge.start.copy!(dps)
-      k_edge.end.copy!(dpe)
-      k_edge.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
-      k_edge.line_width = 1.5 unless @locked_axis.nil?
       k_edge.color = color
+      k_edge.show_hidden_lines = true
+      k_edge.hidden_line_width = k_edge.line_width
+      k_edge.hidden_line_color = ColorUtils.color_translucent(color, 60)
       @tool.append_3d(k_edge, LAYER_3D_HANDLE_PREVIEW)
 
       @tool.append_3d(_create_floating_points(points: [ mps, mpe ], style: Kuix::POINT_STYLE_PLUS, stroke_color: Kuix::COLOR_DARK_GREY), LAYER_3D_HANDLE_PREVIEW)
@@ -1144,7 +1185,7 @@ module Ladb::OpenCutList
 
       # Preview mirror
 
-      if _fetch_option_mirror && @number == 1
+      if _fetch_option_mirror? && @number == 1
 
         unit = @tool.get_unit(view)
 
@@ -1161,7 +1202,7 @@ module Ladb::OpenCutList
 
       distance = dps.vector_to(dpe).length
 
-      Sketchup.set_status_text(distance, SB_VCB_VALUE)
+      @tool.set_status_vcb_value(distance, true)
 
       if distance > 0
 
@@ -1178,7 +1219,7 @@ module Ladb::OpenCutList
     end
 
     def _read_handle(tool, text, view)
-      return false if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point, _fetch_option_copy_measure_type)).nil?
+      return false if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point)).nil?
 
       dps, dpe, dmin = move_def.values_at(:dps, :dpe, :dmin)
       v = dps.vector_to(dpe)
@@ -1195,14 +1236,14 @@ module Ladb::OpenCutList
       @picked_handle_end_point = dps.offset(v, [ distance.abs, dmin ].max)
 
       _handle_entity
-      Sketchup.set_status_text('', SB_VCB_VALUE)
+      @tool.set_status_vcb_value('')
 
       true
     end
 
     def _read_handle_copies(tool, text, view)
       return true if super
-      return if _get_instances.empty?
+      return unless has_active_selection?
 
       v, _ = _split_user_text(text)
 
@@ -1220,8 +1261,7 @@ module Ladb::OpenCutList
           return true
         end
 
-        # Warn if the mirror option enabled
-        tool.notify_warnings([ [ "tool.smart_handle.warning.copies_disable_mirror" ] ]) if _fetch_option_mirror && number > 1
+        _warn_if_mirrored(number)
 
         case @state
 
@@ -1234,7 +1274,7 @@ module Ladb::OpenCutList
 
         end
 
-        Sketchup.set_status_text('', SB_VCB_VALUE)
+        @tool.set_status_vcb_value('')
 
         return true
       end
@@ -1249,7 +1289,7 @@ module Ladb::OpenCutList
     end
 
     def _copy_line_entity(operator = '*', number = 1)
-      return if (move_def = _get_move_def(@picked_handle_start_point, @picked_handle_end_point, _fetch_option_copy_measure_type)).nil?
+      return if (move_def = _get_move_def(@picked_handle_start_point, @picked_handle_end_point)).nil?
 
       mps, mpe = move_def.values_at(:mps, :mpe)
 
@@ -1260,10 +1300,11 @@ module Ladb::OpenCutList
       mpe = mpe.transform(cti)
       mv = mps.vector_to(mpe)
 
-      _unhide_sibling_instances
+      _unhide_twin_instances
 
       model = Sketchup.active_model
       model.start_operation('OCL Copy Part', true, false, !active?)
+      begin
 
         if operator == '/'
           ux = mv.x / number
@@ -1295,7 +1336,7 @@ module Ladb::OpenCutList
             mvu = Geom::Vector3d.new(ux * i, uy * i, uz * i)
 
             mt = Geom::Transformation.translation(mvu)
-            if _fetch_option_mirror && i == number && number == 1
+            if _fetch_option_mirror? && i == number && number == 1
               mt = Geom::Transformation.scaling(mpe, *mvu.normalize.to_a.map { |f| (f.abs * -1) > 0 ? 1 : -1 })
               mt *= Geom::Transformation.rotation(mpe, mvu, Geometrix::ONE_PI)
               mt *= Geom::Transformation.translation(mvu)
@@ -1314,13 +1355,18 @@ module Ladb::OpenCutList
         @operator = operator
         @number = number
 
-      model.commit_operation
+        model.commit_operation
+
+      rescue Exception => e
+        PLUGIN.dump_exception(e)
+        model.abort_operation
+      end
 
     end
 
     # -----
 
-    def _get_move_def(ps, pe, type = 0)
+    def _get_move_def(ps, pe)
       return unless pe.is_a?(Geom::Point3d)
       return unless (drawing_def = _get_drawing_def).is_a?(DrawingDef)
 
@@ -1328,6 +1374,8 @@ module Ladb::OpenCutList
       eti = et.inverse
 
       return unless (eb = _get_drawing_def_edit_bounds(drawing_def, et)).valid?
+
+      measure_type = _fetch_option_copy_measure_type
 
       # Compute in 'Edit' space
 
@@ -1372,7 +1420,7 @@ module Ladb::OpenCutList
 
       f = @operator == '/' ? @number : 1
 
-      case type
+      case measure_type
       when SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE_OUTSIDE
         dlmin = eve.length * (2 * f + 1)
         dmin = eve.length * (2 * f + 2)
@@ -1398,7 +1446,7 @@ module Ladb::OpenCutList
 
       mps = lps
       dpe = lpe
-      case type
+      case measure_type
       when SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE_OUTSIDE
         mpe = lpe.offset(vs)
         dps = lps.offset(vs)
@@ -1428,6 +1476,13 @@ module Ladb::OpenCutList
       }
     end
 
+    # -----
+
+    def _warn_if_mirrored(number)
+      # Warn if the mirror option enabled
+      @tool.notify_warnings([ [ "tool.smart_handle.warning.copies_disable_mirror" ] ]) if _fetch_option_mirror? && number != 1
+    end
+
   end
 
   class SmartHandleCopyGridActionHandler < SmartHandleOneStepActionHandler
@@ -1439,9 +1494,9 @@ module Ladb::OpenCutList
 
       @locked_normal = nil
 
-      @operator_x = '*'
+      @operator_x = '/'
       @number_x = 1
-      @operator_y = '*'
+      @operator_y = '/'
       @number_y = 1
 
     end
@@ -1452,12 +1507,11 @@ module Ladb::OpenCutList
 
       case state
       when STATE_SELECT, STATE_HANDLE
-        return @tool.cursor_select_copy_grid
+        return SmartCursorManager.cursor_select_copy_grid
       end
 
       super
     end
-
 
     def get_state_status(state)
 
@@ -1490,6 +1544,22 @@ module Ladb::OpenCutList
       return true if super
       return if @state != STATE_HANDLE
 
+      if tool.is_key_shift_down? && !tool.is_vcb_typing?
+        if key == Kuix::VK_ADD
+          _warn_if_mirrored(@number_x + 1, @number_y + 1) if @number_x == 1 && @number_y == 1
+          @number_x += 1
+          @number_y += 1
+          _refresh
+          return true
+        end
+        if key == Kuix::VK_SUBTRACT
+          @number_x = [ @number_x - 1, 1 ].max
+          @number_y = [ @number_y - 1, 1 ].max
+          _refresh
+          return true
+        end
+      end
+
       if key == VK_RIGHT
         x_axis = _get_active_x_axis
         if @locked_normal == x_axis
@@ -1499,7 +1569,8 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_LEFT
+      end
+      if key == VK_LEFT
         y_axis = _get_active_y_axis
         if @locked_normal == y_axis
           @locked_normal = nil
@@ -1508,7 +1579,8 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_UP
+      end
+      if key == VK_UP
         z_axis = _get_active_z_axis
         if @locked_normal == z_axis
           @locked_normal = nil
@@ -1517,13 +1589,15 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_DOWN
+      end
+      if key == VK_DOWN
         UI.beep
       end
 
+      false
     end
 
-    def onStateChanged(state)
+    def onStateChanged(old_state, new_state)
       super
 
       @locked_normal = nil
@@ -1538,7 +1612,7 @@ module Ladb::OpenCutList
       end
 
       if option == SmartHandleTool::ACTION_OPTION_OPTIONS_MIRROR
-        tool.notify_warnings([ [ "tool.smart_handle.warning.copies_disable_mirror" ] ]) if @number_x != 1 || @number_y != 1
+        _warn_if_mirrored(@number_x, @number_y)
       end
 
     end
@@ -1602,7 +1676,7 @@ module Ladb::OpenCutList
 
     def _preview_handle(view)
       super
-      return if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point, _fetch_option_copy_measure_type)).nil?
+      return if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point)).nil?
 
       drawing_def, et, eb, ve, mps, mpe, dps, dpe = move_def.values_at(:drawing_def, :et, :eb, :ve, :mps, :mpe, :dps, :dpe)
       drawing_def_segments = _get_drawing_def_segments(drawing_def)
@@ -1629,17 +1703,11 @@ module Ladb::OpenCutList
       k_rectangle.bounds.copy!(db_2d)
       k_rectangle.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
       k_rectangle.line_width = 1.5 unless @locked_normal.nil?
-      k_rectangle.color = ColorUtils.color_translucent(color, 60)
-      k_rectangle.on_top = true
-      k_rectangle.transformation = ht
-      @tool.append_3d(k_rectangle, LAYER_3D_HANDLE_PREVIEW)
-
-      k_rectangle = Kuix::RectangleMotif3d.new
-      k_rectangle.bounds.copy!(db_2d)
-      k_rectangle.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
-      k_rectangle.line_width = 1.5 unless @locked_normal.nil?
       k_rectangle.color = color
       k_rectangle.transformation = ht
+      k_rectangle.show_hidden_lines = true
+      k_rectangle.hidden_line_width = k_rectangle.line_width
+      k_rectangle.hidden_line_color = ColorUtils.color_translucent(color, 60)
       @tool.append_3d(k_rectangle, LAYER_3D_HANDLE_PREVIEW)
 
       # Preview
@@ -1670,7 +1738,7 @@ module Ladb::OpenCutList
 
           unless x == 0 && y == 0
 
-            if _fetch_option_mirror && @number_x == 1 && @number_y == 1
+            if _fetch_option_mirror? && @number_x == 1 && @number_y == 1
 
               if x == @number_x && y == @number_y
                 mt *= Geom::Transformation.rotation(mp, Z_AXIS.transform(ht), Geometrix::ONE_PI)
@@ -1700,7 +1768,7 @@ module Ladb::OpenCutList
           k_box = Kuix::BoxMotif3d.new
           k_box.bounds.copy!(eb)
           k_box.line_stipple = Kuix::LINE_STIPPLE_DOTTED
-          k_box.color = color
+          k_box.color = x == 0 && y == 0 ? Kuix::COLOR_BLACK : color
           k_box.transformation = mt * et
           @tool.append_3d(k_box, LAYER_3D_HANDLE_PREVIEW)
 
@@ -1712,7 +1780,7 @@ module Ladb::OpenCutList
 
       # Preview mirror
 
-      if _fetch_option_mirror && @number_x == 1 && @number_y == 1
+      if _fetch_option_mirror? && @number_x == 1 && @number_y == 1
 
         unit = @tool.get_unit(view)
 
@@ -1730,7 +1798,7 @@ module Ladb::OpenCutList
       distance_x = db_2d.width
       distance_y = db_2d.height
 
-      Sketchup.set_status_text("#{distance_x}#{Sketchup::RegionalSettings.list_separator} #{distance_y}", SB_VCB_VALUE)
+      @tool.set_status_vcb_value("#{distance_x}#{Sketchup::RegionalSettings.list_separator} #{distance_y}", true)
 
       if distance_x > 0
 
@@ -1758,7 +1826,7 @@ module Ladb::OpenCutList
     end
 
     def _read_handle(tool, text, view)
-      return false if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point, _fetch_option_copy_measure_type)).nil?
+      return false if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point)).nil?
 
       ht = _get_handle_transformation
       hti = ht.inverse
@@ -1794,7 +1862,7 @@ module Ladb::OpenCutList
         ).transform(ht))
 
         _handle_entity
-        Sketchup.set_status_text('', SB_VCB_VALUE)
+        @tool.set_status_vcb_value('')
 
         return true
       end
@@ -1804,7 +1872,7 @@ module Ladb::OpenCutList
 
     def _read_handle_copies(tool, text, view)
       return true if super
-      return if _get_instances.empty?
+      return unless has_active_selection?
 
       v1, v2 = _split_user_text(text)
 
@@ -1830,8 +1898,7 @@ module Ladb::OpenCutList
           return true
         end
 
-        # Warn if mirror
-        tool.notify_warnings([ [ "tool.smart_handle.warning.copies_disable_mirror" ] ]) if _fetch_option_mirror && (number_1 > 1 || number_2 > 1)
+        _warn_if_mirrored(number_1, number_2)
 
         case @state
 
@@ -1846,7 +1913,7 @@ module Ladb::OpenCutList
 
         end
 
-        Sketchup.set_status_text('', SB_VCB_VALUE)
+        @tool.set_status_vcb_value('')
 
         return true
       end
@@ -1861,7 +1928,7 @@ module Ladb::OpenCutList
     end
 
     def _copy_grid_entity(operator_x = '*', number_x = 1, operator_y = '*', number_y = 1)
-      return if (move_def = _get_move_def(@picked_handle_start_point, @picked_handle_end_point, _fetch_option_copy_measure_type)).nil?
+      return if (move_def = _get_move_def(@picked_handle_start_point, @picked_handle_end_point)).nil?
 
       mps, mpe = move_def.values_at(:mps, :mpe)
 
@@ -1874,6 +1941,7 @@ module Ladb::OpenCutList
 
       model = Sketchup.active_model
       model.start_operation('OCL Copy Part', true, false, !active?)
+      begin
 
         if operator_x == '/'
           ux = mv_2d.x / number_x
@@ -1912,7 +1980,7 @@ module Ladb::OpenCutList
               mvu = Geom::Vector3d.new(ux * x, uy * y).transform(ht)
 
               mt = Geom::Transformation.translation(mvu.transform(cti))
-              if _fetch_option_mirror && number_x == 1 && number_y == 1
+              if _fetch_option_mirror? && number_x == 1 && number_y == 1
 
                 mp = mps.offset(mvu)
 
@@ -1946,7 +2014,12 @@ module Ladb::OpenCutList
         @operator_y = operator_y
         @number_y = number_y
 
-      model.commit_operation
+        model.commit_operation
+
+      rescue Exception => e
+        PLUGIN.dump_exception(e)
+        model.abort_operation
+      end
 
     end
 
@@ -1968,7 +2041,7 @@ module Ladb::OpenCutList
       Geom::Transformation.axes(origin, *_get_handle_axes)
     end
 
-    def _get_move_def(ps, pe, type = 0)
+    def _get_move_def(ps, pe)
       return unless pe.is_a?(Geom::Point3d)
       return unless (drawing_def = _get_drawing_def).is_a?(DrawingDef)
 
@@ -1976,6 +2049,8 @@ module Ladb::OpenCutList
       hti = ht.inverse
 
       return unless (eb = _get_drawing_def_edit_bounds(drawing_def, ht)).valid?
+
+      measure_type = _fetch_option_copy_measure_type
 
       # Compute in 'Edit/Handle' space
 
@@ -2041,7 +2116,7 @@ module Ladb::OpenCutList
       f_x = @operator_x == '/' ? @number_x : 1
       f_y = @operator_y == '/' ? @number_y : 1
 
-      case type
+      case measure_type
       when SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE_OUTSIDE
         dlminx = evex.length * (2 * f_x + 1)
         dlminy = evey.length * (2 * f_y + 1)
@@ -2074,7 +2149,7 @@ module Ladb::OpenCutList
 
       mps = lps
       dpe = lpe
-      case type
+      case measure_type
       when SmartHandleTool::ACTION_OPTION_COPY_MEASURE_TYPE_OUTSIDE
         mpe = lpe.offset(vs)
         dps = lps.offset(vs)
@@ -2107,9 +2182,16 @@ module Ladb::OpenCutList
       }
     end
 
+    # -----
+
+    def _warn_if_mirrored(number_x, number_y)
+      # Warn if the mirror option enabled
+      @tool.notify_warnings([ [ "tool.smart_handle.warning.copies_disable_mirror" ] ]) if _fetch_option_mirror? && (number_x != 1 || number_y != 1)
+    end
+
   end
 
-  class SmartHandleMoveLineActionHandler < SmartHandleOneStepActionHandler
+  class SmartHandleMoveLineActionHandler < SmartHandleTwoStepActionHandler
 
     def initialize(tool, previous_action_handler = nil)
       super(SmartHandleTool::ACTION_MOVE_LINE, tool, previous_action_handler)
@@ -2130,8 +2212,8 @@ module Ladb::OpenCutList
     def get_state_cursor(state)
 
       case state
-      when STATE_SELECT, STATE_HANDLE
-        return @tool.cursor_select_move_line
+      when STATE_SELECT
+        return SmartCursorManager.cursor_select_move_line
       end
 
       super
@@ -2153,12 +2235,16 @@ module Ladb::OpenCutList
 
     def onToolSuspend(tool, view)
       super
-      _unhide_instances if @state == STATE_HANDLE
+      if @state == STATE_HANDLE
+        _unhide_instances
+      end
     end
 
     def onToolResume(tool, view)
       super
-      _hide_instances if @state == STATE_HANDLE
+      if @state == STATE_HANDLE
+        _hide_instances
+      end
     end
 
     def onToolKeyDown(tool, key, repeat, flags, view)
@@ -2174,7 +2260,8 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_LEFT
+      end
+      if key == VK_LEFT
         y_axis = _get_active_y_axis.reverse # Reverse to keep z axis on top
         if @locked_axis == y_axis
           @locked_axis = nil
@@ -2183,7 +2270,8 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_UP
+      end
+      if key == VK_UP
         z_axis = _get_active_z_axis
         if @locked_axis == z_axis
           @locked_axis = nil
@@ -2192,23 +2280,28 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_DOWN
+      end
+      if key == VK_DOWN
         UI.beep
       end
 
+      false
     end
 
-    def onStateChanged(state)
+    def onStateChanged(old_state, new_state)
       super
 
       @locked_axis = nil
 
-      unless _get_instance.nil?
-        if state == STATE_HANDLE
-          @tool.remove_3d(LAYER_3D_PART_PREVIEW)  # Remove part preview
-          _hide_instances
-        else
-          _unhide_instances
+      if has_active_selection?
+        if has_active_selection?
+          if new_state == STATE_HANDLE
+            @tool.set_3d_visibility(false, [LAYER_3D_PART_PREVIEW, LAYER_3D_PART_TWINS_PREVIEW ]) # Hide part preview
+            _hide_instances
+          else
+            @tool.set_3d_visibility(true, [LAYER_3D_PART_PREVIEW, LAYER_3D_PART_TWINS_PREVIEW ]) # Unhide part preview
+            _unhide_instances
+          end
         end
       end
 
@@ -2324,7 +2417,7 @@ module Ladb::OpenCutList
     end
 
     def _preview_handle(view)
-      return super if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point, _fetch_option_move_measure_type)).nil?
+      return super if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point)).nil?
 
       drawing_def, drawing_def_segments, et, eb, mps, mpe, dps, dpe = move_def.values_at(:drawing_def, :drawing_def_segments, :et, :eb, :mps, :mpe, :dps, :dpe)
 
@@ -2334,11 +2427,6 @@ module Ladb::OpenCutList
       _preview_edit_axes(false, !mv.parallel?(_get_active_x_axis), !mv.parallel?(_get_active_y_axis), !mv.parallel?(_get_active_z_axis), true)
 
       mt = Geom::Transformation.translation(mv)
-      if _fetch_option_mirror
-        mt = Geom::Transformation.scaling(mpe, *mv.normalize.to_a.map { |f| (f.abs * -1) > 0 ? 1 : -1 })
-        mt *= Geom::Transformation.rotation(mpe, mv, Geometrix::ONE_PI)
-        mt *= Geom::Transformation.translation(mv)
-      end
 
       # Preview
 
@@ -2356,27 +2444,34 @@ module Ladb::OpenCutList
       k_edge.end.copy!(dpe)
       k_edge.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
       k_edge.line_width = 1.5 unless @locked_axis.nil?
-      k_edge.color = ColorUtils.color_translucent(color, 60)
-      k_edge.on_top = true
-      @tool.append_3d(k_edge, LAYER_3D_HANDLE_PREVIEW)
-
-      k_edge = Kuix::EdgeMotif3d.new
-      k_edge.start.copy!(dps)
-      k_edge.end.copy!(dpe)
-      k_edge.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
-      k_edge.line_width = 1.5 unless @locked_axis.nil?
       k_edge.color = color
+      k_edge.show_hidden_lines = true
+      k_edge.hidden_line_width = k_edge.line_width
+      k_edge.hidden_line_color = ColorUtils.color_translucent(color, 60)
       @tool.append_3d(k_edge, LAYER_3D_HANDLE_PREVIEW)
 
       @tool.append_3d(_create_floating_points(points: [ mps, mpe ], style: Kuix::POINT_STYLE_PLUS, stroke_color: Kuix::COLOR_DARK_GREY), LAYER_3D_HANDLE_PREVIEW)
       @tool.append_3d(_create_floating_points(points: [ dps, dpe ], style: Kuix::POINT_STYLE_CIRCLE, fill_color: Kuix::COLOR_WHITE, stroke_color: color, size: 2), LAYER_3D_HANDLE_PREVIEW)
+
+      # Preview vector
+
+      k_edge = Kuix::EdgeMotif3d.new
+      k_edge.start.copy!(@picked_handle_start_point)
+      k_edge.end.copy!(@mouse_snap_point)
+      k_edge.line_stipple = Kuix::LINE_STIPPLE_SOLID
+      k_edge.line_width = 1.5 unless @locked_axis.nil?
+      k_edge.end_arrow = true
+      k_edge.arrow_size = @tool.get_unit * 2.0
+      k_edge.color = color
+      k_edge.on_top = true
+      @tool.append_3d(k_edge, LAYER_3D_HANDLE_PREVIEW)
 
       # Preview bounds
 
       k_box = Kuix::BoxMotif3d.new
       k_box.bounds.copy!(eb)
       k_box.line_stipple = Kuix::LINE_STIPPLE_DOTTED
-      k_box.color = color
+      k_box.color = Kuix::COLOR_BLACK
       k_box.transformation = et
       @tool.append_3d(k_box, LAYER_3D_HANDLE_PREVIEW)
 
@@ -2389,7 +2484,7 @@ module Ladb::OpenCutList
 
       distance = dps.vector_to(dpe).length
 
-      Sketchup.set_status_text(distance, SB_VCB_VALUE)
+      @tool.set_status_vcb_value(distance, true)
 
       if distance > 0
 
@@ -2406,7 +2501,7 @@ module Ladb::OpenCutList
     end
 
     def _read_handle(tool, text, view)
-      return false if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point, _fetch_option_move_measure_type)).nil?
+      return false if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point)).nil?
 
       dps, dpe = move_def.values_at(:dps, :dpe)
       dv = dps.vector_to(dpe)
@@ -2414,10 +2509,10 @@ module Ladb::OpenCutList
       distance = _read_user_text_length(tool, text, dv.length)
       return true if distance.nil?
 
-      @picked_handle_end_point = dps.offset(dv, distance)
+      @picked_handle_end_point = @picked_handle_start_point.offset(dv, distance)
 
       _handle_entity
-      Sketchup.set_status_text('', SB_VCB_VALUE)
+      @tool.set_status_vcb_value('')
 
       true
     end
@@ -2429,7 +2524,7 @@ module Ladb::OpenCutList
     end
 
     def _move_line_entity
-      return if (move_def = _get_move_def(@picked_handle_start_point, @picked_handle_end_point, _fetch_option_move_measure_type)).nil?
+      return if (move_def = _get_move_def(@picked_handle_start_point, @picked_handle_end_point)).nil?
 
       mps, mpe = move_def.values_at(:mps, :mpe)
 
@@ -2444,6 +2539,7 @@ module Ladb::OpenCutList
 
       model = Sketchup.active_model
       model.start_operation('OCL Move Part', true, false, !active?)
+      begin
 
         src_instances = get_active_selection_instances
         src_instances.each do |src_instance|
@@ -2455,13 +2551,18 @@ module Ladb::OpenCutList
 
         end
 
-      model.commit_operation
+        model.commit_operation
+
+      rescue Exception => e
+        PLUGIN.dump_exception(e)
+        model.abort_operation
+      end
 
     end
 
     # -----
 
-    def _get_move_def(ps, pe, type = 0)
+    def _get_move_def(ps, pe)
       return unless ps.is_a?(Geom::Point3d) && pe.is_a?(Geom::Point3d)
       return unless (v = ps.vector_to(pe)).valid?
       return unless (drawing_def = _get_drawing_def).is_a?(DrawingDef)
@@ -2504,26 +2605,16 @@ module Ladb::OpenCutList
       # Restore to 'Global' space
 
       center = ecenter.transform(et)
-      line = [ center, v ]
       vs = evs.transform(et)
       ve = vs.reverse
 
       lps = center
-      lpe = pe.project_to_line(line)
+      lpe = center.offset(v)
 
       mps = lps
-      dps = lps.offset(vs)
+      dps = lps
       dpe = lpe
-      case type
-      when SmartHandleTool::ACTION_OPTION_MOVE_MEASURE_TYPE_OUTSIDE
-        mpe = lpe.offset(vs)
-      when SmartHandleTool::ACTION_OPTION_MOVE_MEASURE_TYPE_CENTERED
-        mpe = lpe
-      when SmartHandleTool::ACTION_OPTION_MOVE_MEASURE_TYPE_INSIDE
-        mpe = lpe.offset(ve)
-      else
-        return
-      end
+      mpe = lpe
 
       return unless mps.vector_to(mpe).valid? # No move
 
@@ -2543,7 +2634,7 @@ module Ladb::OpenCutList
 
   class SmartHandleDistributeActionHandler < SmartHandleTwoStepActionHandler
 
-    attr_reader :number
+    attr_reader :number, :spacings
 
     def initialize(tool, previous_action_handler = nil)
       super(SmartHandleTool::ACTION_DISTRIBUTE, tool, previous_action_handler)
@@ -2551,6 +2642,7 @@ module Ladb::OpenCutList
       @locked_axis = nil
 
       @number = 1
+      @spacings = []
 
       @raytest_path = nil
 
@@ -2560,7 +2652,7 @@ module Ladb::OpenCutList
 
     def stop
       _unhide_instances
-      _unhide_sibling_instances
+      _unhide_twin_instances
       super
     end
 
@@ -2571,7 +2663,20 @@ module Ladb::OpenCutList
       case state
 
       when STATE_SELECT
-        return @tool.cursor_select_distribute
+        return SmartCursorManager.cursor_select_distribute
+
+      end
+
+      super
+    end
+
+    def get_state_status(state)
+
+      case state
+
+      when STATE_HANDLE
+        return super +
+               ' | ' + PLUGIN.get_i18n_string("default.copy_key_#{PLUGIN.platform_name}") + ' = ' + PLUGIN.get_i18n_string('tool.smart_handle.action_toggle_raytest_status') + '.'
 
       end
 
@@ -2594,22 +2699,30 @@ module Ladb::OpenCutList
 
     def onToolSuspend(tool, view)
       super
-      _unhide_instances if @state == STATE_HANDLE
+      if @state == STATE_HANDLE
+        _unhide_instances
+        _unhide_twin_instances
+      end
     end
 
     def onToolResume(tool, view)
       super
-      _hide_instances if @state == STATE_HANDLE
+      if @state == STATE_HANDLE
+        _hide_instances
+        _hide_twin_instances
+      end
     end
 
     def onToolLButtonDoubleClick(tool, flags, x, y, view)
       if @previous_action_handler.is_a?(self.class)
 
         unless @previous_action_handler.number.nil? ||
+               @previous_action_handler.spacings.nil? ||
                @previous_action_handler.picked_handle_start_point.nil? ||
                @previous_action_handler.picked_handle_end_point.nil?
 
           @number = @previous_action_handler.number
+          @spacings = @previous_action_handler.spacings
           @picked_handle_start_point = @previous_action_handler.picked_handle_start_point
           @picked_handle_end_point = @previous_action_handler.picked_handle_end_point
 
@@ -2634,6 +2747,19 @@ module Ladb::OpenCutList
         return true
       end
 
+      if tool.is_key_shift_down? && !tool.is_vcb_typing?
+        if key == Kuix::VK_ADD
+          @number += 1
+          _refresh
+          return true
+        end
+        if key == Kuix::VK_SUBTRACT
+          @number = [ @number - 1, 1 ].max
+          _refresh
+          return true
+        end
+      end
+
       if key == VK_RIGHT
         x_axis = _get_active_x_axis
         if @locked_axis == x_axis
@@ -2643,7 +2769,8 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_LEFT
+      end
+      if key == VK_LEFT
         y_axis = _get_active_y_axis.reverse # Reverse to keep z axis on top
         if @locked_axis == y_axis
           @locked_axis = nil
@@ -2652,7 +2779,8 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_UP
+      end
+      if key == VK_UP
         z_axis = _get_active_z_axis
         if @locked_axis == z_axis
           @locked_axis = nil
@@ -2661,10 +2789,12 @@ module Ladb::OpenCutList
         end
         _refresh
         return true
-      elsif key == VK_DOWN
+      end
+      if key == VK_DOWN
         UI.beep
       end
 
+      false
     end
 
     def onToolKeyUpExtended(tool, key, repeat, flags, view, after_down, is_quick)
@@ -2675,25 +2805,43 @@ module Ladb::OpenCutList
         return true
       end
 
+      false
     end
 
-    def onStateChanged(state)
+    def onToolUserText(tool, text, view)
+
+      case @state
+
+      when STATE_HANDLE
+        if _read_handle_spacing(tool, text, view)
+          _refresh
+          return true
+        end
+
+      when STATE_HANDLE_COPIES
+        return true if _read_handle_spacing(tool, text, view)
+
+      end
+
       super
+    end
+
+    def onStateChanged(old_state, new_state)
+
+      case new_state
+      when STATE_HANDLE_START, STATE_HANDLE
+        @tool.set_3d_visibility(false, [ LAYER_3D_PART_PREVIEW, LAYER_3D_PART_TWINS_PREVIEW ]) # Hide part preview
+        _hide_instances
+        _hide_twin_instances
+      else
+        @tool.set_3d_visibility(true, [ LAYER_3D_PART_PREVIEW, LAYER_3D_PART_TWINS_PREVIEW ]) # Unhide part preview
+        _unhide_instances
+        _unhide_twin_instances
+      end
 
       @locked_axis = nil
 
-      if has_active_selection?
-        if state == STATE_HANDLE
-          @tool.set_3d_visibility(false, [ LAYER_3D_PART_PREVIEW, LAYER_3D_PART_SIBLING_PREVIEW ]) # Hide part preview
-          _hide_instances
-          _hide_sibling_instances
-        else
-          @tool.set_3d_visibility(true, [ LAYER_3D_PART_PREVIEW, LAYER_3D_PART_SIBLING_PREVIEW ]) # Unhide part preview
-          _unhide_instances
-          _unhide_sibling_instances
-        end
-      end
-
+      super
     end
 
     def onToolActionOptionStored(tool, action, option_group, option)
@@ -2705,7 +2853,7 @@ module Ladb::OpenCutList
 
     end
 
-    def onPartSelected
+    def onSelected
       super
       @number = @cpy_instances.size + 1
       _refresh
@@ -2722,7 +2870,7 @@ module Ladb::OpenCutList
 
     # -----
 
-    def _pick_part_siblings?
+    def _pick_part_twins?
       true
     end
 
@@ -2831,30 +2979,59 @@ module Ladb::OpenCutList
 
     end
 
-    def _preview_handle(view)
-      return super if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point)).nil?
+    def _preview_handle_start(view)
+      return true unless (drawing_def = _get_drawing_def).is_a?(DrawingDef)
 
-      drawing_def, et, eb, center, lps, lpe, mps, mpe = move_def.values_at(:drawing_def, :et, :eb, :center, :lps, :lpe, :mps, :mpe)
+      drawing_def_segments = _get_drawing_def_segments(drawing_def)
+      drawin_def_origin = ORIGIN.transform(drawing_def.transformation)
+
+      ast = PathUtils.get_transformation(get_active_selection_path, IDENTITY)
+
+      # Preview
+
+      _preview_edit_axes
+
+      k_segments = Kuix::Segments.new
+      k_segments.add_segments(drawing_def_segments)
+      k_segments.line_width = 1.5
+      k_segments.color = Kuix::COLOR_BLACK
+      k_segments.transformation = drawing_def.transformation
+      @tool.append_3d(k_segments, LAYER_3D_HANDLE_PREVIEW)
+
+      if @unhide_local_twin_instance_transformations.is_a?(Array)
+        @unhide_local_twin_instance_transformations.each do |transformation|
+
+          mt = Geom::Transformation.translation(drawin_def_origin.vector_to(ORIGIN.transform(ast * transformation)))
+
+          k_segments = Kuix::Segments.new
+          k_segments.add_segments(drawing_def_segments)
+          k_segments.line_width = 1.5
+          k_segments.color = Kuix::COLOR_BLACK
+          k_segments.transformation = mt * drawing_def.transformation
+          @tool.append_3d(k_segments, LAYER_3D_HANDLE_PREVIEW)
+
+        end
+      end
+
+    end
+
+    def _preview_handle(view)
+      return super if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point, @number, @spacings)).nil?
+
+      drawing_def, et, eb, center, lps, lpe, mps, mpe, mvs = move_def.values_at(:drawing_def, :et, :eb, :center, :lps, :lpe, :mps, :mpe, :mvs)
       drawing_def_segments = _get_drawing_def_segments(drawing_def)
 
       return super unless (mv = mps.vector_to(mpe)).valid?
       lv = lps.vector_to(lpe)
       color = _get_vector_color(lv, Kuix::COLOR_DARK_GREY)
 
-      _preview_edit_axes(false, !mv.parallel?(_get_active_x_axis), !mv.parallel?(_get_active_y_axis), !mv.parallel?(_get_active_z_axis), true)
-
       # Preview
 
-      k_segments = Kuix::Segments.new
-      k_segments.add_segments(drawing_def_segments)
-      k_segments.line_stipple = Kuix::LINE_STIPPLE_DOTTED
-      k_segments.color = Kuix::COLOR_DARK_GREY
-      k_segments.transformation = drawing_def.transformation
-      @tool.append_3d(k_segments, LAYER_3D_HANDLE_PREVIEW)
+      _preview_edit_axes(true, !mv.parallel?(_get_active_x_axis), !mv.parallel?(_get_active_y_axis), !mv.parallel?(_get_active_z_axis), true)
 
-      (1..@number).each do |i|
+      @number.times do |i|
 
-        mt = Geom::Transformation.translation(center.vector_to(mps.offset(mv, mv.length * i / (@number + 1.0))))
+        mt = Geom::Transformation.translation(mvs[i])
 
         k_segments = Kuix::Segments.new
         k_segments.add_segments(drawing_def_segments)
@@ -2916,16 +3093,10 @@ module Ladb::OpenCutList
       k_edge.end.copy!(lpe)
       k_edge.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
       k_edge.line_width = 1.5 unless @locked_axis.nil?
-      k_edge.color = ColorUtils.color_translucent(color, 60)
-      k_edge.on_top = true
-      @tool.append_3d(k_edge, LAYER_3D_HANDLE_PREVIEW)
-
-      k_edge = Kuix::EdgeMotif3d.new
-      k_edge.start.copy!(lps)
-      k_edge.end.copy!(lpe)
-      k_edge.line_stipple = Kuix::LINE_STIPPLE_LONG_DASHES
-      k_edge.line_width = 1.5 unless @locked_axis.nil?
       k_edge.color = color
+      k_edge.show_hidden_lines = true
+      k_edge.hidden_line_width = k_edge.line_width
+      k_edge.hidden_line_color = ColorUtils.color_translucent(color, 60)
       @tool.append_3d(k_edge, LAYER_3D_HANDLE_PREVIEW)
 
       @tool.append_3d(_create_floating_points(points: [ lps, lpe ], style: Kuix::POINT_STYLE_CIRCLE, fill_color: Kuix::COLOR_WHITE, stroke_color: color, size: 2), LAYER_3D_HANDLE_PREVIEW)
@@ -2934,7 +3105,7 @@ module Ladb::OpenCutList
 
       distance = lv.length
 
-      Sketchup.set_status_text(distance, SB_VCB_VALUE)
+      @tool.set_status_vcb_value(distance, true)
 
       if distance > 0
 
@@ -2951,30 +3122,46 @@ module Ladb::OpenCutList
     end
 
     def _read_handle(tool, text, view)
+      return false if (move_def = _get_move_def(@picked_handle_start_point, @mouse_snap_point, @number, @spacings)).nil?
 
-      ps = @picked_handle_start_point
-      pe = @mouse_snap_point
-      v = ps.vector_to(pe)
+      lps, lpe = move_def.values_at(:lps, :lpe)
+      v = lps.vector_to(lpe)
 
       distance = _read_user_text_length(tool, text, v.length)
       return true if distance.nil?
 
-      @picked_handle_end_point = ps.offset(v, distance)
+      @picked_handle_end_point = @picked_handle_start_point.offset(v, distance)
 
       _handle_entity
-      Sketchup.set_status_text('', SB_VCB_VALUE)
+      @tool.set_status_vcb_value('')
 
       true
+    end
+
+    def _read_handle_spacing(tool, text, view)
+
+      list = _split_user_text(text)
+      if list.is_a?(Array) && list.size > 1
+
+        @spacings = list.map { |spacing| (length = _read_user_text_length(tool, spacing, -1)) == -1 ? -1 : length.abs.to_l }
+
+        case @state
+
+        when STATE_HANDLE_COPIES
+          _handle_entity
+
+        end
+        @tool.set_status_vcb_value('')
+
+        return true
+      end
+
+      false
     end
 
     def _read_handle_copies(tool, text, view)
 
       if text && (match = text.match(/^([x*\/])(\d+)$/))
-
-        if _fetch_option_mirror
-          tool.notify_errors([ [ "tool.smart_handle.error.disabled_by_mirror" ] ])
-          return true
-        end
 
         operator, value = match ? match[1, 2] : [ nil, nil ]
 
@@ -2991,18 +3178,15 @@ module Ladb::OpenCutList
           return true
         end
 
-        count = operator == '/' ? number - 1 : number
+        @number = operator == '/' ? number - 1 : number
 
         case @state
 
-        when STATE_HANDLE
-          @number = count
-
         when STATE_HANDLE_COPIES
-          _distribute_entity(count)
+          _handle_entity
 
         end
-        Sketchup.set_status_text('', SB_VCB_VALUE)
+        @tool.set_status_vcb_value('')
 
         return true
       end
@@ -3013,28 +3197,23 @@ module Ladb::OpenCutList
     # -----
 
     def _handle_entity
-      _distribute_entity(@number)
+      _distribute_entity(@number, @spacings)
     end
 
-    def _distribute_entity(number = 1)
-      return if (move_def = _get_move_def(@picked_handle_start_point, @picked_handle_end_point)).nil?
+    def _distribute_entity(number = 1, spacings = [])
+      return if (move_def = _get_move_def(@picked_handle_start_point, @picked_handle_end_point, number, spacings)).nil?
 
-      center, mps, mpe = move_def.values_at(:center, :mps, :mpe)
+      mvs, _ = move_def.values_at(:mvs)
 
       ct = _get_global_context_transformation
       cti = ct.inverse
 
-      center = center.transform(cti)
-      mps = mps.transform(cti)
-      mpe = mpe.transform(cti)
-      mv = mps.vector_to(mpe)
-
       _unhide_instances
-      _unhide_sibling_instances
+      _unhide_twin_instances
 
       model = Sketchup.active_model
       model.start_operation('OCL Distribute Part', true, false, !active?)
-
+      begin
 
         src_instances = get_active_selection_instances
 
@@ -3051,12 +3230,12 @@ module Ladb::OpenCutList
 
           definition = src_instance.definition
 
-          (1..number).each do |i|
+          number.times do |i|
 
-            mt = Geom::Transformation.translation(center.vector_to(mps.offset(mv, mv.length * i / (number + 1.0))))
+            mt = Geom::Transformation.translation(mvs[i].transform(cti))
             mt *= @src_transformations[src_instance]
 
-            if i == 1
+            if i == 0
 
               src_instance.transformation = mt
 
@@ -3075,22 +3254,31 @@ module Ladb::OpenCutList
         end
 
         @number = number
+        @spacings = spacings
 
-      model.commit_operation
+        model.commit_operation
+
+      rescue Exception => e
+        PLUGIN.dump_exception(e)
+        model.abort_operation
+      end
 
     end
 
     # -----
 
-    def _get_move_def(ps, pe)
+    def _get_move_def(ps, pe, number = 1, spacings = [])
       return unless ps.is_a?(Geom::Point3d) && pe.is_a?(Geom::Point3d)
       return unless (v = ps.vector_to(pe)).valid?
+      return unless number.is_a?(Numeric) && number > 0 && spacings.is_a?(Array)
       return unless (drawing_def = _get_drawing_def).is_a?(DrawingDef)
 
       et = _get_edit_transformation
       eti = et.inverse
 
       return unless (eb = _get_drawing_def_edit_bounds(drawing_def, et)).valid?
+
+      measure_type_centered = _fetch_option_copy_measure_type_centered?
 
       # Compute in 'Edit' space
 
@@ -3099,25 +3287,29 @@ module Ladb::OpenCutList
       ecenter = eb.center
       eline = [ ecenter, ev ]
 
-      plane_btm = [ eb.corner(0), Z_AXIS ]
-      ibtm = Geom.intersect_line_plane(eline, plane_btm)
-      if !ibtm.nil? && eb.contains?(ibtm)
-        evs = ecenter.vector_to(ibtm)
-        evs.reverse! if evs.valid? && evs.samedirection?(ev)
+      if measure_type_centered
+        evs = Geom::Vector3d.new
       else
-        plane_lft = [ eb.corner(0), X_AXIS ]
-        ilft = Geom.intersect_line_plane(eline, plane_lft)
-        if !ilft.nil? && eb.contains?(ilft)
-          evs = ecenter.vector_to(ilft)
+        plane_btm = [ eb.corner(0), Z_AXIS ]
+        ibtm = Geom.intersect_line_plane(eline, plane_btm)
+        if !ibtm.nil? && eb.contains?(ibtm)
+          evs = ecenter.vector_to(ibtm)
           evs.reverse! if evs.valid? && evs.samedirection?(ev)
         else
-          plane_frt = [ eb.corner(0), Y_AXIS ]
-          ifrt = Geom.intersect_line_plane(eline, plane_frt)
-          if !ifrt.nil? && eb.contains?(ifrt)
-            evs = ecenter.vector_to(ifrt)
+          plane_lft = [ eb.corner(0), X_AXIS ]
+          ilft = Geom.intersect_line_plane(eline, plane_lft)
+          if !ilft.nil? && eb.contains?(ilft)
+            evs = ecenter.vector_to(ilft)
             evs.reverse! if evs.valid? && evs.samedirection?(ev)
           else
-            evs = Geom::Vector3d.new
+            plane_frt = [ eb.corner(0), Y_AXIS ]
+            ifrt = Geom.intersect_line_plane(eline, plane_frt)
+            if !ifrt.nil? && eb.contains?(ifrt)
+              evs = ecenter.vector_to(ifrt)
+              evs.reverse! if evs.valid? && evs.samedirection?(ev)
+            else
+              evs = Geom::Vector3d.new
+            end
           end
         end
       end
@@ -3134,6 +3326,46 @@ module Ladb::OpenCutList
 
       mps = lps.offset(vs)
       mpe = lpe.offset(ve)
+      mv = mps.vector_to(mpe)
+      mvs = []
+
+      # Extract valid spacings
+      fn_valid_spacing = lambda { |spacing| spacing.is_a?(Length) && spacing >= 0 }
+      start_spacings = spacings.take_while(&fn_valid_spacing)
+      end_spacings = start_spacings.size == spacings.size ? [] : spacings.reverse.take_while(&fn_valid_spacing)
+
+      # Trim spacing according to number
+      if start_spacings.size > number
+        start_spacings = start_spacings.take(number)
+        end_spacings = []
+      elsif start_spacings.size + end_spacings.size > number
+        end_spacings = end_spacings.take(number - start_spacings.size)
+      end
+
+      # Compute middle size
+      middle_size = number - (start_spacings.size + end_spacings.size)
+
+      # Compute interesting lengths
+      instance_length = vs.length * 2
+
+      start_length = 0
+      start_lengths = start_spacings.map { |spacing| (start_length += (spacing + instance_length)).to_l }
+
+      end_length = mv.length
+      end_lengths = end_spacings.map { |spacing| (end_length -= (spacing + instance_length)).to_l }
+
+      middle_length = (end_length - start_length).to_l
+
+      # Convert lengths to vectors
+      start_lengths.each do |length|
+        mvs << center.vector_to(mps.offset(mv, length))
+      end
+      (1..middle_size).each do |i|
+        mvs << center.vector_to(mps.offset(mv, start_length + middle_length * i / (middle_size + 1.0)))
+      end
+      end_lengths.each do |length|
+        mvs << center.vector_to(mps.offset(mv, length))
+      end
 
       {
         drawing_def: drawing_def,
@@ -3145,8 +3377,611 @@ module Ladb::OpenCutList
         lps: lps,
         lpe: lpe,
         mps: mps,
-        mpe: mpe
+        mpe: mpe,
+        mvs: mvs
       }
+    end
+
+  end
+
+  # INTERACT : makes the moving parts move. For now the DOORS (see DoorDef) :
+  # a click opens a closed door wide - by its hinges' max angle - or closes an
+  # open one, animated. A rectangle selection does the same to every door in
+  # it : closes them all when one at least is open, opens them all otherwise.
+  # Dragging a door turns it to the angle the mouse sets.
+  #
+  # The door instance really turns, its opening kept on the instance (see
+  # DoorDef.set_opening) - a hinge or a machining hovered picks its door. While
+  # it moves - animated or dragged - it is only MOVED (Entity#move!, out of the
+  # undo stack), then set once, in a single operation, where it ends.
+  class SmartHandleInteractActionHandler < SmartSelectActionHandler
+
+    include SmartActionHandlerDoorHelper
+
+    STATE_DRAG = 20
+
+    LAYER_3D_DOOR_PREVIEW = 10
+
+    # How far, in pixels, the mouse has to move, button down on a door, to
+    # drag it rather than click it.
+    DRAG_THRESHOLD = 4
+
+    # How long, in seconds, a door takes to swing by 90° when animated.
+    SWING_DURATION_90 = 0.4
+
+    def initialize(tool, previous_action_handler = nil)
+      super(SmartHandleTool::ACTION_INTERACT, tool, previous_action_handler)
+
+      tool.create_3d(LAYER_3D_PART_PREVIEW)
+      tool.create_3d(LAYER_3D_DOOR_PREVIEW)
+
+    end
+
+    # -- STATE --
+
+    def get_state_cursor(state)
+
+      case state
+      when STATE_SELECT
+        return SmartCursorManager.cursor_hand_error   # Nothing to interact with, until a door is hovered
+      when STATE_DRAG
+        return SmartCursorManager.cursor_hand
+      end
+
+      super
+    end
+
+    def get_state_status(state)
+
+      case state
+      when STATE_SELECT
+        return PLUGIN.get_i18n_string("tool.smart_handle.action_#{@action}_state_#{state}_amend_status") + '.' if _amendable?
+        return PLUGIN.get_i18n_string("tool.smart_handle.action_#{@action}_state_#{state}_status") + '.'
+      when STATE_DRAG
+        return PLUGIN.get_i18n_string("tool.smart_handle.action_#{@action}_state_#{state}_status") + '.'
+      end
+
+      super
+    end
+
+    def get_state_vcb_label(state)
+
+      case state
+      when STATE_SELECT
+        return _amendable? ? PLUGIN.get_i18n_string('tool.default.vcb_angle') : ''   # An angle can be typed after a swing only
+      when STATE_DRAG
+        return PLUGIN.get_i18n_string('tool.default.vcb_angle')
+      end
+
+      super
+    end
+
+    # -----
+
+    def stop
+      _cancel_drag
+      @animation.stop unless @animation.nil?
+      super
+    end
+
+    # -----
+
+    def onToolCancel(tool, reason, view)
+
+      case @state
+      when STATE_DRAG
+        _cancel_drag
+        set_state(STATE_SELECT)
+        _refresh
+        return true
+      end
+
+      @drag_start_point_2d = nil
+      _forget_last_motions
+      super
+    end
+
+    def onToolUserText(tool, text, view)
+
+      case @state
+      when STATE_SELECT
+        return true if _read_angle(tool, text, view)
+      end
+
+      super
+    end
+
+    def onToolResume(tool, view)
+      super
+      _update_status
+      true
+    end
+
+    def onToolMouseMove(tool, flags, x, y, view)
+      return true if _animating?
+
+      case @state
+
+      when STATE_SELECT
+        _forget_last_motions if !@last_motions.nil? && _get_last_motions.nil?   # Moved otherwise since : undone...
+        if !@drag_start_point_2d.nil? && @drag_start_point_2d.distance(Geom::Point3d.new(x, y)) > DRAG_THRESHOLD
+          _start_drag(view)
+          set_state(STATE_DRAG) unless @drag_motion.nil?
+          @drag_start_point_2d = nil
+        end
+
+      when STATE_DRAG
+        _drag(x, y, view)
+        return true
+
+      end
+
+      super
+    end
+
+    def onToolLButtonDown(tool, flags, x, y, view)
+      return true if _animating?
+
+      if @state == STATE_SELECT && has_active_part?
+        @drag_start_point_2d = Geom::Point3d.new(x, y)
+        return true
+      end
+
+      super
+    end
+
+    def onToolLButtonUp(tool, flags, x, y, view)
+      return true if _animating?
+
+      case @state
+
+      when STATE_DRAG
+        _end_drag
+        set_state(STATE_SELECT)
+        _set_active_part(nil, nil)   # Hovered again where it stands now
+        _reset
+        _refresh
+        _update_status
+        return true
+
+      when STATE_SELECT
+        unless @drag_start_point_2d.nil?
+          @drag_start_point_2d = nil
+          onSelected
+          return true
+        end
+
+      end
+
+      super
+    end
+
+    def onToolLButtonDoubleClick(tool, flags, x, y, view)
+      onToolLButtonUp(tool, flags, x, y, view)
+    end
+
+    def onActivePartChanged(part_entity_path, part, highlighted = false)
+      super
+      @tool.clear_3d(LAYER_3D_DOOR_PREVIEW)
+      if part_entity_path.is_a?(Array)
+        _forget_last_motions unless @last_motions.is_a?(Array) && @last_motions.any? { |motion, _| motion.instance == part_entity_path.last }
+        @tool.push_cursor(SmartCursorManager.cursor_hand)
+        _preview_door_swing_to_come(part_entity_path)
+      else
+        @tool.pop_cursor(SmartCursorManager.cursor_hand)
+      end
+      false
+    end
+
+    def onSelected
+
+      instances = has_active_part? ? [ get_active_part_entity_path.last ] : get_active_selection_instances.to_a
+      instances = instances.select { |instance| DoorDef.open?(instance) || _door_def_of(instance) }
+
+      Sketchup.active_model.selection.clear
+      _reset
+
+      if instances.any?
+
+        close = instances.any? { |instance| DoorDef.open?(instance) }
+        motions = instances.map { |instance|
+          if (opening = DoorDef.opening_of(instance))
+            from_angle, axis_line = opening
+          else
+            from_angle = 0.0
+            axis_line = _door_def_of(instance).axis_line
+          end
+          to_angle = close ? 0.0 : _door_def_of(instance).max_angle
+          DoorMotion.new(instance, instance.transformation, DoorDef.closed_transformation(instance), axis_line, from_angle, to_angle)
+        }
+        motions.reject! { |motion| motion.from_angle == motion.to_angle }
+
+        unless motions.empty?
+          _animate_motions(motions)
+          return
+        end
+
+      end
+
+      _refresh
+
+    end
+
+    # -----
+
+    # An angle can be typed after a swing only - see #_read_angle.
+    def enableVCB?
+      @state == STATE_SELECT && _amendable?
+    end
+
+    # -----
+
+    protected
+
+    def _start_with_model_selection?
+      false
+    end
+
+    def _clear_selection_on_start?
+      true
+    end
+
+    def _can_activate_locked?
+      false
+    end
+
+    def _get_part_error_cursor
+      SmartCursorManager.cursor_hand_error
+    end
+
+    def _can_activate_part?(part_entity_path, part)
+      can_activate, error_key, error_vars = super
+      return [ can_activate, error_key, error_vars ] unless can_activate && part_entity_path.is_a?(Array)
+
+      instance = part_entity_path.last
+      return [ true, nil ] if DoorDef.open?(instance)   # Hinges gone or changed : still closable
+      return [ false, 'tool.smart_handle.error.not_door' ] if (door_def = DoorDef.from(instance)).nil?
+      return [ false, 'tool.smart_handle.error.incoherent_door' ] unless door_def.coherent?
+
+      [ true, nil ]
+    end
+
+    # -----
+
+    # A hinge or a machining glued into a door picks the door - and so does
+    # any part of a door made of several (see DoorDef), the outermost door of
+    # the path : its stiles bear hinges too. Such a door is no part : the
+    # part hovered stands for it.
+    def _pick_part(picker, view)
+      if (picked_path = picker.picked_face_path).is_a?(Array) &&
+         (index = picked_path.index { |entity| DoorDef.open?(entity) || !DoorDef.from(entity).nil? })
+
+        door_path = picked_path[0..index]
+        _make_unique_groups_in_path(door_path)
+        part = _generate_part_from_path(door_path)
+        if !part.is_a?(Part) && (part_path = _get_part_entity_path_from_path(picked_path)).is_a?(Array) && part_path.length > door_path.length && part_path[0...door_path.length] == door_path
+          part = _generate_part_from_path(part_path)
+        end
+        if part.is_a?(Part)
+          _set_active_part(door_path, part)
+          return
+        end
+
+      end
+      super
+    end
+
+    # A door made of several parts is previewed whole, not as the part
+    # standing for it.
+    def _preview_part(part_entity_path, part, layer = LAYER_3D_PART_PREVIEW, highlighted: false, clear_before: true)
+      return super unless part.is_a?(Part) && part_entity_path.is_a?(Array) && part_entity_path.last.definition.name != part.def.definition_id
+      @tool.clear_3d(layer) if clear_before
+      _preview_door_assembly(part_entity_path, _get_path_part_preview_color(part_entity_path, part, highlighted), _get_path_part_preview_offset(part_entity_path, part, highlighted), layer)
+    end
+
+    # The door the given instance is, nil unless it can open.
+    def _door_def_of(instance)
+      door_def = DoorDef.from(instance)
+      door_def && door_def.coherent? ? door_def : nil
+    end
+
+    def _animating?
+      !@animation.nil? && !@animation.done?
+    end
+
+    # Swings the given motions, then commits them - amending the last
+    # operation when amend.
+    def _animate_motions(motions, amend = false)
+      _forget_last_motions
+      _set_active_part(nil, nil)   # Its highlight would stay where it stood - hovered again once done
+      sweep = motions.map { |motion| (motion.to_angle - motion.from_angle).abs }.max
+      @animation = DoorSwingAnimation.new(motions, SWING_DURATION_90 * sweep / 90.0) { |done_motions|
+        _commit_motions(done_motions, amend)
+        @animation = nil
+        _refresh
+        _update_status
+      }
+      Sketchup.active_model.active_view.animation = @animation
+      _update_status   # An angle can be typed while it swings already
+    end
+
+    # Whether an angle typed now would amend a swing : the one going on, or
+    # the last one while none of its doors moved since.
+    def _amendable?
+      _animating? || !_get_last_motions.nil?
+    end
+
+    # Sets, in a single operation, the given motions where they end - put
+    # back where they started first : the operation has to see them move.
+    # When amend, the operation merges into the previous one : the angle typed
+    # after a swing corrects that swing.
+    def _commit_motions(motions, amend = false)
+      motions = motions.reject { |motion| motion.instance.deleted? }
+      return if motions.empty?
+
+      motions.each { |motion| motion.instance.move!(motion.start_transformation) }
+
+      model = Sketchup.active_model
+      model.start_operation('OCL Interact', true, false, amend)
+      motions.each { |motion| DoorDef.set_opening(motion.instance, motion.to_angle, motion.axis_line) }
+      model.commit_operation
+
+      # Kept, with where each door ended, for an angle typed afterwards
+      @last_motions = motions.map { |motion| [ motion, motion.instance.transformation.to_a ] }
+
+    end
+
+    # The motions of the last swing, while none of their doors moved since.
+    def _get_last_motions
+      return nil unless @last_motions.is_a?(Array)
+      return nil unless @last_motions.all? { |motion, transformation| motion.instance.valid? && motion.instance.transformation.to_a == transformation }
+      @last_motions.map(&:first)
+    end
+
+    def _forget_last_motions
+      return if @last_motions.nil?
+      @last_motions = nil
+      _update_status
+    end
+
+    # Updates the prompt and the VCB of STATE_SELECT : after a swing, they
+    # invite to type an angle and show the one its doors ended at - when they
+    # all share it.
+    def _update_status
+      return unless @state == STATE_SELECT
+      @tool.set_status_prompt(get_state_status(@state))
+      @tool.set_status_vcb_label(get_state_vcb_label(@state))
+      motions = _animating? ? @animation.motions : _get_last_motions
+      if motions.nil?
+        @tool.set_status_vcb_value('')
+      else
+        angles = motions.map { |motion| motion.to_angle.round(1) }.uniq
+        @tool.set_status_vcb_value(angles.length == 1 ? "#{angles.first}°" : '')
+      end
+    end
+
+    # -- Drag --
+
+    # Grabs the hovered door where the mouse button went down.
+    def _start_drag(view)
+      @drag_motion = nil
+      return unless (part_entity_path = get_active_part_entity_path).is_a?(Array)
+
+      instance = part_entity_path.last
+      if (opening = DoorDef.opening_of(instance))
+        angle, axis_line = opening
+      elsif (door_def = _door_def_of(instance))
+        angle, axis_line = 0.0, door_def.axis_line
+      else
+        return
+      end
+      door_def = _door_def_of(instance)
+      max_angle = door_def.nil? ? angle : door_def.max_angle   # Hinges gone : it can only close
+
+      # The world -> door definition space, the door closed
+      parent_transformation = PathUtils.get_transformation(part_entity_path[0...-1], IDENTITY)
+      closed_transformation = DoorDef.closed_transformation(instance)
+      inverse_transformation = (parent_transformation * closed_transformation).inverse
+
+      # The mouse turns in the plane square to the axis through the point
+      # grabbed - through the axis' middle when the door is not under it
+      pivot, axis = axis_line
+      input_point = view.inputpoint(@drag_start_point_2d.x, @drag_start_point_2d.y)
+      if input_point.valid?
+        grabbed_point = input_point.position.transform(inverse_transformation)   # Turned with the door when it is open, but only its position along the axis matters
+      else
+        grabbed_point = _get_door_drawing_def(instance.definition).bounds.center
+      end
+      plane = [ pivot.offset(axis, (grabbed_point - pivot) % axis), axis ]
+
+      motion = DoorMotion.new(instance, instance.transformation, closed_transformation, axis_line, angle, angle)
+      mouse_angle = _get_mouse_angle(@drag_start_point_2d.x, @drag_start_point_2d.y, view, inverse_transformation, plane)
+      return if mouse_angle.nil?
+
+      @drag_motion = motion
+      @drag_max_angle = max_angle
+      @drag_inverse_transformation = inverse_transformation
+      @drag_start_mouse_angle = mouse_angle
+      @drag_plane = plane
+
+      @tool.clear_3d(LAYER_3D_DOOR_PREVIEW)
+      @tool.clear_3d(LAYER_3D_PART_PREVIEW)
+
+    end
+
+    # Turns the grabbed door by as much as the mouse turned around its axis
+    # since it was grabbed.
+    def _drag(x, y, view)
+      return if @drag_motion.nil?
+      return if (mouse_angle = _get_mouse_angle(x, y, view, @drag_inverse_transformation, @drag_plane)).nil?
+
+      delta = (mouse_angle - @drag_start_mouse_angle + 540.0) % 360.0 - 180.0
+      angle = [ [ @drag_motion.from_angle + delta, 0.0 ].max, @drag_max_angle ].min
+
+      @drag_motion.to_angle = angle
+      @drag_motion.instance.move!(@drag_motion.transformation_at(angle))
+      @tool.set_status_vcb_value("#{angle.round(1)}°", true)
+      view.invalidate
+
+    end
+
+    # Sets the dragged door where it was dropped.
+    def _end_drag
+      return if @drag_motion.nil?
+      motion = @drag_motion
+      @drag_motion = nil
+      _commit_motions([ motion ]) unless motion.to_angle == motion.from_angle
+    end
+
+    # Puts the dragged door back where it was grabbed.
+    def _cancel_drag
+      return if @drag_motion.nil?
+      @drag_motion.instance.move!(@drag_motion.start_transformation) unless @drag_motion.instance.deleted?
+      @drag_motion = nil
+    end
+
+    # The angle, in degrees, of the mouse around the axis the given plane is
+    # square to - [ point of the axis, axis ] : where its ray crosses the
+    # plane, read in the door definition space (see the given inverse
+    # transformation), from a fixed direction square to the axis - only
+    # differences of it make sense. nil when the ray runs along the plane.
+    def _get_mouse_angle(x, y, view, inverse_transformation, plane)
+      pivot, axis = plane
+      origin, direction = view.pickray(x, y)
+      origin = origin.transform(inverse_transformation)
+      direction = direction.transform(inverse_transformation)
+      return nil unless direction.valid?
+
+      point = Geom.intersect_line_plane([ origin, direction ], [ pivot, axis ])
+      return nil if point.nil?
+      vector = pivot.vector_to(point)
+      return nil unless vector.valid?
+
+      reference = axis.axes.first
+      Math.atan2((reference * vector) % axis, reference % vector).radians
+    end
+
+    # -- Read --
+
+    # An angle typed after a swing : sets the doors of that swing to it,
+    # amending it. Absolute ('45'), relative ('+10', '-10') or the widest
+    # ('max', '*'), in degrees, clamped to each door's widest opening.
+    def _read_angle(tool, text, view)
+      @animation.stop if _animating?   # Jumps to its end, committed
+      return false if (motions = _get_last_motions).nil?
+
+      value = text.to_s.strip.downcase.delete('°').tr(',', '.')
+      if value == 'max' || value == '*'
+        operator, number = nil, nil
+      elsif (match = value.match(/\A([+-])?\s*(\d+(?:\.\d*)?|\.\d+)\z/))
+        operator, number = match[1], match[2].to_f
+      else
+        UI.beep
+        tool.notify_errors([ [ 'tool.default.error.invalid_angle', { :value => text } ] ])
+        return true
+      end
+
+      motions = motions.map { |last_motion|
+        instance = last_motion.instance
+        door_def = _door_def_of(instance)
+        from_angle = last_motion.to_angle
+        max_angle = door_def.nil? ? from_angle : door_def.max_angle   # Hinges gone : it can only close
+        axis_line = last_motion.axis_line
+        axis_line = door_def.axis_line if from_angle == 0 && !door_def.nil?
+        to_angle = case operator
+                   when '+' then from_angle + number
+                   when '-' then from_angle - number
+                   else number.nil? ? max_angle : number
+                   end
+        to_angle = [ [ to_angle, 0.0 ].max, max_angle ].min
+        DoorMotion.new(instance, instance.transformation, DoorDef.closed_transformation(instance), axis_line, from_angle, to_angle)
+      }
+
+      if motions.all? { |motion| motion.from_angle == motion.to_angle }
+        _update_status
+        return true
+      end
+
+      _animate_motions(motions, true)
+      true
+    end
+
+    # -----
+
+    # The swing a click on the hovered door would make : from closed to wide
+    # open, or from where it stands open back to closed.
+    def _preview_door_swing_to_come(part_entity_path)
+      instance = part_entity_path.last
+      return if (drawing_def = _get_door_drawing_def(instance.definition)).nil?
+
+      t = PathUtils.get_transformation(part_entity_path, IDENTITY)   # Door definition space -> world, as it stands
+      if (opening = DoorDef.opening_of(instance))
+        angle, axis_line = opening
+        _preview_door_swing(t * Geom::Transformation.rotation(axis_line[0], axis_line[1], -angle.degrees), axis_line, angle, 0, drawing_def, LAYER_3D_DOOR_PREVIEW, with_door: false, with_axis: false, single_arc: true)
+      elsif (door_def = _door_def_of(instance))
+        _preview_door_swing(t, door_def.axis_line, 0, door_def.max_angle, drawing_def, LAYER_3D_DOOR_PREVIEW, with_door: false, with_axis: false, single_arc: true)
+      end
+
+    end
+
+    # -----
+
+    # One door moving : its instance, where it started from, its transformation
+    # closed, the axis it turns around, the angle it goes from and to, in
+    # degrees.
+    DoorMotion = Struct.new(:instance, :start_transformation, :closed_transformation, :axis_line, :from_angle, :to_angle) do
+
+      def transformation_at(angle)
+        return closed_transformation unless angle > 0
+        closed_transformation * Geom::Transformation.rotation(axis_line[0], axis_line[1], angle.degrees)
+      end
+
+    end
+
+    # Swings the given motions, eased, then calls the given block. Stopped
+    # before its end - another animation, the tool deactivated - it jumps to
+    # the end.
+    class DoorSwingAnimation
+
+      def initialize(motions, duration, &on_done)
+        @motions = motions
+        @duration = duration
+        @on_done = on_done
+        @start_time = nil
+        @done = false
+      end
+
+      def nextFrame(view)
+        return false if @done
+        @start_time = Time.now if @start_time.nil?
+        progress = @duration > 0 ? [ (Time.now - @start_time) / @duration, 1.0 ].min : 1.0
+        eased = progress * progress * (3 - 2 * progress)  # Smoothstep
+        @motions.each { |motion| motion.instance.move!(motion.transformation_at(motion.from_angle + (motion.to_angle - motion.from_angle) * eased)) }
+        view.show_frame
+        _finish if progress >= 1.0
+        !@done
+      end
+
+      def stop
+        _finish
+      end
+
+      def done?
+        @done
+      end
+
+      def motions
+        @motions
+      end
+
+      private
+
+      def _finish
+        return if @done
+        @done = true
+        @on_done.call(@motions) unless @on_done.nil?
+      end
+
     end
 
   end

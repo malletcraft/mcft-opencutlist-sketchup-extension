@@ -23,8 +23,6 @@ package.json
 src/ladb_opencutlist/js/templates/tabs-twig-templates.js
 src/ladb_opencutlist/ruby/controller/mcft_controller.rb
 src/ladb_opencutlist/ruby/worker/mcft/
-src/ladb_opencutlist/twig/tabs/cutlist/_cuttingdiagram-2d-body.twig
-src/ladb_opencutlist/twig/tabs/cutlist/_slide-mcft-diagram-pack.twig
 test/smoke/
 tools/check-assembly-rule.rb
 tools/check-csv-thickness.rb
@@ -45,6 +43,4 @@ src/ladb_opencutlist.rb
 src/ladb_opencutlist/js/plugins/tabs/jquery.ladb.tab-cutlist.js
 src/ladb_opencutlist/ruby/constants.rb
 src/ladb_opencutlist/ruby/plugin.rb
-src/ladb_opencutlist/twig/tabs/cutlist/_slide-cuttingdiagram-2d.twig
 src/ladb_opencutlist/twig/tabs/cutlist/_slide-estimate.twig
-src/ladb_opencutlist/twig/tabs/cutlist/tab.twig

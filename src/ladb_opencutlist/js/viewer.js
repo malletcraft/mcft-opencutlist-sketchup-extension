@@ -184,6 +184,18 @@ class Box3HelperDashed extends THREE.LineSegments {
 
 const DPI = 96;
 
+const PINS_LENGTH_NONE = 0;
+const PINS_LENGTH_SHORT = 1;
+const PINS_LENGTH_MEDIUM = 2;
+const PINS_LENGTH_LONG = 3;
+const PINS_LENGTH_AUTO = 4;             // Pins laid out along the 4 sides of the frame
+
+const PINS_AUTO_MARGIN = 6;             // In pixels, between the frame and the pins
+const PINS_AUTO_GAP = 3;                // In pixels, between two pins of a side
+const PINS_AUTO_MAX_UNCROSS_PASSES = 20;
+const PINS_AUTO_ANCHOR_MIN_DISTANCE = 6;  // In pixels, between the anchors of two parts on screen
+const PINS_AUTO_MIN_AXIS_ANGLE = 8;     // In degrees, between a leader line and the horizontal or the vertical
+
 let renderer,
     cssRenderer,
     container,
@@ -192,6 +204,7 @@ let renderer,
 
     meshMaterial,
     lineMaterial,
+    benchOutlineMaterial,
     pinLineMaterial,
 
     viewportWidth,
@@ -215,7 +228,24 @@ let renderer,
     axesHelper,
 
     pinsGroup,
-    pinsOptions
+    pinsOptions,
+
+    bench,
+    benchSlotGroups,
+    benchHiddenSlots = {},
+    benchPanels,
+    benchHighlightedSlot,
+    benchSolidMeshes,
+    benchHoveredMesh,
+    benchHoveredDimensions,
+    benchSelectedSolid,
+    benchSelectedDimensions,
+    benchPointerDown,
+    benchMeasureDimension,
+    benchHingeDef,
+    benchHingeDimensions,
+    benchViewMatrix,
+    benchRaycaster
 ;
 
 let animating, animateRequestId;
@@ -276,6 +306,12 @@ const fnInit = function() {
         fog: false,
         color: 0x000000
     });
+    benchOutlineMaterial = new THREE.LineMaterial({
+        color: BENCH_OUTLINE_COLOR,
+        linewidth: BENCH_OUTLINE_WIDTH,   // In pixels
+        transparent: true,   // Drawn after the translucent solids - see BENCH_OUTLINE_RENDER_ORDER - not under them
+        side: THREE.DoubleSide,   // Its quads turn their back in a mirrored slot
+    });
     pinLineMaterial = new THREE.LineBasicMaterial({
         color: 0x000000,
         depthTest: false,
@@ -287,6 +323,20 @@ const fnInit = function() {
 }
 
 const fnAddListeners = function () {
+
+    // Bench : a primitive hovered
+    cssRenderer.domElement.addEventListener('pointermove', fnOnBenchPointerMove);
+    cssRenderer.domElement.addEventListener('pointerleave', function () {
+        fnHoverBenchSolid(null);
+    });
+    controls.addEventListener('start', function () {
+        fnHoverBenchSolid(null);   // Orbiting, zooming : the label would be left behind
+    });
+    // Bench : a primitive clicked - not dragged
+    cssRenderer.domElement.addEventListener('pointerdown', function (event) {
+        benchPointerDown = { x: event.clientX, y: event.clientY };
+    });
+    cssRenderer.domElement.addEventListener('pointerup', fnOnBenchPointerUp);
 
     // Controls listeners
     controls.addEventListener('change', function () {
@@ -326,6 +376,30 @@ const fnAddListeners = function () {
                     if (call.params.showBoxHelper) {
                         fnSetBoxHelperVisible(true);
                     }
+                    break;
+
+                case 'setup_bench':
+                    fnSetupBench(call.params.benchDef);
+                    break;
+
+                case 'select_bench_solid':
+                    fnSelectBenchSolid(call.params.solid);
+                    break;
+
+                case 'highlight_bench_panel':
+                    fnHighlightBenchPanel(call.params.slot);
+                    break;
+
+                case 'show_bench_measure':
+                    fnShowBenchMeasure(call.params.measure);
+                    break;
+
+                case 'show_bench_hinge_cotes':
+                    fnShowBenchHingeCotes(call.params.visible);
+                    break;
+
+                case 'set_bench_slot_visible':
+                    fnSetBenchSlotVisible(call.params.slot, call.params.visible);
                     break;
 
                 case 'set_zoom':
@@ -393,7 +467,8 @@ const fnDispatchHelpersChangedEvent = function () {
         data: {
             boxHelperVisible: boxHelper ? boxHelper.visible : false,
             boxDimensionsHelperVisible: boxDimensionsHelper ? boxDimensionsHelper.visible : false,
-            axesHelperVisible: axesHelper ? axesHelper.visible : false
+            axesHelperVisible: axesHelper ? axesHelper.visible : false,
+            benchSlotsVisible: fnGetBenchSlotsVisible()
         }
     }));
 
@@ -411,11 +486,16 @@ const fnUpdateViewportSize = function () {
     camera.updateProjectionMatrix();
 
     renderer.setSize(window.innerWidth, window.innerHeight);
+    benchOutlineMaterial.resolution.set(window.innerWidth, window.innerHeight);
     cssRenderer.setSize(window.innerWidth, window.innerHeight);
 
 }
 
 const fnRender = function () {
+    fnLayoutAutoPins();   // Before rendering : they follow the view
+    for (const mesh of benchSolidMeshes || []) {
+        if (mesh.userData.benchOutline.visible) fnUpdateBenchOutline(mesh);   // Its silhouette follows the view
+    }
     renderer.render(scene, camera);
     cssRenderer.render(scene, camera);
 }
@@ -736,10 +816,13 @@ const fnSetAxesHelperVisible = function (visible) {
 const fnCreateModelPins = function () {
     if (pinsGroup) {
         pinsGroup.clear();
+        pinsGroup.userData.autoPins = [];
+        pinsGroup.userData.autoModes = null;
     }
     if (model && pinsOptions && !pinsOptions.pinsHidden) {
         if (!pinsGroup) {
             pinsGroup = new THREE.Group();
+            pinsGroup.userData.autoPins = [];
             scene.add(pinsGroup);
         }
         fnCreateGroupPins(model, pinsOptions.pinsColored, pinsOptions.pinsRounded, pinsOptions.pinsLength, pinsOptions.pinsDirection, baseModelCenter);
@@ -757,16 +840,17 @@ const fnCreateGroupPins = function (group, pinsColored, pinsRounded, pinsLength,
 
             let pinLengthFactor;
             switch (pinsLength) {
-                case 0:   // PINS_LENGTH_NONE
+                case PINS_LENGTH_NONE:
+                case PINS_LENGTH_AUTO:  // Positioned later by fnLayoutAutoPins
                     pinLengthFactor = 0
                     break;
-                case 2:   // PINS_LENGTH_MEDIUM
+                case PINS_LENGTH_MEDIUM:
                     pinLengthFactor = 0.2
                     break;
-                case 3:   // PINS_LENGTH_LONG
+                case PINS_LENGTH_LONG:
                     pinLengthFactor = 0.4
                     break;
-                case 1:   // PINS_LENGTH_SHORT
+                case PINS_LENGTH_SHORT:
                 default:
                     pinLengthFactor = 0.1
                     break;
@@ -811,7 +895,7 @@ const fnCreateGroupPins = function (group, pinsColored, pinsRounded, pinsLength,
 
             const pinDiv = document.createElement('div');
             pinDiv.className = 'pin pin-' + pinClass;
-            pinDiv.innerHTML = pinText.striptags().nl2br();
+            pinDiv.textContent = pinText;   // Line breaks kept by the .pin "white-space: pre-line" - see viewer.html
             if (pinBackgroundColor) {
                 pinDiv.style.backgroundColor = pinBackgroundColor;
                 pinDiv.style.borderColor = pinBorderColor;
@@ -831,7 +915,32 @@ const fnCreateGroupPins = function (group, pinsColored, pinsRounded, pinsLength,
             pin.position.copy(pinPosition);
             pinsGroup.add(pin);
 
-            if (pinLengthFactor > 0) {
+            if (pinsLength === PINS_LENGTH_AUTO) {
+                const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([groupCenter, pinPosition]), pinLineMaterial);
+                line.renderOrder = 1;
+                line.frustumCulled = false;   // Its end moves at each render
+                pinsGroup.add(line);
+
+                // Half axes of the part's box, in world - to slide its anchor
+                // off an anchor of another part at the same place on screen
+                const halfAxes = [];
+                const mesh = group.children.find(function (child) { return child.isMesh; });
+                if (mesh) {
+                    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+                    const localBox = mesh.geometry.boundingBox;
+                    const localCenter = localBox.getCenter(new THREE.Vector3());
+                    const localHalfSize = localBox.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+                    const worldCenter = localCenter.clone().applyMatrix4(mesh.matrixWorld);
+                    for (let k = 0; k < 3; k++) {
+                        const p = localCenter.clone();
+                        p.setComponent(k, p.getComponent(k) + localHalfSize.getComponent(k));
+                        halfAxes.push(p.applyMatrix4(mesh.matrixWorld).sub(worldCenter));
+                    }
+                }
+
+                pin.userData.target = groupCenter.clone();   // Its own : moved by fnLayoutAutoPins
+                pinsGroup.userData.autoPins.push({ pin: pin, line: line, center: groupCenter, halfAxes: halfAxes, width: 0, height: 0 });
+            } else if (pinLengthFactor > 0) {
                 const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([groupCenter, pinPosition]), pinLineMaterial);
                 line.renderOrder = 1;
                 pinsGroup.add(line);
@@ -847,6 +956,338 @@ const fnCreateGroupPins = function (group, pinsColored, pinsRounded, pinsLength,
             }
         }
 
+    }
+
+};
+
+// PINS_LENGTH_AUTO : the pins are laid out along the 4 sides of the frame,
+// in the circular order of their anchors around the center of the anchors,
+// so that their straight leader lines do not cross. Computed in screen
+// pixels, then unprojected at the depth of the anchor - the 3D position of a
+// pin is what the LayOut export reads.
+const fnLayoutAutoPins = function () {
+
+    if (!pinsGroup || !pinsGroup.userData.autoPins || pinsGroup.userData.autoPins.length === 0) return;
+
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    if (W === 0 || H === 0) return;
+
+    camera.updateMatrixWorld();   // The controls move it without updating its matrices
+
+    // Project the anchors - measure the pins once
+
+    const fnToPixels = function (point) {
+        const ndc = point.clone().project(camera);
+        return { x: (ndc.x + 1) / 2 * W, y: (1 - ndc.y) / 2 * H, z: ndc.z };
+    };
+    const fnProjectAnchor = function (item, target) {
+        const p = fnToPixels(target);
+        item.target = target;
+        item.ndcZ = p.z;
+        item.ax = p.x;
+        item.ay = p.y;
+    };
+
+    const items = [];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, maxH = 0;
+    for (const autoPin of pinsGroup.userData.autoPins) {
+        if (autoPin.width === 0) {
+            const element = autoPin.pin.element;
+            if (element.parentNode !== cssRenderer.domElement) cssRenderer.domElement.appendChild(element);   // Measurable before its first render
+            autoPin.width = element.offsetWidth;
+            autoPin.height = element.offsetHeight;
+        }
+        const item = {
+            autoPin: autoPin,
+            w: autoPin.width,
+            h: autoPin.height
+        };
+        fnProjectAnchor(item, autoPin.center);
+        items.push(item);
+    }
+
+    // Anchors of several parts at the same place on screen : each one slides
+    // along the longest axis of its part on screen - staying inside its box
+
+    const clusterOf = items.map(function (item, i) { return i; });
+    const fnRoot = function (i) {
+        while (clusterOf[i] !== i) i = clusterOf[i] = clusterOf[clusterOf[i]];
+        return i;
+    };
+    for (let i = 0; i < items.length; i++) {
+        for (let j = i + 1; j < items.length; j++) {
+            if (Math.abs(items[i].ax - items[j].ax) < PINS_AUTO_ANCHOR_MIN_DISTANCE && Math.abs(items[i].ay - items[j].ay) < PINS_AUTO_ANCHOR_MIN_DISTANCE) {
+                clusterOf[fnRoot(i)] = fnRoot(j);
+            }
+        }
+    }
+    const clusters = {};
+    for (let i = 0; i < items.length; i++) {
+        const root = fnRoot(i);
+        (clusters[root] || (clusters[root] = [])).push(items[i]);
+    }
+    for (const root in clusters) {
+        const cluster = clusters[root];
+        if (cluster.length < 2) continue;
+        for (let i = 0; i < cluster.length; i++) {
+            const item = cluster[i];
+            const center = item.autoPin.center;
+            let axis = null, axisLength = 0;
+            for (const halfAxis of item.autoPin.halfAxes) {
+                const p = fnToPixels(center.clone().add(halfAxis));
+                const length = Math.hypot(p.x - item.ax, p.y - item.ay);
+                if (length > axisLength) { axis = halfAxis; axisLength = length; }
+            }
+            const t = ((i + 0.5) / cluster.length * 2 - 1) * 0.8;   // Inside ]-1, 1[ : inside the box
+            fnProjectAnchor(item, axis ? center.clone().addScaledVector(axis, t) : center);
+        }
+    }
+
+    for (const item of items) {
+        minX = Math.min(minX, item.ax); maxX = Math.max(maxX, item.ax);
+        minY = Math.min(minY, item.ay); maxY = Math.max(maxY, item.ay);
+        maxH = Math.max(maxH, item.h);
+    }
+
+    // Sides : 0 = top, 1 = right, 2 = bottom, 3 = left - clockwise on screen.
+    // Each side has its own coordinate u, increasing clockwise, on a span
+    // that leaves the corners to the top and bottom rows.
+
+    const m = PINS_AUTO_MARGIN;
+    const gap = PINS_AUTO_GAP;
+    const sideV0 = m + maxH + gap;
+    const spans = [
+        [ m, W - m ],
+        [ sideV0, H - sideV0 ],
+        [ m, W - m ],
+        [ sideV0, H - sideV0 ]
+    ];
+    const fnExtent = function (item, side) { return side % 2 === 0 ? item.w : item.h; };
+    const fnDesiredU = function (item, side) {
+        switch (side) {
+            case 0: return item.ax;
+            case 1: return item.ay;
+            case 2: return W - item.ax;
+            default: return H - item.ay;
+        }
+    };
+    const fnFree = function (side, list) {
+        let need = 0;
+        for (const item of list) need += fnExtent(item, side);
+        need += gap * Math.max(0, list.length - 1);
+        return (spans[side][1] - spans[side][0]) - need;
+    };
+
+    // Center of the anchors - kept inside the frame
+
+    const cx = Math.min(Math.max((minX + maxX) / 2, m), W - m);
+    const cy = Math.min(Math.max((minY + maxY) / 2, m), H - m);
+
+    // Circular order, starting from the top left corner
+
+    const a0 = Math.atan2(-cy, -cx);
+    const fnKey = function (x, y) {
+        let a = Math.atan2(y - cy, x - cx) - a0;
+        while (a < 0) a += Math.PI * 2;
+        while (a >= Math.PI * 2) a -= Math.PI * 2;
+        return a;
+    };
+    const kTR = fnKey(W, 0);
+    const kBR = fnKey(W, H);
+    const kBL = fnKey(0, H);
+    for (const item of items) item.key = fnKey(item.ax, item.ay);
+    items.sort(function (a, b) { return a.key - b.key; });
+
+    // Each anchor on the side its direction from the center points to
+
+    const sides = [ [], [], [], [] ];
+    for (const item of items) {
+        sides[item.key < kTR ? 0 : item.key < kBR ? 1 : item.key < kBL ? 2 : 3].push(item);
+    }
+    for (let s = 0; s < 4; s++) {
+        sides[s].sort(function (a, b) { return fnDesiredU(a, s) - fnDesiredU(b, s); });   // Fewer crossings than the angle
+    }
+
+    // Rebalance : an overflowing side gives its end pins to its neighbours -
+    // the circular order is kept
+
+    for (let i = 0; i < items.length * 4; i++) {
+        let side = -1, sideFree = 0;
+        for (let s = 0; s < 4; s++) {
+            const free = fnFree(s, sides[s]);
+            if (free < sideFree) { side = s; sideFree = free; }
+        }
+        if (side < 0) break;
+        const prev = (side + 3) % 4;
+        const next = (side + 1) % 4;
+        const first = sides[side][0];
+        const last = sides[side][sides[side].length - 1];
+        const prevFree = fnFree(prev, sides[prev]) - fnExtent(first, prev) - gap;
+        const nextFree = fnFree(next, sides[next]) - fnExtent(last, next) - gap;
+        if (Math.max(prevFree, nextFree) <= sideFree) break;   // No better place
+        if (prevFree >= nextFree) {
+            sides[prev].push(sides[side].shift());
+        } else {
+            sides[next].unshift(sides[side].pop());
+        }
+    }
+
+    // Place the pins of a side, in order, over its whole length, the same
+    // space between two heads. Three distributions of the ends :
+    //   0 = the same space before the first head and after the last one,
+    //   1 = half a space there,
+    //   2 = no space there - the heads at the ends of the side.
+    // A pin alone on its side : 0 = centered, 1 and 2 = just off the axis of
+    // its anchor, on one side or the other - back to the center as soon as
+    // its leader is far enough from the axes there.
+    // A leader close to the horizontal or the vertical is mistaken for an
+    // edge of the drawing : the distribution of the side is kept while all its
+    // leaders stay PINS_AUTO_MIN_AXIS_ANGLE away from the axes, otherwise the
+    // one with the fewest leaders too close, then the farthest from them, is
+    // chosen - the first one if equal.
+    // If it overflows, from end to end with negative spaces, pins overlap.
+
+    const autoModes = pinsGroup.userData.autoModes || (pinsGroup.userData.autoModes = [ 0, 0, 0, 0 ]);
+
+    const fnComputeUs = function (side, mode) {
+        const list = sides[side];
+        const n = list.length;
+        const lo = spans[side][0];
+        const hi = spans[side][1];
+        let extents = 0;
+        for (const item of list) extents += fnExtent(item, side);
+        const free = hi - lo - extents;
+        if (n === 1 && free >= 0 && mode > 0) {
+
+            // Alone : centered for 0, otherwise just off the axis of its
+            // anchor, on one side (1) or the other (2)
+            const item = list[0];
+            const e = fnExtent(item, side);
+            const au = fnDesiredU(item, side);
+            const p = fnToScreen(item, side, au);
+            const d = Math.hypot(p[0] - item.ax, p[1] - item.ay);
+            const offset = d * Math.tan(PINS_AUTO_MIN_AXIS_ANGLE * 1.5 * Math.PI / 180);
+            return [ Math.min(Math.max(au + (mode === 1 ? offset : -offset), lo + e / 2), hi - e / 2) ];
+
+        }
+        let space, u;
+        if (free < 0 || mode === 2) {
+            space = n > 1 ? free / (n - 1) : 0;
+            u = n > 1 ? lo : lo + free / 2;
+        } else if (mode === 1) {
+            space = free / n;
+            u = lo + space / 2;
+        } else {
+            space = free / (n + 1);
+            u = lo + space;
+        }
+        const us = [];
+        for (const item of list) {
+            const e = fnExtent(item, side);
+            us.push(u + e / 2);
+            u += e + space;
+        }
+        return us;
+    };
+    const fnToScreen = function (item, side, u) {
+        switch (side) {
+            case 0: return [ u, m + item.h / 2 ];
+            case 1: return [ W - m - item.w / 2, u ];
+            case 2: return [ W - u, H - m - item.h / 2 ];
+            default: return [ m + item.w / 2, H - u ];
+        }
+    };
+    const fnAxisScore = function (side, us) {   // Count of the leaders too close to an axis, minus the smallest angle in degrees / 90
+        let count = 0, min = 45;
+        for (let i = 0; i < us.length; i++) {
+            const item = sides[side][i];
+            const p = fnToScreen(item, side, us[i]);
+            const dx = Math.abs(p[0] - item.ax);
+            const dy = Math.abs(p[1] - item.ay);
+            if (dx < 1 && dy < 1) continue;
+            const a = Math.atan2(dy, dx) * 180 / Math.PI;
+            const angle = Math.min(a, 90 - a);
+            if (angle < PINS_AUTO_MIN_AXIS_ANGLE) count++;
+            min = Math.min(min, angle);
+        }
+        return count - min / 90;
+    };
+
+    const fnPlaceSide = function (side) {
+        const list = sides[side];
+        if (list.length === 0) return;
+        if (list.length === 1 && autoModes[side] !== 0 && fnAxisScore(side, fnComputeUs(side, 0)) < 0) {
+            autoModes[side] = 0;   // Alone : back to the center as soon as possible
+        }
+        let us = fnComputeUs(side, autoModes[side]);
+        if (fnAxisScore(side, us) >= 0) {   // At least one leader too close to an axis
+            let bestScore = Infinity;
+            for (let mode = 0; mode < 3; mode++) {
+                const modeUs = fnComputeUs(side, mode);
+                const score = fnAxisScore(side, modeUs);
+                if (score < bestScore - 1e-6) {
+                    bestScore = score;
+                    autoModes[side] = mode;
+                    us = modeUs;
+                }
+            }
+        }
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            const p = fnToScreen(item, side, us[i]);
+            item.side = side;
+            item.index = i;
+            item.px = p[0];
+            item.py = p[1];
+        }
+    };
+    for (let s = 0; s < 4; s++) fnPlaceSide(s);
+
+    // Uncross : two crossing leaders swap their slots
+
+    const fnOrient = function (x1, y1, x2, y2, x3, y3) {
+        return (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1);
+    };
+    const fnCross = function (a, b) {
+        const d1 = fnOrient(a.ax, a.ay, a.px, a.py, b.ax, b.ay);
+        const d2 = fnOrient(a.ax, a.ay, a.px, a.py, b.px, b.py);
+        const d3 = fnOrient(b.ax, b.ay, b.px, b.py, a.ax, a.ay);
+        const d4 = fnOrient(b.ax, b.ay, b.px, b.py, a.px, a.py);
+        return d1 * d2 < 0 && d3 * d4 < 0;
+    };
+    for (let pass = 0; pass < PINS_AUTO_MAX_UNCROSS_PASSES; pass++) {
+        let swapped = false;
+        for (let i = 0; i < items.length; i++) {
+            for (let j = i + 1; j < items.length; j++) {
+                const a = items[i];
+                const b = items[j];
+                if (fnCross(a, b)) {
+                    const aSide = a.side, aIndex = a.index;
+                    const bSide = b.side, bIndex = b.index;
+                    sides[aSide][aIndex] = b;
+                    sides[bSide][bIndex] = a;
+                    fnPlaceSide(aSide);
+                    if (bSide !== aSide) fnPlaceSide(bSide);
+                    swapped = true;
+                }
+            }
+        }
+        if (!swapped) break;
+    }
+
+    // Back to 3D
+
+    for (const item of items) {
+        const position = new THREE.Vector3(item.px / W * 2 - 1, 1 - item.py / H * 2, item.ndcZ).unproject(camera);
+        const pin = item.autoPin.pin;
+        pin.position.copy(position);
+        pin.userData.position.copy(position);
+        pin.userData.target.copy(item.target);
+        const positions = item.autoPin.line.geometry.attributes.position;
+        positions.setXYZ(0, item.target.x, item.target.y, item.target.z);
+        positions.setXYZ(1, position.x, position.y, position.z);
+        positions.needsUpdate = true;
     }
 
 };
@@ -1119,6 +1560,727 @@ const fnSetupModel = function(modelDef, partsColored, partsOpacity, pinsHidden, 
 
 }
 
+// Bench (hardware editor) : fictional panels and the solids of the hardware
+// laid on them, rebuilt on each edit - the camera stays where it is.
+
+const BENCH_PANEL_COLORS = { a: 0xf0c987, b: 0xa9d19e };
+const BENCH_PANEL_PIN_COLORS = { a: '#c98a1c', b: '#4e9442' };
+const BENCH_PANEL_OPACITY = 0.45;
+const BENCH_REFERENCE_DARKEN = 0.4;   // Its panel's color darkened, as SmartJoin shows it - see COLOR_REF_DARKEN_A
+const BENCH_REFERENCE_ARROW_LENGTH = 50 / 25.4;
+const BENCH_PANEL_HIGHLIGHTED_OPACITY = 0.85;
+const BENCH_PART_COLORS = { hardware: 0x8c8c8c, machining: 0x2e7fd9 };
+const BENCH_REFUSED_COLOR = 0xd9534f;   // A refused article's parts, as Bootstrap's danger
+const BENCH_OUTLINE_COLOR = 0xffffff;
+const BENCH_OUTLINE_WIDTH = 1;
+const BENCH_OUTLINE_RENDER_ORDER = 1;
+const BENCH_OUTLINE_HARD_COS = Math.cos(30 * Math.PI / 180);   // As the edges drawn - see fnAddBenchObject
+const BENCH_AXIS_COLORS = { x: 0xff000f, y: 0x00bb00, z: 0x0032ff };   // As SketchUp draws them - see Kuix::COLOR_X, COLOR_Y, COLOR_Z
+const BENCH_DIMENSION_HEAD_LENGTH = 3 / 25.4;
+const BENCH_DIMENSION_RENDER_ORDER = 999;
+const BENCH_MEASURE_DARKEN = 0.4;   // Its panel's pin color darkened, to be seen over the panels
+const BENCH_HINGE_COLOR = 0xd9368f;
+const BENCH_HINGE_DOOR_OPACITY = 0.12;
+const BENCH_HINGE_AXIS_RADIUS = 0.75 / 25.4;
+const BENCH_HINGE_AXIS_OVERRUN = 15 / 25.4;   // Past the door, at each end
+const BENCH_HINGE_AXIS_DASH = 6 / 25.4;
+const BENCH_HINGE_ARC_SEGMENTS = 48;
+
+const fnCreateBenchSolidGeometry = function (solidDef) {
+
+    const height = solidDef.z_max - solidDef.z_min;
+    const radius = solidDef.diameter / 2;
+    let geometry;
+
+    if (solidDef.outline) {
+
+        // A prism : its outline extruded along Z
+        const shape = new THREE.Shape(solidDef.outline.map(function (point) { return new THREE.Vector2(point[0], point[1]); }));
+        geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+        geometry.translate(0, 0, solidDef.z_min);
+
+    } else if (solidDef.profile) {
+
+        // A round solid widened at one end : its outline revolved around Z
+        const points = [ new THREE.Vector2(0, solidDef.profile[0][1]) ];
+        for (const point of solidDef.profile) {
+            points.push(new THREE.Vector2(point[0], point[1]));
+        }
+        points.push(new THREE.Vector2(0, solidDef.profile[solidDef.profile.length - 1][1]));
+        geometry = new THREE.LatheGeometry(points, 32);
+        geometry.rotateX(Math.PI / 2);   // Its axis from Y to Z
+
+    } else if (solidDef.length) {
+
+        // A slot with round ends, its length along X
+        const straight = solidDef.length / 2 - radius;
+        const shape = new THREE.Shape();
+        shape.moveTo(-straight, -radius);
+        shape.lineTo(straight, -radius);
+        shape.absarc(straight, 0, radius, -Math.PI / 2, Math.PI / 2, false);
+        shape.lineTo(-straight, radius);
+        shape.absarc(-straight, 0, radius, Math.PI / 2, Math.PI * 3 / 2, false);
+        geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 16 });
+        geometry.translate(0, 0, solidDef.z_min);
+
+    } else {
+
+        geometry = new THREE.CylinderGeometry(radius, radius, height, 32);
+        geometry.rotateX(Math.PI / 2);   // Its axis from Y to Z
+        geometry.translate(0, 0, solidDef.z_min + height / 2);
+
+    }
+    geometry.translate(solidDef.x, solidDef.y, 0);
+
+    return geometry;
+};
+
+const fnAddBenchObject = function (parent, geometry, color, opacity) {
+
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+        side: THREE.DoubleSide,
+        color: color,
+        transparent: opacity < 1,
+        opacity: opacity,
+        depthWrite: opacity >= 1,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+    }));
+    parent.add(mesh);
+
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 30), lineMaterial);
+    parent.add(edges);
+
+    return mesh;
+};
+
+// The reference face of a panel - [ axis, 'min' | 'max' ] - : an arrow
+// along its normal, from its center - as SmartJoin shows it.
+const fnAddBenchReferenceFace = function (parent, reference, min, max, color) {
+
+    const axis = reference[0];
+    const direction = new THREE.Vector3();
+    direction.setComponent(axis, reference[1] === 'max' ? 1 : -1);
+    const origin = min.clone().add(max).multiplyScalar(0.5);
+    origin.setComponent(axis, (reference[1] === 'max' ? max : min).getComponent(axis));
+
+    parent.add(new THREE.ArrowHelper(
+        direction,
+        origin,
+        BENCH_REFERENCE_ARROW_LENGTH,
+        new THREE.Color(color).multiplyScalar(1 - BENCH_REFERENCE_DARKEN),
+        BENCH_REFERENCE_ARROW_LENGTH * 0.25,
+        BENCH_REFERENCE_ARROW_LENGTH * 0.12
+    ));
+
+};
+
+// The pin of a panel : at the center of its face the farthest from the
+// joint - the origin - so it doesn't hide the hardware.
+const fnAddBenchPanelPin = function (parent, slot, min, max) {
+
+    const position = min.clone().add(max).multiplyScalar(0.5);
+    let farthest = -1;
+    for (const axis of [ 'x', 'y', 'z' ]) {
+        for (const value of [ min[axis], max[axis] ]) {
+            if (Math.abs(value) > farthest) {
+                farthest = Math.abs(value);
+                position.copy(min.clone().add(max).multiplyScalar(0.5));
+                position[axis] = value;
+            }
+        }
+    }
+
+    const pinDiv = document.createElement('div');
+    pinDiv.className = 'pin pin-rounded bench-pin';
+    pinDiv.textContent = slot.toUpperCase();
+    pinDiv.style.backgroundColor = BENCH_PANEL_PIN_COLORS[slot] || '#000000';
+    pinDiv.style.borderColor = BENCH_PANEL_PIN_COLORS[slot] || '#000000';
+
+    const pin = new THREE.CSS2DObject(pinDiv);
+    pin.position.copy(position);
+    parent.add(pin);
+
+    return pin;
+};
+
+// Where the given mesh is on the screen : the rectangle - in pixels of the
+// page - around its bounding box's corners.
+const fnGetBenchScreenRect = function (mesh) {
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+    const box = mesh.geometry.boundingBox;
+    const rect = renderer.domElement.getBoundingClientRect();
+    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    for (let i = 0; i < 8; i++) {
+        const corner = new THREE.Vector3(
+            i & 1 ? box.max.x : box.min.x,
+            i & 2 ? box.max.y : box.min.y,
+            i & 4 ? box.max.z : box.min.z
+        ).applyMatrix4(mesh.matrixWorld).project(camera);
+        const x = rect.left + (corner.x + 1) / 2 * rect.width;
+        const y = rect.top + (1 - corner.y) / 2 * rect.height;
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        top = Math.min(top, y);
+        bottom = Math.max(bottom, y);
+    }
+    return { left: left, top: top, width: right - left, height: bottom - top };
+};
+
+// A cote : two arrows from its middle to its ends, its text at the middle.
+const fnAddBenchDimension = function (group, from, to, text, color) {
+    const length = from.distanceTo(to);
+    if (length < 1e-6) return;
+    const middle = from.clone().add(to).multiplyScalar(0.5);
+    const headLength = Math.min(BENCH_DIMENSION_HEAD_LENGTH, length / 3);
+    for (const [ start, end ] of [ [ middle, from ], [ middle, to ] ]) {
+        const arrow = new THREE.ArrowHelper(end.clone().sub(start).normalize(), start, length / 2, color, headLength, headLength * 0.5);
+        arrow.traverse(function (object) {
+            if (object.material) {
+                // Seen through the geometry : drawn last - with the transparent objects, after them - whatever the depth
+                object.material.depthTest = false;
+                object.material.depthWrite = false;
+                object.material.transparent = true;
+            }
+            object.renderOrder = BENCH_DIMENSION_RENDER_ORDER;
+        });
+        group.add(arrow);
+    }
+    const div = document.createElement('div');
+    div.className = 'dim bench-dim';
+    div.textContent = text;
+    div.style.color = '#' + new THREE.Color(color).getHexString();
+    const label = new THREE.CSS2DObject(div);
+    label.position.copy(middle);
+    group.add(label);
+};
+
+// The position of the given solid, as the descriptor gives it : its x, y
+// and z in the frame of its part - one cote along each axis, from the
+// origin to its axis, on the plane of the joint or its nearest end.
+const fnAddBenchSolidDimensions = function (mesh) {
+
+    const solidDef = mesh.userData.benchSolidDef;
+    if (!solidDef.cotes) return null;   // One of an article
+    const group = new THREE.Group();
+    group.applyMatrix4(new THREE.Matrix4().fromArray(solidDef.part_transformation));
+
+    const position = new THREE.Vector3().fromArray(solidDef.cotes.position);
+    const from = new THREE.Vector3().fromArray(solidDef.cotes.origin);
+    for (const axis of [ 'x', 'y', 'z' ]) {
+        const to = from.clone();
+        to[axis] = position[axis];
+        fnAddBenchDimension(group, from, to, solidDef.texts[axis], BENCH_AXIS_COLORS[axis]);   // Its axis' color
+        from.copy(to);
+    }
+
+    bench.add(group);
+
+    return group;
+};
+
+const fnRemoveBenchObject = function (object) {
+    object.traverse(function (child) {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material && child.material !== lineMaterial && child.material !== benchOutlineMaterial) child.material.dispose();
+        // Its own 'removed' only fires when a CSS2DObject is removed itself, not its parent
+        if (child.isCSS2DObject && child.element.parentNode) child.element.parentNode.removeChild(child.element);
+    });
+    if (object.parent) object.parent.remove(object);
+};
+
+// The solid under the pointer - a primitive - stands out with its position
+// cotes, and the page
+// is told - 'hovered.bench' - to show its label beside it : { label, rect }
+// - see fnGetBenchScreenRect. null : none.
+const fnHoverBenchSolid = function (mesh) {
+    if (mesh === benchHoveredMesh) return;
+    const previous = benchHoveredMesh;
+    if (benchHoveredDimensions) {
+        fnRemoveBenchObject(benchHoveredDimensions);
+        benchHoveredDimensions = null;
+    }
+    benchHoveredMesh = mesh;
+    if (previous) {
+        fnPaintBenchSolid(previous);
+    }
+    if (mesh) {
+        fnPaintBenchSolid(mesh);
+        if (!fnIsBenchSolidSelected(mesh)) {
+            benchHoveredDimensions = fnAddBenchSolidDimensions(mesh);   // The selected one has its own
+        }
+    }
+    fnRender();
+    window.frameElement.dispatchEvent(new MessageEvent('hovered.bench', {
+        data: mesh ? { label: mesh.userData.benchLabel, rect: fnGetBenchScreenRect(mesh) } : null
+    }));
+};
+
+// The look of the given solid : its outline stands out when hovered or
+// selected, its faces stay as they are.
+const fnPaintBenchSolid = function (mesh) {
+    mesh.userData.benchOutline.visible = mesh === benchHoveredMesh || fnIsBenchSolidSelected(mesh);
+    if (mesh.userData.benchOutline.visible) fnUpdateBenchOutline(mesh);
+};
+
+// The edges of the given geometry - its vertices welded - with the normals
+// of their faces : [ { a, b, normals } ].
+const fnGetBenchSolidEdges = function (geometry) {
+    const position = geometry.attributes.position;
+    const index = geometry.index;
+    const count = index ? index.count : position.count;
+    const vertices = [];
+    const vertexIds = {};
+    const fnVertexId = function (i) {
+        const vertex = new THREE.Vector3().fromBufferAttribute(position, index ? index.getX(i) : i);
+        const key = vertex.toArray().map(function (c) { return Math.round(c * 1e5); }).join(',');
+        if (vertexIds[key] === undefined) {
+            vertexIds[key] = vertices.length;
+            vertices.push(vertex);
+        }
+        return vertexIds[key];
+    };
+    const edges = {};
+    const triangle = new THREE.Triangle();
+    for (let i = 0; i + 2 < count; i += 3) {
+        const ids = [ fnVertexId(i), fnVertexId(i + 1), fnVertexId(i + 2) ];
+        triangle.set(vertices[ids[0]], vertices[ids[1]], vertices[ids[2]]);
+        if (triangle.getArea() < 1e-12) continue;   // The poles of a lathe
+        const normal = triangle.getNormal(new THREE.Vector3());
+        for (let j = 0; j < 3; j++) {
+            const a = Math.min(ids[j], ids[(j + 1) % 3]);
+            const b = Math.max(ids[j], ids[(j + 1) % 3]);
+            const key = a + '_' + b;
+            if (!edges[key]) edges[key] = { a: vertices[a], b: vertices[b], normals: [] };
+            edges[key].normals.push(normal);
+        }
+    }
+    return Object.values(edges);
+};
+
+// The outline of the given solid, as seen now : its hard edges and its
+// silhouette - the smooth edges between a face toward the camera and a face
+// away from it.
+const fnUpdateBenchOutline = function (mesh) {
+    if (!mesh.userData.benchEdges) mesh.userData.benchEdges = fnGetBenchSolidEdges(mesh.geometry);
+    mesh.updateWorldMatrix(true, false);
+    const direction = camera.getWorldDirection(new THREE.Vector3()).transformDirection(mesh.matrixWorld.clone().invert());
+    const positions = [];
+    for (const edge of mesh.userData.benchEdges) {
+        const hard = edge.normals.length !== 2 || edge.normals[0].dot(edge.normals[1]) < BENCH_OUTLINE_HARD_COS;
+        if (hard || edge.normals[0].dot(direction) * edge.normals[1].dot(direction) < 0) {
+            positions.push(edge.a.x, edge.a.y, edge.a.z, edge.b.x, edge.b.y, edge.b.z);
+        }
+    }
+    const outline = mesh.userData.benchOutline;
+    outline.geometry.dispose();
+    outline.geometry = new THREE.LineSegmentsGeometry().setPositions(positions);
+};
+
+// The primitive of the given solid - { slot, part, key, index } - see
+// HardwareBenchComputeWorker#_slot.
+const fnGetBenchSolidPrimitive = function (mesh) {
+    const solidDef = mesh.userData.benchSolidDef;
+    const primitive = { slot: solidDef.slot, part: solidDef.part, key: solidDef.key, index: solidDef.index };
+    if (solidDef.article) primitive.article = solidDef.article;
+    return primitive;
+};
+
+// Selected : the primitive, or any solid of the article - { slot, article }.
+const fnIsBenchSolidSelected = function (mesh) {
+    if (!benchSelectedSolid) return false;
+    const primitive = fnGetBenchSolidPrimitive(mesh);
+    if (benchSelectedSolid.article && benchSelectedSolid.key === undefined) {
+        return primitive.slot === benchSelectedSolid.slot && primitive.article === benchSelectedSolid.article;
+    }
+    if (!benchSelectedSolid.article && benchSelectedSolid.key === undefined) {   // A whole part - its short form's article
+        return primitive.slot === benchSelectedSolid.slot && !primitive.article && primitive.part === benchSelectedSolid.part;
+    }
+    return primitive.slot === benchSelectedSolid.slot
+        && primitive.article === benchSelectedSolid.article
+        && primitive.part === benchSelectedSolid.part
+        && primitive.key === benchSelectedSolid.key
+        && primitive.index === benchSelectedSolid.index;
+};
+
+// The primitive the editor works on - { slot, part, key, index } - stands
+// out with its position cotes, through the rebuilds. null : none.
+const fnSelectBenchSolid = function (solid) {
+    benchSelectedSolid = solid || null;
+    if (benchSelectedDimensions) {
+        fnRemoveBenchObject(benchSelectedDimensions);
+        benchSelectedDimensions = null;
+    }
+    for (const mesh of benchSolidMeshes || []) {
+        fnPaintBenchSolid(mesh);
+        if (!benchSelectedDimensions && fnIsBenchSolidSelected(mesh) && benchSelectedSolid.key !== undefined) {   // Not of a whole article
+            benchSelectedDimensions = fnAddBenchSolidDimensions(mesh);
+        }
+    }
+    if (benchHoveredDimensions && benchHoveredMesh && fnIsBenchSolidSelected(benchHoveredMesh)) {
+        fnRemoveBenchObject(benchHoveredDimensions);
+        benchHoveredDimensions = null;
+    }
+    fnUpdateBenchAxes();
+    fnRender();
+};
+
+// The axes in the frame the coordinates of the selected primitive are read
+// in - its slot's, mirrored, offset, an article's - the bench's without one :
+// a z of b along Y, b's Z reversed, reads as it shows.
+const fnUpdateBenchAxes = function () {
+    if (!bench || !axesHelper || !benchViewMatrix) return;
+    const matrix = benchViewMatrix.clone();
+    if (benchSelectedSolid && benchSelectedSolid.key !== undefined) {   // Not of a whole article
+        const mesh = (benchSolidMeshes || []).find(fnIsBenchSolidSelected);
+        if (mesh && mesh.userData.benchSolidDef.part_transformation) {
+            matrix.multiply(new THREE.Matrix4().fromArray(mesh.userData.benchSolidDef.part_transformation));
+        }
+    }
+    axesHelper.matrixAutoUpdate = false;
+    axesHelper.matrix.copy(matrix);
+    axesHelper.matrixWorldNeedsUpdate = true;
+};
+
+// A solid clicked : the page is told - 'clicked.bench' - its primitive.
+const fnOnBenchPointerUp = function (event) {
+    const down = benchPointerDown;
+    benchPointerDown = null;
+    if (!down || Math.abs(event.clientX - down.x) + Math.abs(event.clientY - down.y) > 3) {
+        return; // Orbited
+    }
+    fnOnBenchPointerMove(event);   // What is under it now
+    if (benchHoveredMesh) {
+        window.frameElement.dispatchEvent(new MessageEvent('clicked.bench', {
+            data: fnGetBenchSolidPrimitive(benchHoveredMesh)
+        }));
+    }
+};
+
+const fnOnBenchPointerMove = function (event) {
+    if (!bench || !benchSolidMeshes || benchSolidMeshes.length === 0 || event.buttons !== 0) {
+        fnHoverBenchSolid(null);   // None, or orbiting
+        return;
+    }
+    const rect = renderer.domElement.getBoundingClientRect();
+    const pointer = new THREE.Vector2(
+        (event.clientX - rect.left) / rect.width * 2 - 1,
+        -(event.clientY - rect.top) / rect.height * 2 + 1
+    );
+    if (!benchRaycaster) benchRaycaster = new THREE.Raycaster();
+    benchRaycaster.setFromCamera(pointer, camera);
+    const intersects = benchRaycaster.intersectObjects(benchSolidMeshes.filter(function (mesh) { return !benchHiddenSlots[mesh.userData.benchSlot]; }), false);
+    fnHoverBenchSolid(intersects.length > 0 ? intersects[0].object : null);
+};
+
+// The door turning on its hinge - see HardwareBenchComputeWorker#_hinge - :
+// the axis - dashed when it only stands in for a moving one - the door at
+// its widest opening, and the arcs its hinged edge sweeps to get there, at
+// its end toward -X.
+const fnAddBenchHinge = function (parent, hingeDef, doorPanelDef) {
+
+    const origin = new THREE.Vector3().fromArray(hingeDef.origin);
+    const axis = new THREE.Vector3().fromArray(hingeDef.axis).normalize();
+    const angle = THREE.MathUtils.degToRad(hingeDef.max_angle);
+    const fnRotation = function (a) {
+        return new THREE.Matrix4().makeTranslation(origin.x, origin.y, origin.z)
+            .multiply(new THREE.Matrix4().makeRotationAxis(axis, a))
+            .multiply(new THREE.Matrix4().makeTranslation(-origin.x, -origin.y, -origin.z));
+    };
+    const material = new THREE.MeshBasicMaterial({ color: BENCH_HINGE_COLOR });
+    const lineMaterial = new THREE.LineBasicMaterial({ color: BENCH_HINGE_COLOR });
+
+    const min = doorPanelDef ? new THREE.Vector3().fromArray(doorPanelDef.min) : origin.clone();
+    const max = doorPanelDef ? new THREE.Vector3().fromArray(doorPanelDef.max) : origin.clone();
+    const corners = [];
+    for (let i = 0; i < 8; i++) {
+        corners.push(new THREE.Vector3(i & 1 ? max.x : min.x, i & 2 ? max.y : min.y, i & 4 ? max.z : min.z));
+    }
+
+    // The axis, along the door
+    let start = Infinity, end = -Infinity;
+    for (const corner of corners) {
+        const t = corner.clone().sub(origin).dot(axis);
+        start = Math.min(start, t);
+        end = Math.max(end, t);
+    }
+    start -= BENCH_HINGE_AXIS_OVERRUN;
+    end += BENCH_HINGE_AXIS_OVERRUN;
+    const dash = hingeDef.approximate ? BENCH_HINGE_AXIS_DASH : end - start;
+    const orientation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+    for (let t = start; t < end - 1e-9; t += dash * 2) {
+        const length = Math.min(dash, end - t);
+        const cylinder = new THREE.Mesh(new THREE.CylinderGeometry(BENCH_HINGE_AXIS_RADIUS, BENCH_HINGE_AXIS_RADIUS, length, 12), material);
+        cylinder.quaternion.copy(orientation);
+        cylinder.position.copy(origin).addScaledVector(axis, t + length / 2);
+        parent.add(cylinder);
+    }
+
+    if (!doorPanelDef) return;
+
+    // The door, wide open
+    const size = max.clone().sub(min);
+    const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+    geometry.translate(min.x + size.x / 2, min.y + size.y / 2, min.z + size.z / 2);
+    geometry.applyMatrix4(fnRotation(angle));
+    parent.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+        side: THREE.DoubleSide,
+        color: BENCH_HINGE_COLOR,
+        transparent: true,
+        opacity: BENCH_HINGE_DOOR_OPACITY,
+        depthWrite: false,
+    })));
+    parent.add(new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 30), lineMaterial));
+
+    // The arcs of its hinged edge - toward +Y - at its end toward -X
+    for (const corner of corners.filter(function (c) { return c.x === min.x && c.y === max.y; })) {
+        const points = [];
+        for (let i = 0; i <= BENCH_HINGE_ARC_SEGMENTS; i++) {
+            points.push(corner.clone().applyMatrix4(fnRotation(angle * i / BENCH_HINGE_ARC_SEGMENTS)));
+        }
+        parent.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial));
+    }
+
+};
+
+// The position of the hinge's axis - its pivot row hovered - : its y and
+// z in the frame of the hardware, from its origin. false : hidden.
+const fnShowBenchHingeCotes = function (visible) {
+    if (benchHingeDimensions) {
+        fnRemoveBenchObject(benchHingeDimensions);
+        benchHingeDimensions = null;
+    }
+    if (bench && visible && benchHingeDef) {
+        const cotes = benchHingeDef.cotes;
+        const origin = new THREE.Vector3().fromArray(cotes.origin);
+        const y = new THREE.Vector3().fromArray(cotes.y);
+        benchHingeDimensions = new THREE.Group();
+        fnAddBenchDimension(benchHingeDimensions, origin, y, benchHingeDef.texts.y, BENCH_AXIS_COLORS.y);
+        fnAddBenchDimension(benchHingeDimensions, y, new THREE.Vector3().fromArray(cotes.position), benchHingeDef.texts.z, BENCH_AXIS_COLORS.z);
+        fnGetBenchSlotGroup('a').add(benchHingeDimensions);
+        fnApplyBenchSlotsVisible();
+    }
+    fnRender();
+};
+
+// The cote of a measure of the joint - its row hovered - : { slot, from,
+// to, text }, points of the bench frame - see HardwareBenchDef#measure_cotes.
+// null : none.
+const fnShowBenchMeasure = function (measure) {
+    if (benchMeasureDimension) {
+        fnRemoveBenchObject(benchMeasureDimension);
+        benchMeasureDimension = null;
+    }
+    if (bench && measure) {
+        benchMeasureDimension = new THREE.Group();
+        fnAddBenchDimension(benchMeasureDimension, new THREE.Vector3().fromArray(measure.from), new THREE.Vector3().fromArray(measure.to), measure.text, new THREE.Color(BENCH_PANEL_PIN_COLORS[measure.slot] || '#000000').multiplyScalar(1 - BENCH_MEASURE_DARKEN));
+        fnGetBenchSlotGroup(measure.slot).add(benchMeasureDimension);
+        fnApplyBenchSlotsVisible();
+    }
+    fnRender();
+};
+
+// The group holding everything of the given slot - its panel, its
+// component, its cotes -, created on demand. No slot : the bench itself.
+const fnGetBenchSlotGroup = function (slot) {
+    if (!slot) return bench;
+    if (!benchSlotGroups[slot]) {
+        benchSlotGroups[slot] = new THREE.Group();
+        bench.add(benchSlotGroups[slot]);
+    }
+    return benchSlotGroups[slot];
+};
+
+// The slots on the bench : { slot => visible }.
+const fnGetBenchSlotsVisible = function () {
+    const slotsVisible = {};
+    for (const slot in benchSlotGroups || {}) {
+        slotsVisible[slot] = !benchHiddenSlots[slot];
+    }
+    return slotsVisible;
+};
+
+// Hidden slots - kept through the rebuilds - hidden. Their pins and cotes
+// too : the CSS2DRenderer only looks at their own visibility.
+const fnApplyBenchSlotsVisible = function () {
+    for (const slot in benchSlotGroups || {}) {
+        const visible = !benchHiddenSlots[slot];
+        benchSlotGroups[slot].visible = visible;
+        benchSlotGroups[slot].traverse(function (child) {
+            if (child.isCSS2DObject) child.visible = visible;
+        });
+    }
+};
+
+// Shows or hides everything of a slot. null : toggles it.
+const fnSetBenchSlotVisible = function (slot, visible) {
+    if (!benchSlotGroups || !benchSlotGroups[slot]) return;
+    const hidden = visible == null ? !benchHiddenSlots[slot] : visible !== true;
+    if (hidden === !!benchHiddenSlots[slot]) return;
+    benchHiddenSlots[slot] = hidden;
+    if (hidden && benchHoveredMesh && benchHoveredMesh.userData.benchSlot === slot) {
+        fnHoverBenchSolid(null);
+    }
+    fnApplyBenchSlotsVisible();
+    fnRender();
+    fnDispatchHelpersChangedEvent();
+};
+
+// One panel stands out - its setting is hovered or edited -, or none.
+const fnHighlightBenchPanel = function (slot) {
+    benchHighlightedSlot = slot || null;
+    if (!benchPanels) return;
+    for (const panelSlot in benchPanels) {
+        const highlighted = panelSlot === benchHighlightedSlot;
+        benchPanels[panelSlot].mesh.material.opacity = highlighted ? BENCH_PANEL_HIGHLIGHTED_OPACITY : BENCH_PANEL_OPACITY;
+        benchPanels[panelSlot].pin.element.classList.toggle('bench-pin-highlighted', highlighted);
+    }
+    fnRender();
+};
+
+const fnSetupBench = function (benchDef) {
+
+    // No more hovered solid : its label hidden
+    fnHoverBenchSolid(null);
+    fnShowBenchMeasure(null);
+    fnShowBenchHingeCotes(false);
+
+    // Drop the previous bench - the cotes of its selected solid with it
+    if (bench) {
+        fnRemoveBenchObject(bench);
+    }
+    benchSelectedDimensions = null;
+    const firstSetup = !bench;
+
+    bench = new THREE.Group();
+    benchSlotGroups = {};
+    benchPanels = {};
+    benchSolidMeshes = [];
+
+    // Panels, with their pins
+    for (const panelDef of benchDef.panels || []) {
+        const min = new THREE.Vector3().fromArray(panelDef.min);
+        const max = new THREE.Vector3().fromArray(panelDef.max);
+        const size = max.clone().sub(min);
+        const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+        geometry.translate(min.x + size.x / 2, min.y + size.y / 2, min.z + size.z / 2);
+        const parent = fnGetBenchSlotGroup(panelDef.slot);
+        const mesh = fnAddBenchObject(parent, geometry, BENCH_PANEL_COLORS[panelDef.slot] || 0xffffff, BENCH_PANEL_OPACITY);
+        if (panelDef.reference) {
+            fnAddBenchReferenceFace(parent, panelDef.reference, min, max, BENCH_PANEL_COLORS[panelDef.slot] || 0xffffff);
+        }
+        if (panelDef.slot) {
+            benchPanels[panelDef.slot] = {
+                mesh: mesh,
+                pin: fnAddBenchPanelPin(parent, panelDef.slot, min, max)
+            };
+        }
+    }
+
+    // Solids of the primitives, in the frame of their slot
+    for (const solidDef of benchDef.solids || []) {
+        const group = new THREE.Group();
+        group.applyMatrix4(new THREE.Matrix4().fromArray(solidDef.transformation));
+        const opacity = solidDef.part === 'machining' ? 0.5 : 1;
+        const mesh = fnAddBenchObject(group, fnCreateBenchSolidGeometry(solidDef), solidDef.refused ? BENCH_REFUSED_COLOR : BENCH_PART_COLORS[solidDef.part], opacity);
+        if (solidDef.label) {
+            mesh.userData.benchLabel = solidDef.label;
+            mesh.userData.benchSolidDef = solidDef;
+            mesh.userData.benchSlot = solidDef.slot;
+            mesh.userData.benchOutline = new THREE.LineSegments2(new THREE.LineSegmentsGeometry(), benchOutlineMaterial);
+            mesh.userData.benchOutline.renderOrder = BENCH_OUTLINE_RENDER_ORDER;
+            mesh.userData.benchOutline.visible = false;
+            group.add(mesh.userData.benchOutline);
+            benchSolidMeshes.push(mesh);
+        }
+        fnGetBenchSlotGroup(solidDef.slot).add(group);
+    }
+
+    // SKP files : their triangles and hard edges, in the frame of their slot
+    for (const skpDef of benchDef.skps || []) {
+        const group = new THREE.Group();
+        group.applyMatrix4(new THREE.Matrix4().fromArray(skpDef.transformation));
+        const opacity = skpDef.part === 'machining' ? 0.5 : 1;
+        const facesGeometry = new THREE.BufferGeometry();
+        facesGeometry.setAttribute('position', new THREE.Float32BufferAttribute(skpDef.faces, 3));
+        group.add(new THREE.Mesh(facesGeometry, new THREE.MeshBasicMaterial({
+            side: THREE.DoubleSide,
+            color: skpDef.refused ? BENCH_REFUSED_COLOR : BENCH_PART_COLORS[skpDef.part],
+            transparent: opacity < 1,
+            opacity: opacity,
+            depthWrite: opacity >= 1,
+            polygonOffset: true,
+            polygonOffsetFactor: 1,
+            polygonOffsetUnits: 1,
+        })));
+        const edgesGeometry = new THREE.BufferGeometry();
+        edgesGeometry.setAttribute('position', new THREE.Float32BufferAttribute(skpDef.edges, 3));
+        group.add(new THREE.LineSegments(edgesGeometry, lineMaterial));
+        fnGetBenchSlotGroup(skpDef.slot).add(group);
+    }
+
+    // The door turning on its hinge
+    benchHingeDef = benchDef.hinge || null;
+    if (benchHingeDef) {
+        fnAddBenchHinge(fnGetBenchSlotGroup('a'), benchHingeDef, (benchDef.panels || []).find(function (panelDef) { return panelDef.slot === 'a'; }));
+    }
+
+    // Shown as the bench says - its frame turned
+    const viewMatrix = benchDef.view ? new THREE.Matrix4().fromArray(benchDef.view) : new THREE.Matrix4();
+    bench.applyMatrix4(viewMatrix);
+    benchViewMatrix = viewMatrix;
+
+    scene.add(bench);
+    fnApplyBenchSlotsVisible();   // Hidden slots kept through the rebuilds
+    fnHighlightBenchPanel(benchHighlightedSlot);   // Kept through the rebuilds
+    fnSelectBenchSolid(benchSelectedSolid);   // Kept through the rebuilds
+
+    // Bench box properties - what zoom and views fit : centered on the
+    // origin of the joint, the views turn and zoom around it
+    const benchBox = new THREE.Box3().setFromObject(bench);
+    if (benchBox.isEmpty()) {
+        benchBox.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
+    }
+    const extent = benchBox.max.clone().max(benchBox.min.clone().negate());
+    baseModelSize = explodedModelSize = extent.clone().multiplyScalar(2);
+    baseModelCenter = explodedModelCenter = new THREE.Vector3();
+    baseModelRadius = explodedModelRadius = extent.length();
+    explodeFactor = 0;
+
+    camera.near = -baseModelRadius * 4;
+    camera.far = baseModelRadius * 8;
+    camera.updateProjectionMatrix();
+
+    // Axes of the joint, at its origin - or of the selected primitive's frame - shown until hidden
+    const axesVisible = axesHelper ? axesHelper.visible : true;
+    if (axesHelper) {
+        scene.remove(axesHelper);
+    }
+    axesHelper = new THREE.Group();
+    axesHelper.visible = axesVisible;
+    for (const [ direction, color ] of [ [ new THREE.Vector3(1, 0, 0), BENCH_AXIS_COLORS.x ], [ new THREE.Vector3(0, 1, 0), BENCH_AXIS_COLORS.y ], [ new THREE.Vector3(0, 0, 1), BENCH_AXIS_COLORS.z ] ]) {
+        axesHelper.add(new THREE.ArrowHelper(direction, new THREE.Vector3(), baseModelRadius * 1.5, color, 0));
+    }
+    scene.add(axesHelper);
+    fnUpdateBenchAxes();   // The selected primitive's frame, kept through the rebuilds
+
+    if (firstSetup) {
+        fnSetView(THREE_CAMERA_VIEWS.isometric, false);
+        fnDispatchControlsChangedEvent('init');
+    }
+    fnDispatchHelpersChangedEvent();   // The axes and slots buttons show them - the slots may change
+
+    fnRender();
+
+};
+
 // Startup
 
 fnInit();
+
+// Ready : told to the component - see LadbThreeViewer#bind
+window.ladbViewerReady = true;
+if (window.frameElement) {
+    window.frameElement.dispatchEvent(new MessageEvent('ready.viewer'));
+}

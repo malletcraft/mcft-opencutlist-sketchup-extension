@@ -2,7 +2,495 @@ CHANGELOG
 =========
 
 This changelog references the relevant changes (bug and security fixes) done
-in 7.x, 6.x, 5.x, 4.x, 3.x, 2.x, 1.x and 0.x versions.
+in 8.x, 7.x, 6.x, 5.x, 4.x, 3.x, 2.x, 1.x and 0.x versions.
+
+# 8.0.0 (WIP)
+
+  * Added Smart Build Divider Tool
+  * Added Smart Build Front Panel Tool
+  * Added Smart Build Back Panel Tool
+  * Added Smart Build Module Tool
+  * Added Smart Stretch Tool
+  * Added Smart Paneling Tool
+  * Added Smart Boolean Tools
+  * Added Smart Slice Tool **(DEV team only)**
+  * Added Smart Join Tool **(DEV team only)**
+  * Added a Hardware Editor **(DEV team only)**
+  * Added Grain Continuity support
+  * Added Cutlist part names filter
+  * Added Cutlist "All badges" filter
+  * Added RO translations
+  * Added SHIFT + (+/-) shortcuts in Smart Handle Tools to change copies during preview
+  * Added CSV importer in File menu
+  * Added BXF2 (Blum eXchange File) importer in File menu + OpenCutList dialog
+  * Added a new Hadware material type logic to be able to flag as hardware any group or component
+  * Added Machining material type
+  * Added depth to Z option on DXF export
+  * Improved Smart Draw Tool with sheared pull
+  * Improved Smart Draw Tool with the "draw in" option
+  * Improved Smart Paint Tool by allowing rectangle selection
+  * Improved Packing algorithms
+  * Rewrote Smart Paint Tool
+  * Rewrote Smart Export Tool
+  * Rewrote Smart Axes Tool
+  * Rewrote Self-Updater
+
+## Lab
+
+### 2026-11-19
+  * Updated translations
+  * Updated PackingSolver dependency
+### 2026-11-13
+  * Updated translations
+  * Updated PackingSolver dependency
+### 2026-11-09
+  * Updated translations
+  * Updated PackingSolver dependency
+### 2026-11-08
+  * Added Smart Paint Part Dropup feature to paint parents
+### 2026-11-07
+  * Improved robustness of MaterialAttribute read
+  * Updated translations
+  * Updated PackingSolver dependency
+### 2026-11-06
+  * Added drag for multiple faces selection in Smart Paneling Tool
+  * Rewrote Self-Updater
+  * Updated PackingSolver dependency
+### 2026-11-05
+  * Improved Smart Paneling Tool
+  * Improved Smart Slice Tool by adding SHIFT key to reuse last distance
+  * Updated translations
+  * Updated PackingSolver dependency
+### 2026-11-04
+  * Improved Machinings Material Type by adding an attribute to separate geometries when exporting
+  * Updated translations
+  * Updated PackingSolver dependency
+### 2026-10-29
+  * Unhide Smart Slice Tool
+  * Improved translations
+  * Updated PackingSolver dependency
+### 2026-10-29
+  * Fixed Smart Build Divider snap
+  * Improved translations
+### 2026-10-28
+ * Added Smart Slice Tool **(DEV team only)**
+ * Improved translations
+ * Updated PackingSolver dependency (improved nesting algorithm)
+### 2026-10-22
+ * Improved DLL loading on Windows
+ * Improved translations
+ * Updated PackingSolver dependency (improved nesting algorithm)
+### 2026-10-20
+ * Switch -dev version name to -lab
+ * Improved translations
+ * Updated PackingSolver dependency
+### 2026-10-17
+ * Improved Smart Paint Tool by allowing rectangle selection
+ * Updated PackingSolver dependency
+### 2026-10-15
+ * Improved Smart Tools rectangle selection
+ * "Smart Paint" and "Smart Export" tools rewritten using the new tool structure (no changes to how they are used)
+ * Removed unused code
+### 2026-10-13
+ * Improved Smart Build Tools and cavities detection
+ * Updated PackingSolver dependency
+### 2026-10-12
+ * Improved Smart Build Tools
+### 2026-10-07
+ * Improved Hardware Spec and Editor **(DEV team only)**
+ * Updated PackingSolver dependency
+### 2026-10-06
+ * Improved Hardware Spec and Editor **(DEV team only)**
+ * Updated PackingSolver dependency
+### 2026-10-05
+ * Improved Hardware Spec and Editor **(DEV team only)**
+### 2026-10-04
+ * Improved Library navigation
+ * Updated PackingSolver dependency
+ * Updated Manifold dependency
+### 2026-10-03
+ * Implementation of the ability to add connectors to fittings **(DEV team only)**
+### 2026-10-02
+ * Fixed built-in upgrade leaving the previous version's obsolete files in the extension folder (the previous version is now restored if the install fails)
+ * Improved Hardware Editor inheritance UI/UX
+ * Added hinges on frame doors (several parts held by a front panel group or component) in Smart Join Tool and Smart Handle Interact
+ * Fixed Smart Build Divider, Front Panel and Back Panel tools through a front or back panel made of several parts (frame doors), and a second front or back panel no longer offered on an opening already closed by one
+ * Added Hardware primitive editor **(DEV team only)**
+### 2026-10-01
+ * Adding abstraction and inheritance for hardware descriptors.
+ * Improved cavities detection and mouth panels tools
+ * Improved library panel UI
+### 2026-09-30
+ * Added a Hardware Editor **(DEV team only)**
+### 2026-09-29
+ * Improved Hardware Libary Specs and "parametric" capabilities **(DEV team only)**
+### 2026-09-28
+ * Changed the way Hardware are configured to be used by Smart Joint Tool **(DEV team only)**
+ * Embed "Example" library of modules and hardware
+### 2026-09-26
+ * Improved Smart Build Tools UI/UX
+ * Improved Smart Stretch Tool by adding SHIFT key to lock the section move and snap starting point elsewhere
+ * Improved BXF2 importer
+ * Added "All badges" filter to Parts List
+### 2026-09-25
+ * Improved Smart Build Tools
+ * Updated PackingSolver dependency
+### 2026-09-24
+ * Improved Smart Build Module Tool **(DEV team only)**
+### 2026-09-23
+ * Added Smart Build Module Tool **(DEV team only)**
+ * Updated PackingSolver dependency
+### 2026-09-18
+ * Fixed Smart Build tools modals
+### 2026-09-16
+ * Added Smart Build tools
+### 2026-09-14
+ * Improve Smart Draw Panel tools **(DEV team only)**
+ * Updated PackingSolver dependency
+### 2026-09-12
+ * Added Smart Draw Back Panel Tool **(DEV team only)**
+ * Updated translations
+### 2026-09-11
+ * Updated translations
+ * Updated PackingSolver dependency
+### 2026-09-10
+ * Improved Smart Stretch Tool by adding "bloc movements" option
+### 2026-09-09
+ * Added Smart Draw Front Panel Tool **(DEV team only)**
+ * Updated PackingSolver dependency
+### 2026-09-07
+ * Improved Presets exporter
+ * Updated PackingSolver dependency
+### 2026-08-31
+ * Improved File Path Sanitization
+### 2026-08-30
+ * Improved LocalHttpServer performances for SketchUp 2027
+ * Updated RU translations
+ * Updated PackingSolver dependency
+### 2026-08-28
+ * Updated PackingSolver dependency
+### 2026-08-25
+ * Updated UK, RU translations
+### 2026-08-22
+ * Updated PackingSolver dependency - Fixed issue [#1034](https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/issues/1034)
+### 2026-08-19
+ * Updated translations
+ * Updated PackingSolver dependency
+### 2026-08-11
+ * Updated translations
+ * Updated PackingSolver dependency
+### 2026-08-09
+ * Improved Smart Paneling by adding "reuse_definition" option
+ * Updated PackingSolver dependency
+### 2026-08-07
+ * Improved Smart Draw Divider cavity detection
+ * Updated PackingSolver dependency
+### 2026-08-06
+ * Updated translations
+ * Updated PackingSolver dependency
+### 2026-08-05
+ * Added Smart Stretch Tool locked_on_last_measure capability
+ * Improved Smart Draw Divider Tool
+ * Updated PackingSolver dependency
+### 2026-08-02
+ * Improved Smart Paneling Tool to accept construction lines solids
+ * Improved Smart Draw Divider Tool
+ * Updated translations
+ * Updated PackingSolver dependency (+ periodic placement update)
+### 2026-07-30
+ * Added Smart Draw Divider Tool
+ * Updated translations
+### 2026-07-29
+ * Fixed material texture displays introduced when loading dialog HTML from the local server
+ * Updated PackingSolver dependency
+### 2026-07-28
+ * Updated translations
+ * Updated PackingSolver dependency + fix [#1019](https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/issues/1019)
+### 2026-07-27
+ * Improved Smart Draw Divider **(DEV team only)**
+ * Updated translations
+ * Updated PackingSolver dependency
+### 2026-07-26
+ * Improved Smart Draw Divider **(DEV team only)**
+ * Updated PackingSolver dependency
+### 2026-07-25
+ * Improved Smart Draw Divider **(DEV team only)**
+### 2026-07-23
+ * Added Smart Draw Divider **(DEV team only)**
+ * Updated PackingSolver dependency + fix [#1015](https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/issues/1015)
+### 2026-07-22
+ * Improved Smart Boolean Tools robustness
+ * Added Smart Boolean Tools "remove unused definitions" option
+ * Updated translations
+ * Updated PackingSolver dependency
+### 2026-07-19
+ * Fixed Smart Boolean Tools targeting the same instance through several occurrences (shared ancestor definitions)
+ * Fixed Smart Stretch flipped glued_to transformation calculation
+ * Updated translations
+ * Updated PackingSolver dependency
+### 2026-07-17
+ * Updated translations
+ * Improved Smart Boolean Tools robustness
+### 2026-07-15
+ * Improved Smart Boolean Tools
+ * Improved Smart Join Tool with propagation detection **(DEV team only)**
+### 2026-07-11
+ * Updated PackingSolver dependency
+ * Added Smart Boolean Tools (alpha state)
+### 2026-07-06
+ * Updated PackingSolver dependency
+ * Added `BinPackingCuttingCost` objective for `RectangleGuillotine` problem types
+### 2026-07-05
+ * Updated PackingSolver dependency
+ * Fixed issue [#956](https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/issues/956)
+### 2026-07-02
+ * Added depth to Z option on DXF export
+ * Added layout direction option on Rectangle and Nesting Cutting Diagram types
+ * Added stage sorting option on Guillotine Cutting Diagram types
+ * Updated PackingSolver dependency
+### 2026-07-01
+ * Updated PackingSolver dependency 
+### 2026-06-29
+ * Updated PackingSolver dependency 
+ * Added new Guillotine postprocessor to better sort part to improve solutions
+### 2026-06-28
+ * Added version check in Smart Join Tool when loading SKP file
+ * Updated PackingSolver dependency
+### 2026-06-25
+ * Added synchronized options to Smart Tools (some options can now be shared across actions)
+ * Improved backward compatibility with old SketchUp versions
+### 2026-06-24
+ * Improved Smart Join Tool
+ * Updated PackingSolver dependency
+ * Updated translations
+### 2026-06-17
+ * Added preset rename feature
+ * Added the ability to enter Smart Join Tool measures into the VCB
+ * Updated translations
+### 2026-06-16
+ * Fixed SKM Material import exception
+ * Updated translations
+### 2026-06-15
+ * Improved draft support for fittings in the Smart Join Tool
+### 2026-06-14
+ * Added draft support for adding fittings in the Smart Join Tool
+### 2026-06-11
+ * Improved Smart Join Tool by adding heigh and max_spacing divider
+### 2026-06-09
+ * Improved Smart Join Tool by adding an occupied space check
+### 2026-06-08
+ * Improved Smart Join Tool by adding the "Remove connectors" action
+### 2026-06-05
+ * Improved Smart Join Tool by adding the "Make unique" option
+### 2026-06-04
+ * Optimized Smart Join Tool code
+### 2026-06-03
+ * Improved Smart Join Tool by previewing hardware and machinings
+ * Improved Smart Join Tool by adding browse file textinput
+### 2026-06-02
+ * Added Smart Join Tool (dev team only)
+### 2026-06-01
+ * Improved skewed detection
+### 2026-05-31
+ * Fixed Packing generation issue
+### 2026-05-29
+ * Changed DXF OCL_CUT layer line type to DASHED2
+ * Improved Grain Continuity tools
+### 2026-05-27
+ * Improved BXF2 importer by allowing to import from zip files
+ * Updated translations
+### 2026-05-23
+ * Added Grain Continuity support
+ * Fixed packing 1D detection
+### 2026-05-14
+ * Fixed BXF2 importer form fill from presets
+ * Improved Smart Tool selection
+ * Updated PackingSolver dependency
+### 2026-05-04
+ * Improved textinput code by adding max-height
+ * Updated translations
+### 2026-05-03
+ * Added BXF2 importer `zone`, `zone_column`, `zone_row` and `function_unit` properties to `@part` variable
+### 2026-05-02
+ * Improved cutlist tags filters
+ * Added BXF2 importer formula preview
+ * Added BXF2 importer rename cabinet feature
+### 2026-05-01
+ * Fixed issue [#963](https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/issues/963)
+ * Fixed cutlist filters
+### 2026-04-28
+ * Updated DXF writer to include thickness in $EXTMIN property
+ * Updated Vectric gadget
+### 2026-04-27
+ * Updated PackingSolver dependency
+ * Updated translations
+### 2026-04-25
+ * Improved DXF writer by removing new lines in TEXT
+ * Improved DXF writer by adding Paper Space bounds
+ * Improved DXF writer by rounding values to 6 decimal places
+### 2026-04-24
+ * Improved/Fixed Modal UI with footer always visible and body scroll
+### 2026-04-23
+ * Improved Modal UI with footer always visible and body scroll
+ * Improved Smart Paneling Tool panel orientation 
+### 2026-04-22
+ * Updated Clipper2 dependency
+ * Added tabs in BXF2 importer UI
+### 2026-04-20
+ * Updated PackingSolver dependency
+### 2026-04-18
+ * Updated PackingSolver dependency
+ * Updated translations
+ * Fixed issue [#956](https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/issues/956)
+ * Improved Smart Stretch Tool ALT behavior on Windows
+### 2026-04-16
+ * Updated PackingSolver dependency
+ * Fixed a 'nil' bug in the Smart Stretch Tool when stretching inside a duplicated component
+ * Added Z value to DXF export to correspond to the layer depth
+### 2026-04-15
+ * Added cline drop feature to Polygon Smart Draw Tool
+ * Added Cutlist part names filter 
+ * Fixed backward compatibility for Stretch Tool
+ * Fixed Estimate hardware group with selection
+ * Fixed Paneling tool's wrong geometry position on old SketchUp versions
+ * Fixed BXF2 importer part front and back orientation
+ * Improved BXF2 importer backward compatibility and warnings
+ * Improved geometry processing
+### 2026-04-13
+ * Added cut length for rectangle and irregular cutting diagram types
+### 2026-04-12
+ * Added a new Hadware material type logic to be able to flag as hardware any group or component
+### 2026-04-10
+ * Added a workaround to bin folding bug in PackingSolver
+### 2026-04-08
+ * Improved BXF2 importer by adding an interactive placement tool
+ * Updated translations
+### 2026-04-07
+ * Added BXF2 importer UI
+### 2026-04-03
+ * Updated PackingSolver dependency
+ * Fixed Smart Tool twins selection
+ * Added minimal support for the Machining material type
+### 2026-03-28
+ * Updated PackingSolver dependency
+ * Removed bxf2 importer for SketchUp < 2021.1
+### 2026-03-25
+ * Updated PackingSolver dependency
+ * Improved BXF importer
+### 2026-03-24
+ * Improved BXF importer
+ * Updated PackingSolver dependency (improved irregular free rotations)
+ * Updated translation (EN, DE)
+### 2026-03-22
+ * Added Machining material type
+ * Improved BXF2 importer (WIP)
+ * Updated NL translations
+### 2026-03-21
+ * Added BXF2 importer (WIP)
+### 2026-03-19
+ * Updated PackingSolver dependency
+ * Added CSV importer
+ * Added RO translations
+### 2026-03-11
+ * Allows Date, DateTime and Time const in ruby formulas
+### 2026-03-07
+  * Fixed material attributes sizes display bug
+  * Updated translations
+### 2026-03-05
+  * Updated translations
+### 2026-03-04
+  * Improved Smart Paneling Tool
+### 2026-03-01
+  * Improved Smart Paneling Tool
+### 2026-02-28
+  * Improved Smart Paneling Tool with multi edges toggle (hover face + SHIFT key)
+  * Updated PackingSolver dependency
+### 2026-02-26
+  * Improved Smart Paneling Tool
+### 2026-02-25
+  * Improved Smart Paneling Tool
+### 2026-02-23
+  * First draft for the Smart Paneling Tool
+### 2026-02-20
+  * Fixed unescaped characters in Part identifier
+  * Improved Smart Distribute preview
+  * Improved Smart Draw face detection
+### 2026-02-19
+  * Improved Material file path sanitization
+  * Smart Tools minor improvements
+### 2026-02-17
+  * Updated PackingSolver dependency
+### 2026-02-10
+  * Added Smart Distribute measure type option
+### 2026-02-09
+  * Added Smart Distribute spacing feature
+  * Updated PackingSolver dependency
+  * Improved Smart Stretch Tool performance
+  * Improved management of locked states in the Smart Stretch tool
+  * Improved Outliner Deep Rename Parts feature
+### 2026-02-06
+  * Updated PackingSolver dependency
+  * Improved Smart Stretch Tool
+  * Added irregular packing "free" rotations (experimental)
+  * Added formaula word_wrap function
+### 2026-02-03
+  * Updated PackingSolver dependency
+  * Fixed part list sorting 
+### 2026-01-26
+  * Updated PackingSolver dependency
+### 2026-01-25
+  * Updated PackingSolver dependency
+  * Updated translations
+  * Fixed oversize display bug
+### 2026-01-19
+  * Updated PackingSolver dependency
+### 2026-01-17
+  * Updated translations
+  * Updated Clipper2 dependency
+  * Updated PackingSolver dependency
+  * Added the "draw in" option to Smart Draw Tool
+### 2026-01-13
+  * Improved Smart Stretch Tool locked support (WIP)
+  * Improved SketchUp 2017 compatibility
+### 2026-01-12
+  * Added translations
+  * Added finite clines considerations in the stretching tool
+  * Added definition behavior fields in outliner form
+### 2026-01-04
+  * Improved Smart Tools startup
+### 2026-01-04
+  * Rewrote Smart Axes Tool
+### 2025-12-31
+  * Fixed Smart Stretch Tool
+### 2025-12-20
+  * Updated translations
+  * Added oversized cutting properties (added with the oversizing already defined on the material)
+### 2025-12-12
+  * Improved Stretch Tool by moving snaps
+  * Improved Smart Draw Tool with sheared pull
+### 2025-12-09
+  * Updated PackingSolver dependency
+### 2025-12-08
+  * Improved get drawing_def edit bound computation for container without faces
+  * Added the centred option to Stretch Tool
+  * Updated PackingSolver dependency
+### 2025-12-06
+  * Various improvements
+### 2025-11-30
+  * Added @batch variable in Packing designation formulas
+  * Updated CS, ES, NL, SR languages
+### 2025-11-27
+  * Fixed Smart Handle Tool with flat entities
+### 2025-11-26
+  * Improved Smart Tools
+  * Fixed Sketchup 2020 packing preview display bug
+### 2025-11-24
+  * Improved Smart Reshape Tool
+  * Fixed VCB arithmetic parser
+### 2025-11-20
+  * Added selection by context menu tree in Stretch Tool
+  * Added capability to Smart Handle Tool to hangle any group or component
+  * Fixed Stretch Tool when view projection is parallel to model axes
 
 # 7.1.0 (2025-12-10)
 

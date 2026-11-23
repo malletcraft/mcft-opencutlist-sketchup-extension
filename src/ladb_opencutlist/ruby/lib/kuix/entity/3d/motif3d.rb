@@ -2,6 +2,9 @@ module Ladb::OpenCutList::Kuix
 
   class Motif3d < Entity3d
 
+    include HiddenLinesHelper
+    include DepthOffsetHelper
+
     attr_accessor :patterns_transformation
     attr_accessor :color
     attr_accessor :line_width, :line_stipple
@@ -19,15 +22,15 @@ module Ladb::OpenCutList::Kuix
       @on_top = false
 
       @_paths = []
+      @_path_transformation = IDENTITY
 
     end
 
     # -- LAYOUT --
 
-    def do_layout(transformation)
-      super
-      transformation = transformation * @transformation unless @transformation.identity?
-      no_transform = transformation.identity?
+    def do_layout_content(transformation)
+      @_path_transformation = transformation
+      no_transform = @_path_transformation.identity?
       no_pattern_transform = @patterns_transformation.identity?
       @_paths.clear
       @patterns.each do |pattern|
@@ -36,12 +39,13 @@ module Ladb::OpenCutList::Kuix
           pt = Geom::Point3d.new(pattern_point)
           pt.transform!(@patterns_transformation) unless no_pattern_transform
           point = Geom::Point3d.new(@bounds.x + pt.x * @bounds.width, @bounds.y + pt.y * @bounds.height, @bounds.z + pt.z * @bounds.depth)
-          point.transform!(transformation) unless no_transform
+          point.transform!(@_path_transformation) unless no_transform
           points << point
         end
         @_paths << points
         @extents.add(points) unless points.empty?
       end
+      super
     end
 
     # -- RENDER --
@@ -55,8 +59,9 @@ module Ladb::OpenCutList::Kuix
           graphics.set_line_stipple(@line_stipple)
           graphics.view.draw2d(GL_LINE_STRIP, points.map { |point| graphics.view.screen_coords(point) })
         else
+          paint_hidden_lines(graphics, GL_LINE_STRIP, points)
           graphics.draw_line_strip(
-            points: points,
+            points: depth_offset_points(graphics.view, points),
             color: @color,
             line_width: @line_width,
             line_stipple: @line_stipple
@@ -149,20 +154,37 @@ module Ladb::OpenCutList::Kuix
         p1_2d = p_2d.offset(Geom::Vector3d.new(@arrow_size, @arrow_size)).transform(t)
         p2_2d = p_2d.offset(Geom::Vector3d.new(@arrow_size, -@arrow_size)).transform(t)
 
-        ray1 = view.pickray(p1_2d.x, p1_2d.y)
-        ray2 = view.pickray(p2_2d.x, p2_2d.y)
+        if @on_top
 
-        p1_3d = Geom.intersect_line_plane(ray1, [ p_3d, ray1.last ])
-        p2_3d = Geom.intersect_line_plane(ray2, [ p_3d, ray2.last ])
+          graphics.view.draw2d(
+            GL_LINE_STRIP,
+            [ p1_2d, p_2d, p2_2d ]
+          )
 
-        graphics.draw_line_strip(
-          points: [ p1_3d, p_3d, p2_3d ]
-        )
+        else
+
+          ray1 = view.pickray(p1_2d.x, p1_2d.y)
+          ray2 = view.pickray(p2_2d.x, p2_2d.y)
+
+          p1_3d = Geom.intersect_line_plane(ray1, [ p_3d, ray1.last ])
+          p2_3d = Geom.intersect_line_plane(ray2, [ p_3d, ray2.last ])
+
+          paint_hidden_lines(graphics, GL_LINE_STRIP, [ p1_3d, p_3d, p2_3d ])
+          graphics.draw_line_strip(
+            points: depth_offset_points(view, [ p1_3d, p_3d, p2_3d ]),
+            color: @color,
+            line_width: @line_width,
+            line_stipple: @line_stipple  # Not the hidden pass ones
+          )
+
+        end
 
       end
 
-      fn_draw_arrow.call( ps_3d, ps_2d, a) if @start_arrow
-      fn_draw_arrow.call( pe_3d, pe_2d, a + Math::PI) if @end_arrow
+      if ps_2d.distance(pe_2d).to_i > 1
+        fn_draw_arrow.call(ps_3d, ps_2d, a) if @start_arrow
+        fn_draw_arrow.call(pe_3d, pe_2d, a + Math::PI) if @end_arrow
+      end
 
     end
 
@@ -174,9 +196,47 @@ module Ladb::OpenCutList::Kuix
       delta = 2 * Math::PI / segment_count
       super([
 
-               Array.new(segment_count + 1) { |i| Geom::Point3d.new(0.5 + 0.5 * Math.cos(i * delta), 0.5 + 0.5 * Math.sin(i * delta)) },
+               Array
+                 .new(segment_count + 1) { |i|
+                   Geom::Point3d.new(0.5 + 0.5 * Math.cos(i * delta), 0.5 + 0.5 * Math.sin(i * delta))
+                 }
 
              ], id)
+    end
+
+  end
+
+  class CircleFillMotif3d < Motif3d
+
+    def initialize(segment_count = 24, id = nil)
+      delta = 2 * Math::PI / segment_count
+      center = Geom::Point3d.new(0.5, 0.5)
+      super([
+
+               Array
+                 .new(segment_count + 1) { |i|
+                   Geom::Point3d.new(0.5 + 0.5 * Math.cos(i * delta), 0.5 + 0.5 * Math.sin(i * delta))
+                 }
+                 .each_cons(2).to_a.flat_map { |p1, p2| [ p1, p2, center ] }
+
+             ], id)
+    end
+
+    # -- RENDER --
+
+    def paint_content(graphics)
+
+      @_paths.each do |points|
+        if @on_top
+          graphics.set_drawing_color(@color)
+          graphics.view.draw2d(GL_TRIANGLES, points.map { |point| graphics.view.screen_coords(point) })
+        else
+          graphics.draw_triangles(
+            points: points,
+            fill_color: @color)
+        end
+      end
+
     end
 
   end
@@ -197,41 +257,190 @@ module Ladb::OpenCutList::Kuix
 
   end
 
+  class RectangleFillMotif3d < Motif3d
+
+    def initialize(id = nil)
+      super([[
+
+               [ 0, 0, 0 ],
+               [ 1, 0, 0 ],
+               [ 1, 1, 0 ],
+               [ 0, 1, 0 ]
+
+             ]], id)
+    end
+
+    # -- RENDER --
+
+    def paint_content(graphics)
+
+      @_paths.each do |points|
+        if @on_top
+         graphics.set_drawing_color(@color)
+         graphics.view.draw2d(GL_QUADS, points.map { |point| graphics.view.screen_coords(point) })
+        else
+         graphics.draw_quads(
+           points: points,
+           fill_color: @color)
+        end
+      end
+
+    end
+
+  end
+
   class BoxMotif3d < Motif3d
+
+    LFB = [ 0, 0, 0 ]
+    RFB = [ 1, 0, 0 ]
+    LBB = [ 0, 1, 0 ]
+    RBB = [ 1, 1, 0 ]
+    LFT = [ 0, 0, 1 ]
+    RFT = [ 1, 0, 1 ]
+    LBT = [ 0, 1, 1 ]
+    RBT = [ 1, 1, 1 ]
+
+    attr_accessor :shell_on_top
 
     def initialize(id = nil)
       super([
-              [
-                [ 0, 0, 0 ],
-                [ 1, 0, 0 ],
-                [ 1, 1, 0 ],
-                [ 0, 1, 0 ],
-                [ 0, 0, 0 ],
-              ],
-              [
-                [ 0, 0, 1 ],
-                [ 1, 0, 1 ],
-                [ 1, 1, 1 ],
-                [ 0, 1, 1 ],
-                [ 0, 0, 1 ],
-              ],
-              [
-                [ 0, 0, 0 ],
-                [ 0, 0, 1 ],
-              ],
-              [
-                [ 1, 0, 0 ],
-                [ 1, 0, 1 ],
-              ],
-              [
-                [ 0, 1, 0 ],
-                [ 0, 1, 1 ],
-              ],
-              [
-                [ 1, 1, 0 ],
-                [ 1, 1, 1 ],
-              ],
+
+              [ LFB, RFB ], # 0
+              [ RFB, RBB ], # 1
+              [ RBB, LBB ], # 2
+              [ LBB, LFB ], # 3
+
+              [ LFT, RFT ], # 4
+              [ RFT, RBT ], # 5
+              [ RBT, LBT ], # 6
+              [ LBT, LFT ], # 7
+
+              [ LFB, LFT ], # 8
+              [ RFB, RFT ], # 9
+              [ LBB, LBT ], # 10
+              [ RBB, RBT ], # 11
+
             ], id)
+
+      @shell_on_top = true
+
+    end
+
+    # -- RENDER --
+
+    def paint_content(graphics)
+      super
+
+      if @shell_on_top && !@on_top
+
+        # Display only face edges that are exposed to the camera
+
+        points_2d = exposed_path_indexes(graphics).flat_map { |index|
+          @_paths[index].map { |point_3d| graphics.view.screen_coords(point_3d) }
+        }
+
+        graphics.view.draw2d(GL_LINES, points_2d) unless points_2d.empty?
+
+      end
+
+    end
+
+    protected
+
+    # Returns @_paths indexes of edges belonging to faces exposed to the camera
+    def exposed_path_indexes(graphics)
+      6.times
+       .select { |face|
+         face_center_3d = @bounds.face_center(face).to_p.transform(@_path_transformation)
+         face_center_2d = graphics.view.screen_coords(face_center_3d)
+         face_normal = Bounds3d.normal_by_face(face).transform(@_path_transformation)
+         _, ray = graphics.view.pickray(face_center_2d.x, face_center_2d.y)
+         face_normal.angle_between(ray) > Math::PI / 2
+       }
+       .map { |face|
+         case face
+         when Bounds3d::BOTTOM then [ 0, 1, 2, 3]
+         when Bounds3d::TOP then [ 4, 5, 6, 7 ]
+         when Bounds3d::LEFT then [ 3, 7, 8, 10 ]
+         when Bounds3d::RIGHT then [ 1, 5, 9, 11 ]
+         when Bounds3d::FRONT then [ 0, 4, 8, 9 ]
+         when Bounds3d::BACK then [ 2, 6, 10, 11 ]
+         end
+       }.flatten(1).uniq
+    end
+
+  end
+
+  class BoxCornersMotif3d < BoxMotif3d
+
+    attr_accessor :corner_size  # Expressed in pixels
+
+    def initialize(id = nil)
+      super
+
+      @corner_size = 20
+
+    end
+
+    # -- RENDER --
+
+    def paint_content(graphics)
+
+      view = graphics.view
+
+      # Truncated edges cache, computed on demand and shared by both passes
+      corners = {}
+      fn_corners = lambda { |index|
+        corners[index] ||= begin
+          ps, pe = @_paths[index]
+          v = ps.vector_to(pe)
+          if v.valid?
+            half_length = v.length.to_f / 2.0
+            v.normalize!
+            # Convert pixel size to model size at each end depth, clamped to half the edge
+            ls = [ view.pixels_to_model(@corner_size, ps), half_length ].min
+            le = [ view.pixels_to_model(@corner_size, pe), half_length ].min
+            [ ps, ps.offset(v, ls), pe, pe.offset(v.reverse, le) ]
+          else
+            []
+          end
+        end
+      }
+
+      points = (0...@_paths.length).flat_map { |index| fn_corners.call(index) }
+      return if points.empty?
+
+      if @on_top
+
+        graphics.set_drawing_color(@color) if @color.is_a?(Sketchup::Color)
+        graphics.set_line_width(@line_width)
+        graphics.set_line_stipple(@line_stipple)
+        view.draw2d(GL_LINES, points.map { |point| view.screen_coords(point) })
+
+      else
+
+        paint_hidden_lines(graphics, GL_LINES, points)
+        graphics.draw_lines(
+          points: depth_offset_points(view, points),
+          color: @color,
+          line_width: @line_width,
+          line_stipple: @line_stipple
+        )
+
+        if @shell_on_top
+
+          # Redraw corners of exposed face edges on top
+
+          points_2d = exposed_path_indexes(graphics).flat_map { |index|
+            fn_corners.call(index).map { |point_3d| view.screen_coords(point_3d) }
+          }
+
+          view.draw2d(GL_LINES, points_2d) unless points_2d.empty?
+
+        end
+
+      end
+
     end
 
   end
@@ -239,14 +448,96 @@ module Ladb::OpenCutList::Kuix
   class BoxFillMotif3d < Motif3d
 
     def initialize(id = nil)
+      super([
+              [ [ 0, 0, 0 ], [ 1, 0, 0 ], [ 1, 1, 0 ], [ 0, 1, 0 ] ], # 0 = BOTTOM
+              [ [ 0, 0, 1 ], [ 1, 0, 1 ], [ 1, 1, 1 ], [ 0, 1, 1 ] ], # 1 = TOP
+              [ [ 0, 0, 0 ], [ 0, 1, 0 ], [ 0, 1, 1 ], [ 0, 0, 1 ] ], # 2 = LEFT
+              [ [ 1, 0, 0 ], [ 1, 1, 0 ], [ 1, 1, 1 ], [ 1, 0, 1 ] ], # 3 = RIGHT
+              [ [ 0, 0, 0 ], [ 1, 0, 0 ], [ 1, 0, 1 ], [ 0, 0, 1 ] ], # 4 = FRONT
+              [ [ 0, 1, 0 ], [ 1, 1, 0 ], [ 1, 1, 1 ], [ 0, 1, 1 ] ], # 5 = BACK
+             ], id)
+    end
+
+    # -- RENDER --
+
+    def paint_content(graphics)
+
+      # Display only faces that are exposed to the camera
+
+      6.times
+       .select { |face|
+         face_center_3d = @bounds.face_center(face).to_p.transform(@_path_transformation)
+         face_center_2d = graphics.view.screen_coords(face_center_3d)
+         face_normal = Bounds3d.normal_by_face(face).transform(@_path_transformation)
+         _, ray = graphics.view.pickray(face_center_2d.x, face_center_2d.y)
+         face_normal.angle_between(ray) > Math::PI / 2
+       }
+       .each { |face|
+         points = @_paths[face]
+         if @on_top
+           graphics.set_drawing_color(@color)
+           graphics.view.draw2d(GL_QUADS, points.map { |point| graphics.view.screen_coords(point) })
+         else
+           graphics.draw_quads(
+             points: points,
+             fill_color: @color)
+         end
+       }
+
+    end
+
+  end
+
+  class ChevronMotif3d < Motif3d
+
+    def initialize(offset = 0.2, id = nil)
       super([[
-              [ 0, 0, 0 ], [ 1, 0, 0 ], [ 1, 1, 0 ], [ 0, 1, 0 ],
-              [ 0, 0, 1 ], [ 1, 0, 1 ], [ 1, 1, 1 ], [ 0, 1, 1 ],
-              [ 0, 0, 0 ], [ 1, 0, 0 ], [ 1, 0, 1 ], [ 0, 0, 1 ],
-              [ 0, 1, 0 ], [ 1, 1, 0 ], [ 1, 1, 1 ], [ 0, 1, 1 ],
-              [ 0, 0, 0 ], [ 0, 1, 0 ], [ 0, 1, 1 ], [ 0, 0, 1 ],
-              [ 1, 0, 0 ], [ 1, 1, 0 ], [ 1, 1, 1 ], [ 1, 0, 1 ]
+
+               [   1/1.8  ,    offset , 0 ],
+               [ 1-offset ,     1/2.0 , 0 ],
+               [   1/1.8  ,  1-offset , 0 ],
+
              ]], id)
+    end
+
+  end
+  class ArrowMotif3d < Motif3d
+
+    def initialize(offset = 0.1, id = nil)
+      super([[
+
+               [   offset ,     1/3.0 , 0 ],
+               [    1/1.8 ,     1/3.0 , 0 ],
+               [    1/1.8 ,    offset , 0 ],
+               [ 1-offset ,     1/2.0 , 0 ],
+               [    1/1.8 ,  1-offset , 0 ],
+               [    1/1.8 ,     2/3.0 , 0 ],
+               [   offset ,     2/3.0 , 0 ],
+               [   offset ,     1/3.0 , 0 ]
+
+             ]], id)
+    end
+
+  end
+
+  class ArrowFillMotif3d < Motif3d
+
+    def initialize(offset = 0.1, id = nil)
+      super([[
+
+               [   offset ,     1/3.0 , 0 ],
+               [    1/1.8 ,     1/3.0 , 0 ],
+               [    1/1.8 ,     2/3.0 , 0 ],
+               [   offset ,     2/3.0 , 0 ],
+
+             ], [
+
+               [    1/1.8 ,    offset , 0 ],
+               [ 1-offset ,     1/2.0 , 0 ],
+               [    1/1.8 ,  1-offset , 0 ],
+               [    1/1.8 ,     2/3.0 , 0 ],
+
+           ]], id)
     end
 
     # -- RENDER --
@@ -262,25 +553,6 @@ module Ladb::OpenCutList::Kuix
             fill_color: @color)
         end
       end
-    end
-
-  end
-
-  class ArrowMotif3d < Motif3d
-
-    def initialize(offset = 0.1, id = nil)
-      super([[
-
-               [   offset ,     1/3.0 , 0 ],
-               [    1/2.0 ,     1/3.0 , 0 ],
-               [    1/2.0 ,    offset , 0 ],
-               [ 1-offset ,     1/2.0 , 0 ],
-               [    1/2.0 ,  1-offset , 0 ],
-               [    1/2.0 ,     2/3.0 , 0 ],
-               [   offset ,     2/3.0 , 0 ],
-               [   offset ,     1/3.0 , 0 ]
-
-             ]], id)
     end
 
   end

@@ -1,0 +1,689 @@
+module Ladb::OpenCutList
+
+  require_relative 'solid_boolean_result_def'
+  require_relative 'solid_cavity_opening_def'
+
+  # Fragment produced by CommonFindCavitiesWorker : one cavity, carrying its
+  # openness — the fraction of its surface area lying on the envelope caps
+  # (face id 0) rather than on panel faces. 0.0 for a hermetically closed
+  # cavity, the opening ratio for an open compartment (whose caps close the
+  # openings flush with the panel edges).
+  class SolidCavityFragmentDef < SolidFragmentDef
+
+    attr_reader :openness
+
+    def initialize(vertices, face_indices, face_ids, face_info_defs, src_indices: [], openness: 0.0, overall: false)
+      super(vertices, face_indices, face_ids, face_info_defs, src_indices: src_indices)
+      @openness = openness
+      @overall = overall
+    end
+
+    # -----
+
+    def closed?
+      @openness == 0.0
+    end
+
+    # Whether this cavity is the OVERALL one : the interior of the enclosure as
+    # if it were empty, bounded by its CONTOUR panels only — the compartments
+    # its internal panels carve out of it are separate fragments of their own.
+    # See CommonSolidFindCavitiesWorker, OVERALL CAVITY. false unless the
+    # worker was asked for it.
+    def overall?
+      @overall
+    end
+
+    # Minimum share of the total opening area a plane must carry to count as
+    # an opening of its own. Below this, it is noise from a non-flush rim
+    # (e.g. sides rising slightly above an open top) : bounded by panel
+    # THICKNESS in one dimension, its area is orders of magnitude below a
+    # real opening's full 2D extent, so it stays comfortably under this
+    # share in practice — while even a small real opening (e.g. the one open
+    # side of a "C" shaped assembly, dwarfed by its two much bigger open
+    # ends) clears it.
+    OPENING_PLANE_MIN_AREA_SHARE = 0.05
+
+    # Number of distinct planes carrying at least OPENING_PLANE_MIN_AREA_SHARE
+    # of the envelope (face id 0) area : how many flat openings the cavity
+    # has. A real compartment opens on few of them — 0 when hermetic, 1 for
+    # an open front, 2 for a through tube, 3 for a "C" shaped assembly open on
+    # one side — while the outside world and the concavity pockets of a
+    # non-convex assembly face the envelope on many comparable planes. Planes
+    # are told apart by the same tolerant matching as #boundary_segments
+    # (SolidFragmentDef#_each_triangle_plane) : an exact key would count one
+    # oblique opening as many planes and drop the cavity. Memoized.
+    def opening_plane_count
+      _opening_plane_indices.length
+    end
+
+    # Above this cosine, two opening planes are not read as turning their
+    # backs on one another - see #opening_planes_apart?. A hair below zero,
+    # so that the two openings of a corner compartment, square to each other,
+    # do not come out opposed for the rounding of an oblique assembly.
+    OPENING_PLANES_OPPOSED_MAX_DOT = -0.05
+
+    # Whether every two openings of the cavity stand APART : either they turn
+    # their backs on one another - outward normals more than a right angle
+    # apart - or their caps do not touch. What a compartment a front and a
+    # back close looks like - a through tube, even with its front sloped or
+    # its rear bridged by a slanted hull cap - as opposed to a CORNER
+    # compartment, open at the front and on top, or on a side.
+    #
+    # The orientation alone reads too much into a corner, though : what makes
+    # one is the two openings MEETING there, along the edge the missing
+    # panels would have shared. A carcass whose top is two rails, open
+    # between them, has a front and a top square to each other just the same,
+    # but the front rail stands between the two mouths - and a front panel
+    # closes that front exactly as it would a carcass with a full top. The
+    # caps tell the two apart : a corner's are one piece across the edge, the
+    # rails' two pieces with the rail's faces in between (see
+    # #_cap_component_ids_by_plane). A slanted sliver of hull bridging a
+    # non flush rim, too small to count as an opening, still joins the pieces
+    # it runs between - and the corner stays a corner.
+    #
+    # true with fewer than two openings. Memoized.
+    def opening_planes_apart?
+      @opening_planes_apart = begin
+        _, normal_by_plane, = _cap_area_by_plane
+        component_ids_by_plane = nil
+        _opening_plane_indices.combination(2).all? { |first, second|
+          ax, ay, az = normal_by_plane[first]
+          bx, by, bz = normal_by_plane[second]
+          next true if ax * bx + ay * by + az * bz <= OPENING_PLANES_OPPOSED_MAX_DOT
+          component_ids_by_plane ||= _cap_component_ids_by_plane
+          (component_ids_by_plane[first] & component_ids_by_plane[second]).empty?
+        }
+      end if @opening_planes_apart.nil?
+      @opening_planes_apart
+    end
+
+    # The cavity's openings, one SolidCavityOpeningDef per plane
+    # #opening_plane_count counts, biggest first : the plane, its outward
+    # normal, and the closed contours the caps draw on it — everything a tool
+    # needs to fit a front panel, a drawer front or a glass pane in the mouth, or
+    # simply to measure it.
+    #
+    # The contours are the NET boundary of the plane's CAP triangles alone
+    # (face id 0), by the same directed edge cancellation as
+    # #boundary_segments — restricted to the caps because that is what an
+    # opening is : #boundary_segments draws the whole cavity's wireframe,
+    # panel faces included, and would hand back the mouth welded to whatever
+    # panel face happens to be coplanar with it.
+    #
+    # Kept apart from #opening_plane_count, which shares only the area
+    # accounting (#_cap_area_by_plane) : the count is read on every candidate
+    # fragment while the worker filters them, and chaining loops for a
+    # fragment about to be dropped would be paid for nothing. Memoized.
+    def opening_defs
+      @opening_defs ||= begin
+
+        plane_indices = _opening_plane_indices
+        if plane_indices.empty?
+          []
+        else
+
+          _area_by_plane, normal_by_plane, origin_index_by_plane = _cap_area_by_plane
+          edge_counts_by_plane = _cap_edge_counts_by_plane(plane_indices)
+          pts = points
+
+          plane_indices.map { |plane_index|
+            normal = normal_by_plane[plane_index]
+            SolidCavityOpeningDef.new(
+              Geom::Vector3d.new(normal[0], normal[1], normal[2]),
+              pts[origin_index_by_plane[plane_index]],
+              _cap_loops(edge_counts_by_plane[plane_index]).map { |indices| indices.map { |index| pts[index] } }
+            )
+          }.sort { |first, second| second.area <=> first.area }
+
+        end
+      end
+    end
+
+    # Minimum share of the total WALL area a panel plane must carry to be
+    # weighed as a wall of the cavity — same doctrine, and same value, as
+    # OPENING_PLANE_MIN_AREA_SHARE : below this it is an incidental strip (a
+    # panel's chant crossing the volume, a boolean sliver), and a pair of
+    # those is no evidence of anything.
+    WALL_PLANE_MIN_AREA_SHARE = 0.05
+
+    # Maximum dot product between two wall normals for them to count as
+    # FACING each other : antiparallel within about 66°, so a cavity between
+    # two panels still qualifies when they are canted apart rather than
+    # strictly parallel (a lectern's slanted top over its bottom, or a
+    # 3-sided splayed trough whose two sides meet the bottom at a shallow
+    # angle instead of standing at 90° — a "caisson à 3 côtés" with a
+    # 117° angle between its two canted sides, dot -0.453, was the case
+    # that drove this down from -0.7). Being a plain dot product between
+    # unit normals, this stays monotonic in the angle : any FLATTER pair
+    # (wider angle, more negative dot) passes more easily still, so one
+    # threshold covers the whole family once set for its steepest member.
+    # Kept well clear of 0, where a true 90° concavity POCKET (e.g. the
+    # corner two perpendicular panels leave outside a notched footprint)
+    # must keep failing.
+    FACING_WALL_MAX_DOT = -0.4
+
+    # Minimum dot an escape direction must keep against EVERY wall to count
+    # as one (see #_walls_leave_no_escape?) : the wall normals are unit
+    # vectors, so this is the sine of the angle by which the direction clears
+    # the walls, about 0.06°. Anything below is a direction that merely
+    # grazes them — the tube axis of a prismatic cavity, which must NOT read
+    # as a way out.
+    ESCAPE_DIRECTION_MIN_DOT = 1.0e-3
+
+    # Whether the cavity is ENCLOSED by its panel walls (face id != 0), each
+    # carrying at least WALL_PLANE_MIN_AREA_SHARE of the wall area.
+    #
+    # This is what tells a compartment from the concavity POCKET a non-convex
+    # assembly leaves between itself and its hull. A compartment is enclosed :
+    # whatever else it opens onto, some panel is on one side of it and another
+    # panel opposite — two shelves with the volume sandwiched between them
+    # already qualify, and that is the thinnest enclosure the separator tool
+    # is asked to work in. A pocket merely WRAPS a corner of the assembly :
+    # its walls are the outer faces meeting at that corner, mutually
+    # perpendicular, and everything else about it is hull. Neither #openness
+    # nor #opening_plane_count separates the two — the L-shaped cavity of a
+    # notched cabinet and the pocket its notch leaves outside score the same
+    # on both (openness 0.52, and an opening count that follows how many
+    # sides happen to be open, 4 for a pair of bare shelves as much as for a
+    # pocket).
+    #
+    # Two pieces of evidence, either of which is enough :
+    #
+    # - a FACING WALL PAIR (#_facing_wall_pair?), the historical test : some
+    #   pair of walls the cavity lies between ;
+    # - NO ESCAPE DIRECTION (#_walls_leave_no_escape?), its generalization to
+    #   walls that enclose without any of them being opposite — a TRIANGULAR
+    #   section (a tent shaped caisson : a bottom and two sides meeting at
+    #   the apex) is walled all around yet has no facing pair at all, its
+    #   widest angle being 133° where the pair test asks for 135°. No
+    #   threshold on the pair test can fix that family : the more acute the
+    #   apex, the further its walls are from facing each other.
+    #
+    # Both read the candidate ALONE, which is all they can do : the corner
+    # compartment a divider leaves against a side (two perpendicular walls,
+    # everything else open) and a pocket are congruent shapes, and nothing
+    # inside the fragment tells them apart. What does is what the fragment
+    # leans on — see #leans_on_a_wall_face_of?, read by
+    # CommonSolidFindCavitiesWorker over the whole batch of candidates.
+    #
+    # Memoized.
+    def enclosed_by_walls?
+      return @enclosed_by_walls if defined?(@enclosed_by_walls)
+
+      normals = _wall_normals
+      @enclosed_by_walls = _facing_wall_pair?(normals) || _walls_leave_no_escape?(normals)
+    end
+
+    # Minimum share of the WALL area a face must carry to be READ AS AN
+    # APPUI — deliberately far below WALL_PLANE_MIN_AREA_SHARE, because the
+    # two tests ask opposite questions of the area.
+    #
+    # A wall is weighed on its own (does this face HEM THE CAVITY IN ?), and
+    # a strip of a few percent is no evidence of that : hence the 5 %.
+    # #leans_on_a_wall_face_of? weighs a MATCH against another cavity, and
+    # there a sliver of the same face, from the same side, says exactly as
+    # much as a large one — the face either carries on behind the panel that
+    # splits the two volumes, or it does not. Holding it to the wall share
+    # loses the shallow compartments : a rear rebate 20 mm deep behind a back
+    # panel set into 462 mm wide sides leans on those sides over 3.98 % of
+    # its wall area — under the wall floor, though it is the very same face,
+    # from the very same side, as the main compartment's.
+    #
+    # What is left to guard against is the degenerate SLIVER a boolean leaves
+    # where two faces are flush, whose face id (and normal) are arbitrary :
+    # orders of magnitude below this, as the reduction planes' own
+    # REDUCTION_MIN_AREA guard already assumes.
+    LEANING_WALL_FACE_MIN_AREA_SHARE = 0.005
+
+    # Outward unit normal of each WALL FACE of the cavity, keyed by the id of
+    # the panel face it lies on : the same accounting as #_wall_normals — face
+    # id != 0, at least LEANING_WALL_FACE_MIN_AREA_SHARE of the wall area —
+    # kept per FACE rather than per plane, so that a wall can be recognized
+    # from one cavity to the next (a plane index is local to a fragment's own
+    # mesh, a face id names the very face of the very panel). See
+    # #leans_on_a_wall_face_of?. Memoized.
+    def wall_face_normals
+      return @wall_face_normals if defined?(@wall_face_normals)
+
+      area_by_face_id = Hash.new(0.0)
+      normal_by_face_id = {}
+      unless @face_ids.nil?
+
+        _each_triangle_plane do |_plane_index, triangle_index, _a, _b, _c, area2, nx, ny, nz|
+          face_id = @face_ids[triangle_index]
+          next if face_id == 0  # Envelope cap, not a wall
+          # Doubled triangle area : the factor cancels out in the relative
+          # area comparison below
+          area_by_face_id[face_id] += area2
+          normal_by_face_id[face_id] ||= [ nx, ny, nz ]
+        end
+
+      end
+
+      total = area_by_face_id.values.inject(0.0) { |sum, area| sum + area }
+      return @wall_face_normals = {} unless total > 0
+      @wall_face_normals = area_by_face_id.select { |_face_id, area| area >= total * LEANING_WALL_FACE_MIN_AREA_SHARE }
+                                          .keys.map { |face_id| [ face_id, normal_by_face_id[face_id] ] }.to_h
+    end
+
+    # Whether the two cavities lean on ONE AND THE SAME wall face — the same
+    # face of the same panel, from the SAME side (their outward normals there
+    # point the same way, both being the face's own).
+    #
+    # That is what a DIVIDER does : it splits the space in front of a face
+    # into two compartments, and the face carries on behind it — so a
+    # candidate the enclosure test cannot vouch for on its own is a
+    # compartment all the same as soon as it shares a wall face with one that
+    # passed (see #enclosed_by_walls?). A concavity pocket never can : it
+    # wraps the assembly's corner, so it leans on the OUTER faces of the very
+    # panels whose INNER faces bound the compartments — the same panels, never
+    # the same faces. That is what makes the appui readable down to
+    # LEANING_WALL_FACE_MIN_AREA_SHARE : however little of the face a cavity
+    # sees, seeing it AT ALL from that side is the whole of the evidence.
+    def leans_on_a_wall_face_of?(other)
+      other_normals = other.wall_face_normals
+      wall_face_normals.any? { |face_id, normal|
+        other_normal = other_normals[face_id]
+        !other_normal.nil? && normal[0] * other_normal[0] + normal[1] * other_normal[1] + normal[2] * other_normal[2] > 0
+      }
+    end
+
+    # Same tolerant matching as SmartBuildFrontPanelActionHandler::OPENING_PLANE_MIN_DOT
+    # (a signed dot, so a plane and its own reverse never match).
+    WALL_PLANE_MATCH_MIN_DOT = 1.0 - 1e-6
+
+    # How far BEHIND the plane asked for a wall may stand and still be read as
+    # closing it : the thickness of the panel that closes it, and no more.
+    #
+    # The setback is never zero - a cavity closed by a fitted panel stops at
+    # that panel's INNER face, one thickness short of where its hull cap would
+    # have sat had it been open instead - so an exact plane match finds
+    # nothing. It is bounded all the same, and by a PANEL : what stands
+    # between a genuine neighbour's wall and the plane is the panel that
+    # closes it. Anything further back has something else in between - and if
+    # that something is a cavity, it has its own mouth on the plane and speaks
+    # for itself as a sibling. Without this bound the reading goes wrong the
+    # far side of the assembly : the compartment behind a mid-back, a sealed
+    # void, anything walled facing this way at any depth at all, is read as a
+    # neighbour of a plane it stands nowhere near.
+    #
+    # 4 inches clears the thickest doubled panel an assembly is made of and
+    # stays an order of magnitude under the shallowest compartment one.
+    WALL_PLANE_MAX_SETBACK = 4.0
+
+    # The loop(s) the cavity's WALL draws on the given plane - the panel that
+    # closes it there, exactly as far as it reaches - or [] when the cavity
+    # is OPEN on that plane (nothing but caps facing it), has no wall facing
+    # it, or none standing near enough to close it (WALL_PLANE_MAX_SETBACK).
+    #
+    # Read by SmartBuildFrontPanelActionHandler#_get_sibling_mouth_points as the
+    # fallback for a neighbouring cavity CLOSED on the very plane a front panel is
+    # being cut on : such a cavity has no #opening_defs there at all - it is
+    # not a mouth - yet its wall is exactly the boundary the front panel's overlay
+    # share must stop at (see #_get_overlay_points).
+    #
+    # The depth the wall comes back at is its OWN, the setback included, and
+    # not the plane's : harmless, since every reader of the loop works in the
+    # opening's own 2D frame and never looks past its X, Y - the frame's Z
+    # carries the setback and nothing reads it.
+    #
+    # Memoized PER PLANE, and cheaply turned down before that : the front panel
+    # preview reads its siblings again at every mouse move, over every cavity
+    # of the container, while the carcass does not move under it. The key is
+    # quantized the way SmartBuildFrontPanelActionHandler#_opening_plane_key is,
+    # and for the same reason - two queries closer than that answer the same
+    # thing anyway, the matching below being tolerant to exactly that degree.
+    def wall_loops_on_plane(normal, origin)
+      nx = normal.x.to_f ; ny = normal.y.to_f ; nz = normal.z.to_f
+      d = nx * origin.x.to_f + ny * origin.y.to_f + nz * origin.z.to_f
+
+      cache = (@wall_loops_by_plane ||= {})
+      key = [ (nx * 1e6).round, (ny * 1e6).round, (nz * 1e6).round, (d / SolidMeshDef::TOLERANCE).round ]
+      return cache[key] if cache.has_key?(key)
+
+      cache[key] = _wall_loops_on_plane(nx, ny, nz, d)
+    end
+
+    # The HOLES of the cavity, as [ unit normal ([ x, y, z ], pointing OUT of
+    # the cavity), offset ] : the openings other than its biggest - its MAIN
+    # mouth - whose caps touch no other plane's, and which do not FACE that
+    # mouth - the gap a top made of two rails leaves between them, a hole in
+    # a side wall of the compartment rather than one of its mouths. The one
+    # opposite the main mouth is the other mouth : the back of a through
+    # tube, or the hole a face frame leaves in front of an open back, where an
+    # inset door goes. See CommonSolidFindCavitiesWorker, HOLES. Memoized.
+    def hole_planes
+      @hole_planes ||= begin
+        plane_indices = _opening_plane_indices
+        if plane_indices.length <= 1
+          []
+        else
+          area_by_plane, normal_by_plane, origin_index_by_plane = _cap_area_by_plane
+          component_ids_by_plane = _cap_component_ids_by_plane
+          main_index, *other_indices = plane_indices.sort_by { |plane_index| -area_by_plane[plane_index] }
+          mx, my, mz = normal_by_plane[main_index]
+          other_indices.select { |plane_index|
+            nx, ny, nz = normal_by_plane[plane_index]
+            next false if mx * nx + my * ny + mz * nz <= OPENING_PLANES_OPPOSED_MAX_DOT
+            component_ids_by_plane.all? { |other_index, component_ids| other_index == plane_index || (component_ids & component_ids_by_plane[plane_index]).empty? }
+          }.map { |plane_index|
+            normal = normal_by_plane[plane_index]
+            origin = origin_index_by_plane[plane_index]
+            [ normal, normal[0] * @vertices[origin * 3] + normal[1] * @vertices[origin * 3 + 1] + normal[2] * @vertices[origin * 3 + 2] ]
+          }
+        end
+      end
+    end
+
+    private
+
+    # #wall_loops_on_plane once the plane is read as [ unit normal, offset ] —
+    # see there. The AABB is asked FIRST : a cavity whose every point stands
+    # outside the window can carry no wall in it, and turning it down costs
+    # one support function rather than a pass over its triangles. That is the
+    # common answer, and the one that has to be cheap — the fallback is tried
+    # on every cavity with no mouth on the plane, most of which are simply
+    # somewhere else in the carcass.
+    def _wall_loops_on_plane(nx, ny, nz, d)
+      min_d = d - WALL_PLANE_MAX_SETBACK
+      max_d = d + SolidMeshDef::TOLERANCE
+      return [] unless _spans_offsets?(nx, ny, nz, min_d, max_d)
+
+      welded_vertex_indices = _welded_vertex_indices
+      edge_counts = Hash.new(0)
+      matched = false
+
+      _each_triangle_plane do |_plane_index, triangle_index, a, b, c, _area2, tnx, tny, tnz|
+        next if @face_ids[triangle_index] == 0 # Envelope cap, not a wall
+        next if tnx * nx + tny * ny + tnz * nz < WALL_PLANE_MATCH_MIN_DOT
+        td = @vertices[a * 3] * nx + @vertices[a * 3 + 1] * ny + @vertices[a * 3 + 2] * nz
+        next if td < min_d || td > max_d
+        matched = true
+        wa, wb, wc = welded_vertex_indices[a], welded_vertex_indices[b], welded_vertex_indices[c]
+        [ [ wa, wb ], [ wb, wc ], [ wc, wa ] ].each do |index_a, index_b|
+          next if index_a == index_b
+          if edge_counts[[ index_b, index_a ]] > 0
+            edge_counts[[ index_b, index_a ]] -= 1
+          else
+            edge_counts[[ index_a, index_b ]] += 1
+          end
+        end
+      end
+
+      return [] unless matched
+      pts = points
+      _cap_loops(edge_counts).map { |indices| indices.map { |index| pts[index] } }
+    end
+
+    # Whether ANY point of the fragment has an offset along the given unit
+    # direction within [ min_d, max_d ] — read off #bounds alone, which is the
+    # support function of a box : the extreme corner along a direction is the
+    # one taking each coordinate from the side that direction points to.
+    # Conservative on purpose : the box says yes to more than the mesh does,
+    # never to less, so nothing real is turned away.
+    def _spans_offsets?(nx, ny, nz, min_d, max_d)
+      min_point = bounds.min
+      max_point = bounds.max
+
+      low = high = 0.0
+      [ [ nx, min_point.x.to_f, max_point.x.to_f ],
+        [ ny, min_point.y.to_f, max_point.y.to_f ],
+        [ nz, min_point.z.to_f, max_point.z.to_f ] ].each do |n, lower, upper|
+        if n >= 0.0
+          low += n * lower ; high += n * upper
+        else
+          low += n * upper ; high += n * lower
+        end
+      end
+
+      low <= max_d && high >= min_d
+    end
+
+    # Indices, among the cavity's planes, of the planes carrying an OPENING —
+    # at least OPENING_PLANE_MIN_AREA_SHARE of the total cap area. Read by
+    # #opening_plane_count and #opening_defs alike, so that the openings ARE
+    # the planes the count counts. Memoized.
+    def _opening_plane_indices
+      @opening_plane_indices ||= begin
+        area_by_plane, = _cap_area_by_plane
+        total = area_by_plane.values.inject(0.0) { |sum, area| sum + area }
+        total > 0 ? area_by_plane.select { |_plane_index, area| area >= total * OPENING_PLANE_MIN_AREA_SHARE }.keys : []
+      end
+    end
+
+    # The cavity's ENVELOPE CAPS (face id 0) gathered by plane :
+    # [ doubled area by plane index, unit normal by plane index, index of a
+    # vertex of the plane by plane index ]. The doubled area is what
+    # #_each_triangle_plane hands out and the factor cancels in every relative
+    # comparison made of it ; the normal is the plane's own, every triangle
+    # sharing the index agreeing with it to PLANE_NORMAL_TOLERANCE, and it
+    # points OUT of the cavity (the fragment is outward wound). Memoized.
+    def _cap_area_by_plane
+      @cap_area_by_plane ||= begin
+
+        area_by_plane = Hash.new(0.0)
+        normal_by_plane = {}
+        origin_index_by_plane = {}
+        unless @face_ids.nil?
+
+          _each_triangle_plane do |plane_index, triangle_index, a, _b, _c, area2, nx, ny, nz|
+            next unless @face_ids[triangle_index] == 0
+            area_by_plane[plane_index] += area2
+            next if normal_by_plane.key?(plane_index)
+            normal_by_plane[plane_index] = [ nx, ny, nz ]
+            origin_index_by_plane[plane_index] = a
+          end
+
+        end
+
+        [ area_by_plane, normal_by_plane, origin_index_by_plane ]
+      end
+    end
+
+    # The connected PIECES the caps (face id 0) make up, by plane index : the
+    # ids of the pieces each plane's cap triangles belong to. Two cap
+    # triangles are in the same piece when a chain of cap triangles sharing
+    # WELDED vertices links them - welded for the same reason as
+    # #_cap_edge_counts_by_plane, a corner of an oblique assembly comes back
+    # on distinct indices. Every plane counts, the ones too small to be an
+    # opening included : they are what bridges a non flush rim. Read by
+    # #opening_planes_apart?, and only when the orientation has not settled
+    # it. Memoized.
+    def _cap_component_ids_by_plane
+      @cap_component_ids_by_plane ||= begin
+
+        welded_vertex_indices = _welded_vertex_indices
+        parents = {}
+        find = lambda { |index|
+          parents[index] = index unless parents.key?(index)
+          index = (parents[index] = parents[parents[index]]) while parents[index] != index
+          index
+        }
+
+        vertex_indices_by_plane = {}
+        unless @face_ids.nil?
+
+          _each_triangle_plane do |plane_index, triangle_index, a, b, c|
+            next unless @face_ids[triangle_index] == 0
+            wa = welded_vertex_indices[a]
+            root = find.call(wa)
+            parents[find.call(welded_vertex_indices[b])] = root
+            parents[find.call(welded_vertex_indices[c])] = root
+            (vertex_indices_by_plane[plane_index] ||= []) << wa
+          end
+
+        end
+
+        component_ids_by_plane = {}
+        vertex_indices_by_plane.each { |plane_index, vertex_indices| component_ids_by_plane[plane_index] = vertex_indices.map { |index| find.call(index) }.uniq }
+        component_ids_by_plane
+      end
+    end
+
+    # Net boundary edges of the CAP triangles of the given planes, grouped by
+    # plane index : same directed edge cancellation as
+    # SolidFragmentDef#_edge_counts_by_plane, on WELDED vertex indices for the
+    # same reason (an oblique assembly leaves geometrically identical corners
+    # on distinct indices), but restricted to face id 0 — a panel face
+    # coplanar with the mouth, were there one, is not part of it.
+    def _cap_edge_counts_by_plane(plane_indices)
+      welded_vertex_indices = _welded_vertex_indices
+
+      wanted = {}
+      plane_indices.each { |plane_index| wanted[plane_index] = true }
+
+      edge_counts_by_plane = {}
+      _each_triangle_plane do |plane_index, triangle_index, a, b, c, _area2|
+        next unless wanted[plane_index]
+        next unless @face_ids[triangle_index] == 0
+        wa, wb, wc = welded_vertex_indices[a], welded_vertex_indices[b], welded_vertex_indices[c]
+        edge_counts = (edge_counts_by_plane[plane_index] ||= Hash.new(0))
+        [ [ wa, wb ], [ wb, wc ], [ wc, wa ] ].each do |index_a, index_b|
+          next if index_a == index_b
+          if edge_counts[[ index_b, index_a ]] > 0
+            edge_counts[[ index_b, index_a ]] -= 1
+          else
+            edge_counts[[ index_a, index_b ]] += 1
+          end
+        end
+      end
+
+      edge_counts_by_plane
+    end
+
+    # Chains the surviving directed edges of one plane into CLOSED loops of
+    # vertex indices (the closing point not repeated). The net boundary of a
+    # cap is a set of closed cycles by construction — each vertex has as many
+    # edges leaving it as entering it — so following the successors from any
+    # edge comes back to where it started ; a chain that dead ends instead
+    # (only a degenerate cap could produce one) is dropped rather than handed
+    # out as an open contour. Where two contours PINCH at a shared vertex,
+    # any exit closes a loop and the rest is chained on the next pass.
+    def _cap_loops(edge_counts)
+      return [] if edge_counts.nil?
+
+      successors = {}
+      edge_counts.each do |(index_a, index_b), count|
+        next if count <= 0
+        count.times { (successors[index_a] ||= []) << index_b }
+      end
+
+      loops = []
+      until successors.empty?
+
+        start = successors.keys.first
+        indices = []
+        index = start
+        while (following = successors[index]) && !following.empty?
+          indices << index
+          index = following.shift
+          successors.delete(indices.last) if following.empty?
+          break if index == start
+        end
+
+        loops << indices if index == start && indices.length >= 3
+
+      end
+
+      loops
+    end
+
+    # Outward unit normals of the cavity's walls — its panel planes (face id
+    # != 0) carrying at least WALL_PLANE_MIN_AREA_SHARE of the wall area.
+    # Being area filtered, there are at most 20 of them.
+    def _wall_normals
+      area_by_plane = Hash.new(0.0)
+      normal_by_plane = {}
+      unless @face_ids.nil?
+
+        _each_triangle_plane do |plane_index, triangle_index, _a, _b, _c, area2, nx, ny, nz|
+          next if @face_ids[triangle_index] == 0  # Envelope cap, not a wall
+          # Doubled triangle area : the factor cancels out in the relative
+          # area comparison below
+          area_by_plane[plane_index] += area2
+          normal_by_plane[plane_index] ||= [ nx, ny, nz ]
+        end
+
+      end
+
+      total = area_by_plane.values.inject(0.0) { |sum, area| sum + area }
+      return [] unless total > 0
+      area_by_plane.select { |_plane_index, area| area >= total * WALL_PLANE_MIN_AREA_SHARE }
+                   .keys.map { |plane_index| normal_by_plane[plane_index] }
+    end
+
+    # Whether some pair of walls FACES each other (FACING_WALL_MAX_DOT — the
+    # normals point out of the cavity, so two walls it lies BETWEEN point away
+    # from one another).
+    def _facing_wall_pair?(normals)
+      normals.combination(2).any? { |first, second|
+        first[0] * second[0] + first[1] * second[1] + first[2] * second[2] <= FACING_WALL_MAX_DOT
+      }
+    end
+
+    # Whether the walls leave NO WAY OUT : whether no direction leads away
+    # from every one of them at once (no d with n·d > 0 for all walls n).
+    # Such a direction is exactly how a pocket differs from a compartment —
+    # it wraps a corner, so stepping along the bisector of its two walls
+    # leaves it, while a bottom and two sides leaning over it hem the volume
+    # in whichever way it is left open (the open ends of the tube only GRAZE
+    # the walls, hence the strictness of ESCAPE_DIRECTION_MIN_DOT).
+    #
+    # By LP duality the best direction scores dist(0, conv(normals)), reached
+    # at p/|p| for p the point of conv(normals) closest to the origin. That
+    # point lies on a face of the hull spanned by at most 3 of the normals
+    # (dimension 3), and is then the point of THAT face's affine hull closest
+    # to the origin — so trying every such point over all subsets of 1, 2 and
+    # 3 walls is exact, and cheap at the size #_wall_normals bounds them to.
+    # Candidates are not screened : a subset whose closest point is not on the
+    # hull simply scores worse than the optimum, and the origin lying inside
+    # the hull (no way out) leaves every candidate scoring 0 or less.
+    def _walls_leave_no_escape?(normals)
+      return false if normals.size < 3  # A single wall, or two, always leave a way out unless antiparallel — a facing pair
+
+      candidates = normals.dup
+      normals.combination(2) { |first, second|
+        point = _closest_point_on_line(first, second)
+        candidates << point unless point.nil?
+      }
+      normals.combination(3) { |first, second, third|
+        point = _closest_point_on_plane(first, second, third)
+        candidates << point unless point.nil?
+      }
+
+      candidates.none? { |point|
+        norm = Math.sqrt(point[0] * point[0] + point[1] * point[1] + point[2] * point[2])
+        next false if norm < ESCAPE_DIRECTION_MIN_DOT
+        normals.map { |normal|
+          (normal[0] * point[0] + normal[1] * point[1] + normal[2] * point[2]) / norm
+        }.min > ESCAPE_DIRECTION_MIN_DOT
+      }
+    end
+
+    # Point of the line through the two given points closest to the origin,
+    # or nil when they are the same point.
+    def _closest_point_on_line(first, second)
+      ux = second[0] - first[0] ; uy = second[1] - first[1] ; uz = second[2] - first[2]
+      uu = ux * ux + uy * uy + uz * uz
+      return nil if uu < ESCAPE_DIRECTION_MIN_DOT * ESCAPE_DIRECTION_MIN_DOT
+      t = -(first[0] * ux + first[1] * uy + first[2] * uz) / uu.to_f
+      [ first[0] + t * ux, first[1] + t * uy, first[2] + t * uz ]
+    end
+
+    # Point of the plane through the three given points closest to the origin,
+    # or nil when they are aligned.
+    def _closest_point_on_plane(first, second, third)
+      ux = second[0] - first[0] ; uy = second[1] - first[1] ; uz = second[2] - first[2]
+      vx = third[0] - first[0] ; vy = third[1] - first[1] ; vz = third[2] - first[2]
+      mx = uy * vz - uz * vy
+      my = uz * vx - ux * vz
+      mz = ux * vy - uy * vx
+      mm = mx * mx + my * my + mz * mz
+      return nil if mm < ESCAPE_DIRECTION_MIN_DOT * ESCAPE_DIRECTION_MIN_DOT
+      s = (first[0] * mx + first[1] * my + first[2] * mz) / mm.to_f
+      [ s * mx, s * my, s * mz ]
+    end
+
+  end
+
+end

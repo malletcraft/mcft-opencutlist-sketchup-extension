@@ -22,7 +22,9 @@ https://extensions.sketchup.com/extension/00f0bf69-7a42-4295-9e1c-226080814e3e/o
 
 ## Supported Languages
 
-**OpenCutList** is available in French, English, German, Russian, Italian, Portuguese, Spanish, Polish, Czech, Vietnamese, Ukrainian, Dutch and Simplified Chinese. Experimental versions of Arabic and Hebrew are also available, although without RTL interface. The interface language of **OpenCutList** can be selected independently of the language version of SketchUp. Translators or reviewers can join us on [Transifex](https://www.transifex.com/opencutlist/opencutlist/) and actively participate in improving the quality of the translations.
+**OpenCutList** is available in French, English, German, Russian, Italian, Portuguese, Spanish, Polish, Czech, Vietnamese, Ukrainian, Dutch, Simplified Chinese, Serbian and Hungarian. Experimental versions of Arabic and Hebrew are also available, although without RTL interface. The interface language of **OpenCutList** can be selected independently of the language version of SketchUp. 
+
+Translators or reviewers can join us on [OpenCutList Localize](https://localize.opencutlist.org/) and actively participate in improving the quality of the translations.
 
 ## Supported Units
 
@@ -30,7 +32,7 @@ In addition to the selected SketchUp unit, **OpenCutList** works with dimensions
 
 ## FAQ
 
-A few frequently asked questions are listed [here](docs/02-faq.md).
+A few frequently asked questions are listed in the [FAQ](https://docs.opencutlist.org/support/frequently-asked-questions).
 
 ## Documentation
 
@@ -69,15 +71,17 @@ This project exists thanks to all the people who contribute.
 
 ### Financial Contributors
 
-Become a financial contributor and help us sustain our community. [[Contribute](https://opencollective.com/lairdubois-opencutlist-sketchup-extension/contribute)]
+[How to become a financial contributor](https://opencollective.com/lairdubois-opencutlist-sketchup-extension/contribute) and help us sustain our community.
+
+Thank you to all our supporters! 🙏
 
 #### Individuals
 
-<a href="https://opencollective.com/lairdubois-opencutlist-sketchup-extension"><img src="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/individuals.svg?width=890"></a>
+[![OpenCutList Backers](https://opencollective.com/lairdubois-opencutlist-sketchup-extension/backers.svg?width=890&limit=100&button=false)](https://opencollective.com/lairdubois-opencutlist-sketchup-extension#backers) ... and many many more!
 
 #### Organizations
 
-Support this project with your organization. Your logo will show up here with a link to your website. [[Contribute](https://opencollective.com/lairdubois-opencutlist-sketchup-extension/contribute)]
+Support this project with your organization. Your logo will show up here with a link to your website.
 
 <a href="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/0/website"><img src="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/0/avatar.svg"></a>
 <a href="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/1/website"><img src="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/1/avatar.svg"></a>
@@ -89,6 +93,18 @@ Support this project with your organization. Your logo will show up here with a 
 <a href="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/7/website"><img src="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/7/avatar.svg"></a>
 <a href="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/8/website"><img src="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/8/avatar.svg"></a>
 <a href="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/9/website"><img src="https://opencollective.com/lairdubois-opencutlist-sketchup-extension/organization/9/avatar.svg"></a>
+
+## Code Signing Policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+The Windows native libraries (`*.dll`) shipped with OpenCutList are built from this repository by GitHub Actions and signed through SignPath.
+
+Team roles:
+- Committers and reviewers: [Members team](https://github.com/orgs/lairdubois/people)
+- Approvers: [Owners](https://github.com/orgs/lairdubois/people?query=role%3Aowner)
+
+Privacy policy: OpenCutList only connects to [lairdubois.fr](https://www.lairdubois.fr) to check for updates and to [Open Collective](https://opencollective.com/lairdubois-opencutlist-sketchup-extension) to display sponsorship information. No personal data or model content is transferred to any networked system unless specifically requested by the user.
 
 ## License
 

@@ -25,9 +25,12 @@
     "rectangleguillotine_cut_type": "non-exact",
     "rectangleguillotine_number_of_stages": 3,
     "rectangleguillotine_first_stage_orientation": "any",
+    "rectangleguillotine_sort_subplates_criteria": "l1,l2",
     "rectangleguillotine_keep_size": "",
+    "rectangle_leftover_mode": "area",
     "irregular_allowed_rotations": "0",
     "irregular_allow_mirroring": false,
+    "irregular_leftover_mode": "bottom-left",
     "spacing": { "metric": "3mm", "imperial": "1/8\"" },
     "trimming": { "metric": "10mm", "imperial": "1/2\"" },
     "items_formula": "",
@@ -42,9 +45,11 @@
     "objective": "auto",
     "optimization_mode": "auto",
     "time_limit": 0,
-    "not_anytime_tree_search_queue_size": 16,
     "verbosity_level": 0,
-    "input_to_json_bin_dir": "",
+    "use_pre_process": true,
+    "write_input": false,
+    "write_instance": false,
+    "write_certificate": false,
     "hidden_group_ids": []
   }
 }

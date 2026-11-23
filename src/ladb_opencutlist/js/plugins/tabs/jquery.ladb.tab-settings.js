@@ -121,8 +121,14 @@
 
                     rubyCallCommand('settings_export_global_presets_to_json', { paths_filter: pathsFilter }, function (response) {
 
-                        if (response.success) {
-                            that.dialog.notifySuccess(i18next.t('tab.settings.presets.export_global_presets_success'));
+                        if (response.errors) {
+                            that.dialog.notifyErrors(response.errors);
+                        } else if (response.success) {
+                            if (response.assets_count > 0) {
+                                that.dialog.notifySuccess(i18next.t('tab.settings.presets.export_global_presets_success_with_assets', { count: response.assets_count }));
+                            } else {
+                                that.dialog.notifySuccess(i18next.t('tab.settings.presets.export_global_presets_success'));
+                            }
                         }
 
                     });
@@ -214,6 +220,13 @@
         $('#ladb_item_import_global_presets', this.$element).on('click', function () {
             that.importGlobalPresets();
         });
+        $('#ladb_item_open_library_dir', this.$element).on('click', function () {
+            rubyCallCommand('core_open_library_dir', null, function (response) {
+                if (response.errors) {
+                    that.dialog.notifyErrors(response.errors);
+                }
+            });
+        });
         $('#ladb_item_dump_global_presets', this.$element).on('click', function () {
             rubyCallCommand('settings_dump_global_presets');
         });
@@ -285,10 +298,10 @@
             $selectPrintMargin.selectpicker('val', that.dialog.capabilities.tabs_dialog_print_margin);
         }
 
-        $selectLanguage.selectpicker($.extend({}, SELECT_PICKER_OPTIONS, { container: null, size: that.dialog.capabilities.languages.length + 1 }));
-        $selectFontSize.selectpicker(SELECT_PICKER_OPTIONS);
-        $selectTableRowSize.selectpicker(SELECT_PICKER_OPTIONS);
-        $selectPrintMargin.selectpicker(SELECT_PICKER_OPTIONS);
+        $selectLanguage.selectpicker($.extend({}, SELECT_PICKER_TABS_OPTIONS, { container: null, size: that.dialog.capabilities.languages.length + 1 }));
+        $selectFontSize.selectpicker(SELECT_PICKER_TABS_OPTIONS);
+        $selectTableRowSize.selectpicker(SELECT_PICKER_TABS_OPTIONS);
+        $selectPrintMargin.selectpicker(SELECT_PICKER_TABS_OPTIONS);
 
         fnGlobalFillInputs();
 
@@ -426,11 +439,11 @@
         };
         const fnAdaptLengthPrecisionToFormat = function () {
             if (modelLengthFormat === 0 /* DECIMAL */ || modelLengthFormat === 2 /* ENGINEERING */) {
-                $('.length-unit-decimal', that.$element).show();
-                $('.length-unit-fractional', that.$element).hide();
+                $('.length-unit-decimal').show();
+                $('.length-unit-fractional').hide();
             } else {
-                $('.length-unit-decimal', that.$element).hide();
-                $('.length-unit-fractional', that.$element).show();
+                $('.length-unit-decimal').hide();
+                $('.length-unit-fractional').show();
             }
         }
         const fnFillLengthSettings = function(settings) {
@@ -496,12 +509,12 @@
                 fnSaveOptions();
             }
         });
-        $selectLengthUnit.selectpicker(SELECT_PICKER_OPTIONS);
-        $selectLengthFormat.selectpicker(SELECT_PICKER_OPTIONS);
-        $selectLengthPrecision.selectpicker(SELECT_PICKER_OPTIONS);
-        $selectMassUnit.selectpicker(SELECT_PICKER_OPTIONS);
-        $selectMassPrecision.selectpicker(SELECT_PICKER_OPTIONS);
-        $selectCurrencyPrecision.selectpicker(SELECT_PICKER_OPTIONS);
+        $selectLengthUnit.selectpicker(SELECT_PICKER_TABS_OPTIONS);
+        $selectLengthFormat.selectpicker(SELECT_PICKER_TABS_OPTIONS);
+        $selectLengthPrecision.selectpicker(SELECT_PICKER_TABS_OPTIONS);
+        $selectMassUnit.selectpicker(SELECT_PICKER_TABS_OPTIONS);
+        $selectMassPrecision.selectpicker(SELECT_PICKER_TABS_OPTIONS);
+        $selectCurrencyPrecision.selectpicker(SELECT_PICKER_TABS_OPTIONS);
 
         fnRetrieveModelOptions();
 

@@ -2,17 +2,23 @@ module Ladb::OpenCutList
 
   require_relative '../../constants'
   require_relative '../../helper/layer_visibility_helper'
+  require_relative '../../helper/material_attributes_caching_helper'
   require_relative '../../utils/path_utils'
   require_relative '../../utils/transformation_utils'
+  require_relative '../../utils/array_utils'
+  require_relative '../../lib/geometrix/geometrix'
   require_relative '../../manipulator/face_manipulator'
   require_relative '../../manipulator/edge_manipulator'
   require_relative '../../manipulator/surface_manipulator'
+  require_relative '../../model/attributes/definition_attributes'
   require_relative '../../manipulator/curve_manipulator'
+  require_relative '../../manipulator/snap_manipulator' if Object.const_defined?('Sketchup::Snap')
   require_relative '../../model/drawing/drawing_def'
 
   class CommonDrawingDecompositionWorker
 
     include LayerVisibilityHelper
+    include MaterialAttributesCachingHelper
 
     ORIGIN_POSITION_DEFAULT = 0 # = Drawing Element Origin
     ORIGIN_POSITION_FACES_BOUNDS_MIN = 1
@@ -34,7 +40,12 @@ module Ladb::OpenCutList
     CONTAINER_VALIDATOR_ALL = 0
     CONTAINER_VALIDATOR_NONE = 1
     CONTAINER_VALIDATOR_PART = 2
-    CONTAINER_VALIDATOR_NO_SCALE = 3
+    CONTAINER_VALIDATOR_PART_WITHOUT_MACHININGS = 3
+    CONTAINER_VALIDATOR_NO_SCALE = 4
+    CONTAINER_VALIDATOR_ASSEMBLY_WITHOUT_MACHININGS = 5   # The parts too, not what is laid in them : a door made of several - see DoorDef
+
+    # Backward compatibility
+    SketchupSnapClass = Object.const_defined?('Sketchup::Snap') ? Sketchup::Snap : nil
 
     def initialize(ipaths,
 
@@ -57,7 +68,11 @@ module Ladb::OpenCutList
 
                    ignore_clines: true,
 
+                   ignore_snaps: true,
+
                    container_validator: CONTAINER_VALIDATOR_ALL,
+
+                   ignore_visibility: false,
 
                    flatten: true
 
@@ -84,7 +99,14 @@ module Ladb::OpenCutList
 
       @ignore_clines = ignore_clines
 
+      @ignore_snaps = ignore_snaps
+
       @container_validator = container_validator
+
+      # Reads the entities the model HIDES too - a caller that decomposes a
+      # given element because of what it IS, not because it is on screen, has
+      # no more reason to lose its hidden half than to lose the element itself.
+      @ignore_visibility = ignore_visibility
 
       @flatten = flatten
 
@@ -99,7 +121,7 @@ module Ladb::OpenCutList
       if @ipaths.one?
 
         ipath = @ipaths.first
-        if (leaf = ipath.leaf)
+        if (leaf = ipath.leaf) && !leaf.respond_to?(:entities)
           container_path = ipath.to_a[0...-1]
           container = container_path.last
           entities = [ leaf ]
@@ -125,11 +147,11 @@ module Ladb::OpenCutList
 
       else
 
-        paths = @ipaths.map { |ipath| ipath.to_a }
+        paths = @ipaths.map(&:to_a)
 
-        container_path = paths.first[0...-1]
+        container_path = ArrayUtils.array_common_prefix(*paths)
         container = container_path.empty? ? model : container_path.last
-        entities = paths.map { |path| path.last }
+        entities = paths.map(&:last)
 
         # Compute transformation to the last common element
         transformation = origin_transformation = Sketchup::InstancePath.new(container_path).transformation
@@ -139,11 +161,13 @@ module Ladb::OpenCutList
       # Adapt local axes if model.active_path is container_path
       if model.active_path == container_path
 
+        edit_transform = model.edit_transform
+
         origin_transformation *= Geom::Transformation.axes(
-          ORIGIN.transform(model.edit_transform),
-          X_AXIS.transform(model.edit_transform).normalize!,
-          Y_AXIS.transform(model.edit_transform).normalize!,
-          Z_AXIS.transform(model.edit_transform).normalize!
+          ORIGIN.transform(edit_transform),
+          X_AXIS.transform(edit_transform).normalize!,
+          Y_AXIS.transform(edit_transform).normalize!,
+          Z_AXIS.transform(edit_transform).normalize!
         )
 
         @input_local_x_axis = @input_local_x_axis.transform(origin_transformation).normalize!
@@ -154,6 +178,7 @@ module Ladb::OpenCutList
 
       # Create output data structure
       drawing_def = DrawingDef.new(container)
+      drawing_def.container_path = container == model ? [] : container_path
 
       # STEP 1 : Determine output axes
 
@@ -207,10 +232,10 @@ module Ladb::OpenCutList
       else
 
         # Get transformed Z axis
-        z_axis = @input_local_z_axis.transform(transformation).normalize
+        z_axis = @input_local_z_axis.transform(transformation).normalize!
 
         # Use transformed Y axis to determine YZ plane and compute X as perpendicular to this plane
-        y_axis = @input_local_y_axis.transform(transformation).normalize
+        y_axis = @input_local_y_axis.transform(transformation).normalize!
         yz_plane = Geom.fit_plane_to_points(ORIGIN, Geom::Point3d.new(y_axis.to_a), Geom::Point3d.new(z_axis.to_a))
         x_axis = Geom::Vector3d.new(yz_plane[0..2])
 
@@ -226,10 +251,11 @@ module Ladb::OpenCutList
       ttai = tai * transformation
 
       drawing_def.transformation = ta
+      drawing_def.container_transformation = ttai
       drawing_def.input_plane_manipulator.transformation = tai * drawing_def.input_plane_manipulator.transformation unless drawing_def.input_plane_manipulator.nil?
       drawing_def.input_line_manipulator.transformation = tai * drawing_def.input_line_manipulator.transformation unless drawing_def.input_line_manipulator.nil?
 
-      # STEP 2 : Populate faces, edges and clines manipulators
+      # STEP 2 : Populate manipulators
 
       face_validator = nil
       if drawing_def.input_plane_manipulator
@@ -248,7 +274,7 @@ module Ladb::OpenCutList
           }
         when FACE_VALIDATOR_EXPOSED
           face_validator = lambda { |face_manipulator|
-            !face_manipulator.perpendicular?(drawing_def.input_plane_manipulator) && drawing_def.input_plane_manipulator.angle_between(face_manipulator) < Math::PI / 2.0
+            !face_manipulator.perpendicular?(drawing_def.input_plane_manipulator) && drawing_def.input_plane_manipulator.angle_between(face_manipulator) < Geometrix::HALF_PI
           }
         end
       end
@@ -278,22 +304,48 @@ module Ladb::OpenCutList
       container_validator = nil
       case @container_validator
       when CONTAINER_VALIDATOR_NONE
-        container_validator = lambda { |container|
+        container_validator = lambda { |container, depth|
           false
         }
       when CONTAINER_VALIDATOR_PART
-        container_validator = lambda { |container|
-          !container.is_a?(Sketchup::ComponentInstance) ||
-          container.definition.behavior.cuts_opening? ||
-          container.definition.behavior.always_face_camera?
+        container_validator = lambda { |container, depth|
+          return false if container.definition.behavior.always_face_camera?
+          return true if _glued_cuts_opening?(container)
+          ma = _get_material_attributes(container.material)
+          return true if ma.type == MaterialAttributes::TYPE_MACHINING
+          return false if depth != 0 && ma.type == MaterialAttributes::TYPE_HARDWARE && !container.name.strip.empty?
+          return true if container.definition.behavior.cuts_opening?
+          return false if container.is_a?(Sketchup::ComponentInstance)
+          true
+        }
+      when CONTAINER_VALIDATOR_PART_WITHOUT_MACHININGS
+        container_validator = lambda { |container, depth|
+          return false if container.definition.behavior.always_face_camera?
+          return true if _glued_cuts_opening?(container)
+          ma = _get_material_attributes(container.material)
+          return false if ma.type == MaterialAttributes::TYPE_MACHINING
+          return false if depth != 0 && ma.type == MaterialAttributes::TYPE_HARDWARE && !container.name.strip.empty?
+          return true if container.definition.behavior.cuts_opening?
+          return false if container.is_a?(Sketchup::ComponentInstance)
+          true
+        }
+      when CONTAINER_VALIDATOR_ASSEMBLY_WITHOUT_MACHININGS
+        container_validator = lambda { |container, depth|
+          return false if container.definition.behavior.always_face_camera?
+          return true if _glued_cuts_opening?(container)
+          ma = _get_material_attributes(container.material)
+          return false if ma.type == MaterialAttributes::TYPE_MACHINING
+          return false if depth != 0 && ma.type == MaterialAttributes::TYPE_HARDWARE && !container.name.strip.empty?
+          return false if depth != 0 && DefinitionAttributes.role_of(container) == DefinitionAttributes::ROLE_HINGE
+          true
         }
       when CONTAINER_VALIDATOR_NO_SCALE
-        container_validator = lambda { |container|
-          container.definition.behavior.no_scale_mask? != 127
+        container_validator = lambda { |container, depth|
+          container.definition.behavior.no_scale_mask? != 0b1111111 # 0b1111111 = 127 (all disabld)
         }
       end
 
-      _populate_manipulators(drawing_def, entities, ttai, face_validator, edge_validator, container_validator)
+      _populate_manipulators(drawing_def, entities, ttai, nil, nil, face_validator, edge_validator, container_validator)
 
       # STEP 3 : Customize origin
 
@@ -317,6 +369,19 @@ module Ladb::OpenCutList
 
     private
 
+    # A GLUED cuts-opening container is a virtual machining : SketchUp punches
+    # its outline in the HOST FACE's tessellation, so the part is an open shell
+    # without it — whatever its material says. It has to be walked into by every
+    # PART validator, and is marked virtual downstream
+    # (SolidMeshDef.virtual_glued_container?) so that it closes the shell
+    # without passing for material of its own. Same condition as there, on
+    # purpose : a cuts-opening container glued to NOTHING punches no face, and
+    # keeps being sorted on its material like any other.
+    def _glued_cuts_opening?(container)
+      return false unless container.definition.behavior.cuts_opening?
+      container.respond_to?(:glued_to) && !container.glued_to.nil?
+    end
+
     def _get_input_axes(input_plane_manipulator, input_line_manipulator = nil)
 
       if input_line_manipulator.nil? || !input_plane_manipulator.normal.perpendicular?(input_line_manipulator.direction)
@@ -335,54 +400,58 @@ module Ladb::OpenCutList
       [ x_axis, y_axis, z_axis, input_line_manipulator ]
     end
 
-    def _populate_manipulators(drawing_container_def, entities, transformation = IDENTITY, face_validator = nil, edge_validator = nil, container_validator = nil)
+    def _populate_manipulators(drawing_container_def, entities, transformation = IDENTITY, material = nil, layer = nil, face_validator = nil, edge_validator = nil, container_validator = nil, depth = 0)
       entities.each do |entity|
-        if entity.visible? && _layer_visible?(entity.layer)
-          if entity.is_a?(Sketchup::Face)
-            next if @ignore_faces
-            manipulator = FaceManipulator.new(entity, transformation)
-            if face_validator.nil? || face_validator.call(manipulator)
-              unless @ignore_surfaces
-                if manipulator.belongs_to_a_surface?
-                  surface_manipulator = _get_surface_manipulator_by_face(drawing_container_def, entity, transformation)
-                  if surface_manipulator.nil?
-                    surface_manipulator = SurfaceManipulator.new(transformation).populate_from_face(entity)
-                    drawing_container_def.surface_manipulators << surface_manipulator
-                  end
-                  manipulator.surface_manipulator = surface_manipulator
+        next unless @ignore_visibility || (entity.visible? && _layer_visible?(entity.layer))
+        case entity
+        when Sketchup::Face
+          next if @ignore_faces
+          manipulator = FaceManipulator.new(entity, transformation, material, layer)
+          if face_validator.nil? || face_validator.call(manipulator)
+            unless @ignore_surfaces
+              if manipulator.belongs_to_a_surface?
+                surface_manipulator = _get_surface_manipulator_by_face(drawing_container_def, entity, transformation)
+                if surface_manipulator.nil?
+                  surface_manipulator = SurfaceManipulator.new(transformation, material, layer).populate_from_face(entity)
+                  drawing_container_def.surface_manipulators << surface_manipulator
                 end
-              end
-              drawing_container_def.face_manipulators << manipulator
-            end
-          elsif entity.is_a?(Sketchup::Edge)
-            next if @ignore_edges || entity.soft? && @ignore_soft_edges
-            manipulator = EdgeManipulator.new(entity, transformation)
-            if edge_validator.nil? || edge_validator.call(manipulator)
-              if entity.curve.nil? || entity.curve.edges.length < 2  # Exclude curves that contain only one edge.
-                drawing_container_def.edge_manipulators << manipulator
-              else
-                curve_manipulator = _get_curve_manipulator_by_edge(drawing_container_def, entity, transformation)
-                if curve_manipulator.nil?
-                  curve_manipulator = CurveManipulator.new(entity.curve, transformation)
-                  drawing_container_def.curve_manipulators << curve_manipulator
-                end
+                manipulator.surface_manipulator = surface_manipulator
               end
             end
-          elsif entity.is_a?(Sketchup::ConstructionLine)
-            next if @ignore_clines || entity.start.nil? # Exclude infinite Clines
-            manipulator = ClineManipulator.new(entity, transformation)
-            drawing_container_def.cline_manipulators << manipulator
-          elsif entity.respond_to?(:definition)
-            if container_validator.nil? || container_validator.call(entity)
-              if @flatten
-                child_drawing_container_def = drawing_container_def
-              else
-                child_drawing_container_def = DrawingContainerDef.new(entity, transformation)
-                drawing_container_def.container_defs << child_drawing_container_def
+            drawing_container_def.face_manipulators << manipulator
+          end
+        when Sketchup::Edge
+          next if @ignore_edges || entity.soft? && @ignore_soft_edges
+          manipulator = EdgeManipulator.new(entity, transformation, material, layer)
+          if edge_validator.nil? || edge_validator.call(manipulator)
+            if entity.curve.nil? || entity.curve.edges.length < 2  # Exclude curves that contain only one edge.
+              drawing_container_def.edge_manipulators << manipulator
+            else
+              curve_manipulator = _get_curve_manipulator_by_edge(drawing_container_def, entity, transformation)
+              if curve_manipulator.nil?
+                curve_manipulator = CurveManipulator.new(entity.curve, transformation, material, layer)
+                drawing_container_def.curve_manipulators << curve_manipulator
               end
-              _populate_manipulators(child_drawing_container_def, entity.definition.entities, transformation * entity.transformation, face_validator, edge_validator, container_validator)
             end
           end
+        when Sketchup::Group, Sketchup::ComponentInstance
+          if container_validator.nil? || container_validator.call(entity, depth + 1)
+            if @flatten
+              child_drawing_container_def = drawing_container_def
+            else
+              child_drawing_container_def = DrawingContainerDef.new(entity, transformation)
+              drawing_container_def.container_defs << child_drawing_container_def
+            end
+            _populate_manipulators(child_drawing_container_def, entity.definition.entities, transformation * entity.transformation, entity.material || material, entity.layer, face_validator, edge_validator, container_validator, depth + 1)
+          end
+        when Sketchup::ConstructionLine
+          next if @ignore_clines || entity.start.nil? # Exclude infinite Clines
+          manipulator = ClineManipulator.new(entity, transformation, material, layer)
+          drawing_container_def.cline_manipulators << manipulator
+        when SketchupSnapClass
+          next if @ignore_snaps
+          manipulator = SnapManipulator.new(entity, transformation, material, layer)
+          drawing_container_def.snap_manipulators << manipulator
         end
       end
     end

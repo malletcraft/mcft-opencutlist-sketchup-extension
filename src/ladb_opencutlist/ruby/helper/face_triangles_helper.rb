@@ -1,28 +1,32 @@
 module Ladb::OpenCutList
 
   require_relative 'layer_visibility_helper'
+  require_relative 'material_attributes_caching_helper'
 
-  require_relative '../utils/point3d_utils'
   require_relative '../utils/transformation_utils'
 
   module FaceTrianglesHelper
 
     include LayerVisibilityHelper
+    include MaterialAttributesCachingHelper
 
-    def _compute_children_faces_triangles(entities, transformation = nil, filtered_faces = nil)
+    def _compute_children_faces_triangles(entities, transformation: IDENTITY, filtered_faces: nil, grab_sub_components: false)
       triangles = []
-      entities.each { |entity|
-        next if entity.is_a?(Sketchup::Edge)   # Minor Speed improvement when there's a lot of edges
+      entities.each do |entity|
+        next if entity.is_a?(Sketchup::Edge)   # Minor Speed improvement when there are a lot of edges
         if entity.visible? && _layer_visible?(entity.layer)
-          if entity.is_a?(Sketchup::Face)
+          case entity
+          when Sketchup::Face
             triangles.concat(_compute_face_triangles(entity, transformation)) if filtered_faces.nil? || filtered_faces.include?(entity)
-          elsif entity.is_a?(Sketchup::Group)
-            triangles.concat(_compute_children_faces_triangles(entity.entities, TransformationUtils::multiply(transformation, entity.transformation), filtered_faces))
-          elsif entity.is_a?(Sketchup::ComponentInstance) && entity.definition.behavior.cuts_opening?
-            triangles.concat(_compute_children_faces_triangles(entity.definition.entities, TransformationUtils::multiply(transformation, entity.transformation), filtered_faces))
+          when Sketchup::Group, Sketchup::ComponentInstance
+            ma = _get_material_attributes(entity.material)
+            next if ma.type == MaterialAttributes::TYPE_MACHINING || ma.type == MaterialAttributes::TYPE_HARDWARE && !entity.name.strip.empty?
+            definition = entity.definition
+            next if !grab_sub_components && !definition.group? && !definition.behavior.cuts_opening?
+            triangles.concat(_compute_children_faces_triangles(definition.entities, transformation: transformation * entity.transformation, filtered_faces: filtered_faces, grab_sub_components: grab_sub_components))
           end
         end
-      }
+      end
       triangles
     end
 
@@ -33,25 +37,14 @@ module Ladb::OpenCutList
 
       # Thank you, @thomthom for this piece of code ;)
 
-      if face.deleted?
-        return []
-      end
+      return [] if face.deleted?
 
       mesh = face.mesh(0) # POLYGON_MESH_POINTS
-      points = mesh.points
+      mesh.transform!(transformation) if transformation.is_a?(Geom::Transformation)
 
-      Point3dUtils::transform_points(points, transformation)
-
-      triangles = []
-      mesh.polygons.each { |polygon|
-        polygon.each { |index|
-          # Indicies start at 1 and can be negative to indicate edge smoothing.
-          # Must take this into account when looking up the points in our array.
-          triangles << points[index.abs - 1]
-        }
-      }
-
-      triangles
+      mesh.polygons.flat_map do |polygon|
+        polygon.map { |index| mesh.point_at(index.abs) }  # Indicies can be negative to indicate edge smoothing.
+      end
     end
 
   end

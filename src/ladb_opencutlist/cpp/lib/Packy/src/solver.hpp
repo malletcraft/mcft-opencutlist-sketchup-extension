@@ -5,22 +5,35 @@
 #include "packingsolver/rectangle/instance_builder.hpp"
 #include "packingsolver/rectangle/instance.hpp"
 #include "packingsolver/rectangle/optimize.hpp"
+#include "packingsolver/rectangle/post_process.hpp"
 
 #include "packingsolver/rectangleguillotine/instance_builder.hpp"
 #include "packingsolver/rectangleguillotine/instance.hpp"
 #include "packingsolver/rectangleguillotine/optimize.hpp"
+#include "packingsolver/rectangleguillotine/post_process.hpp"
 
 #include "packingsolver/onedimensional/instance_builder.hpp"
 #include "packingsolver/onedimensional/instance.hpp"
 #include "packingsolver/onedimensional/optimize.hpp"
+#include "packingsolver/onedimensional/post_process.hpp"
 
 #include "packingsolver/irregular/instance_builder.hpp"
 #include "packingsolver/irregular/instance.hpp"
 #include "packingsolver/irregular/optimize.hpp"
+#include "packingsolver/irregular/post_process.hpp"
 
 #include "shape/labeling.hpp"
+#include "shape/clean.hpp"
 
 #include <mutex>
+#include <thread>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <exception>
+#include <stdexcept>
+#include <sstream>
+#include <atomic>
 
 using namespace packingsolver;
 using namespace nlohmann;
@@ -46,7 +59,57 @@ namespace Packy {
         std::unordered_map<BinTypeId, ItemPos> item_copies_by_bin_type;
     };
 
-    using Solutions = std::vector<json>;
+    /**
+     * Thread safe replacement for std::stringstream, given to PackingSolver as a messages stream.
+     * PackingSolver writes to it from its own threads while 'write_solution' reads 'str()'.
+     */
+    class SynchronizedMessagesStream : public std::ostream {
+
+    public:
+
+        SynchronizedMessagesStream() : std::ostream(&buf_) {}
+
+        std::string str() {
+            return buf_.str();
+        }
+
+    private:
+
+        class Buf : public std::streambuf {
+
+        public:
+
+            std::string str() {
+                std::lock_guard<std::mutex> lock(mutex_);
+                return data_;
+            }
+
+        protected:
+
+            std::streamsize xsputn(const char* s, std::streamsize n) override {
+                std::lock_guard<std::mutex> lock(mutex_);
+                data_.append(s, static_cast<size_t>(n));
+                return n;
+            }
+
+            int_type overflow(int_type ch) override {
+                if (ch != traits_type::eof()) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    data_.push_back(static_cast<char>(ch));
+                }
+                return ch;
+            }
+
+        private:
+
+            std::mutex mutex_;
+            std::string data_;
+
+        };
+
+        Buf buf_;
+
+    };
 
     class Solver {
 
@@ -70,8 +133,8 @@ namespace Packy {
          * Getters
          */
 
-        virtual size_t solutions_size() = 0;
-        virtual json solutions_back() = 0;
+        virtual size_t solutions_count() = 0;
+        virtual json last_solution() = 0;
 
         /*
          * Read:
@@ -112,7 +175,11 @@ namespace Packy {
         }
 
         ItemTypeMeta& item_type_meta(ItemTypeId item_type_id) {
-            return item_type_metas_[item_type_id];
+            auto it = item_type_metas_.find(item_type_id);
+            if (it == item_type_metas_.end()) {
+                throw std::invalid_argument("Unknown item_type_id=" + std::to_string(item_type_id));
+            }
+            return it->second;
         }
 
         BinTypeMetas& bin_type_metas() {
@@ -120,7 +187,11 @@ namespace Packy {
         }
 
         BinTypeMeta& bin_type_meta(BinTypeId bin_type_id) {
-            return bin_type_metas_[bin_type_id];
+            auto it = bin_type_metas_.find(bin_type_id);
+            if (it == bin_type_metas_.end()) {
+                throw std::invalid_argument("Unknown bin_type_id=" + std::to_string(bin_type_id));
+            }
+            return it->second;
         }
 
         /*
@@ -178,14 +249,14 @@ namespace Packy {
          * Getters
          */
 
-        size_t solutions_size() override {
+        size_t solutions_count() override {
             std::lock_guard<std::mutex> lock(solutions_mutex_);
-            return solutions_.size();
+            return solutions_count_;
         };
 
-        json solutions_back() override {
+        json last_solution() override {
             std::lock_guard<std::mutex> lock(solutions_mutex_);
-            return std::move(solutions_.back());
+            return last_solution_;
         };
 
         /*
@@ -211,7 +282,15 @@ namespace Packy {
          */
 
         json optimize() override {
-            return post_process(process(pre_process()));
+
+            auto instance = pre_process();
+
+            // Write the instance to a file for debug purpose with PackingSolver format
+            if (!instance_path_.empty()) {
+                write_instance(instance, instance_path_);
+            }
+
+            return post_process(process(instance));
         }
 
     protected:
@@ -219,6 +298,8 @@ namespace Packy {
         /** Packy parameters. */
         double length_truncate_factor_ = 1.0;
         int8_t length_truncate_precision_ = 3;
+        bool use_pre_process_ = true;
+        unsigned int number_of_threads_for_pre_process_ = std::max(1u, std::thread::hardware_concurrency());
 
         /** Builders. */
         TypedBuilder<InstanceBuilder> orig_builder_;
@@ -227,17 +308,18 @@ namespace Packy {
         /** Parameters. */
         OptimizeParameters parameters_;
 
-        /** Solutions. */
-        Solutions solutions_;
+        /** Last solution found and count of solutions found so far ('solutions_count_' only grows). */
+        json last_solution_;
+        size_t solutions_count_ = 0;
 
-        /** TODO : find a better solution to prevent solution concurrency ? */
+        /** Protects 'last_solution_' and 'solutions_count_'. */
         std::mutex solutions_mutex_;
 
         /** Messages */
         bool messages_to_solution_ = false;
-        std::stringstream messages_stream_;
+        SynchronizedMessagesStream messages_stream_;
 
-        /** Instance (native PackingSolver instance write) */
+        /** Instances (native PackingSolver instance write) */
         std::string instance_path_;
 
         /** Certificate (native PackingSolver solution write) */
@@ -252,60 +334,145 @@ namespace Packy {
             // Build origin instance
             Instance orig_instance = orig_builder_.instance_builder().build();
 
-            // Write instance to file for debug purpose with PackingSolver format
-            if (!instance_path_.empty()) {
-                orig_instance.write(instance_path_);  // Export instance to a file with PackingSolver 'write' method
-            }
-
-            /*
-             * Test each item with not anytime sequential knapsack to know if it can fit in at least one bins
-             */
-
             std::vector<ItemTypeId> usable_item_type_ids;
             std::vector<ItemTypeId> unusable_item_type_ids;
 
-            for (ItemTypeId item_type_id = 0;
-                 item_type_id < orig_instance.number_of_item_types();
-                 ++item_type_id
-            ) {
+            if (use_pre_process_) {
 
-                auto& item_type = orig_instance.item_type(item_type_id);
+                /*
+                 * Test each item with not anytime sequential feasibility to know if it can fit in at least one bin
+                 */
 
-                // Init a validator instance builder
-                InstanceBuilder validator_builder;
-                validator_builder.set_objective(Objective::Knapsack);
-                validator_builder.set_parameters(orig_instance.parameters());
+                std::mutex usable_mutex;
 
-                // Copy item type (with only 1 copy)
-                validator_builder.add_item_type(item_type, item_type.profit, 1);
+                std::vector<std::string> task_errors;
+                std::mutex task_errors_mutex;
+                std::atomic_bool stop_requested(false);
 
-                // Copy bin types
-                for (BinTypeId bin_type_id = 0;
-                     bin_type_id < orig_instance.number_of_bin_types();
-                     ++bin_type_id
+                auto validate_item_type = [&](const ItemTypeId orig_item_type_id) {
+
+                    try {
+
+                        // Init a validator instance builder
+                        InstanceBuilder validator_builder;
+                        validator_builder.set_objective(Objective::Feasibility);
+                        validator_builder.set_parameters(orig_instance.parameters());
+                        validator_builder.set_original_instance(orig_instance);
+
+                        // Copy item type (with only 1 copy)
+                        const auto validator_item_type_id = validator_builder.add_item_type_from_original_instance(orig_item_type_id);
+                        validator_builder.set_item_type_copies(validator_item_type_id, 1);
+
+                        // Copy bin types (with only 1 copy)
+                        for (BinTypeId orig_bin_type_id = 0;
+                             orig_bin_type_id < orig_instance.number_of_bin_types();
+                             ++orig_bin_type_id
+                        ) {
+
+                            if (stop_requested.load(std::memory_order_relaxed)) return;
+
+                            const auto validator_bin_type_id = validator_builder.add_bin_type_from_original_instance(orig_bin_type_id);
+                            validator_builder.set_bin_type_copies(validator_bin_type_id, 1);
+
+                        }
+
+                        if (stop_requested.load(std::memory_order_relaxed)) return;
+
+                        // Build validator instance
+                        const Instance& validator_instance = validator_builder.build();
+
+                        OptimizeParameters validator_parameters;
+                        validator_parameters.timer = parameters_.timer;
+                        validator_parameters.linear_programming_solver_name = parameters_.linear_programming_solver_name;
+                        validator_parameters.optimization_mode = OptimizationMode::NotAnytimeSequential;
+                        validator_parameters.verbosity_level = 0;
+
+                        // Compute output
+                        Output output = pre_process_optimize(validator_instance, validator_parameters);
+
+                        if (stop_requested.load(std::memory_order_relaxed)) return;
+
+                        {
+                            std::lock_guard<std::mutex> lock(usable_mutex);
+                            if (output.solution_pool.best().full()) {
+                                usable_item_type_ids.push_back(orig_item_type_id);
+                            } else {
+                                unusable_item_type_ids.push_back(orig_item_type_id);
+                            }
+                        }
+
+                    } catch (const std::exception& e) {
+                        stop_requested.store(true, std::memory_order_relaxed);
+                        std::lock_guard<std::mutex> lock(task_errors_mutex);
+                        task_errors.emplace_back(
+                            "item_type_id=" + std::to_string(orig_item_type_id) + ": " + e.what()
+                        );
+                    } catch (...) {
+                        stop_requested.store(true, std::memory_order_relaxed);
+                        std::lock_guard<std::mutex> lock(task_errors_mutex);
+                        task_errors.emplace_back(
+                            "item_type_id=" + std::to_string(orig_item_type_id) + ": unknown exception"
+                        );
+                    }
+                };
+
+                /*
+                 * Each validation runs single threaded ('NotAnytimeSequential'). Workers pull
+                 * the next item type from a shared counter, so a slow item never stalls the others.
+                 * 'validate_item_type' catches every exception, letting none escape the worker threads.
+                 */
+
+                const auto number_of_item_types = orig_instance.number_of_item_types();
+                std::atomic<ItemTypeId> next_item_type_id(0);
+
+                auto worker = [&]() {
+                    while (!stop_requested.load(std::memory_order_relaxed)) {
+                        const ItemTypeId item_type_id = next_item_type_id.fetch_add(1, std::memory_order_relaxed);
+                        if (item_type_id >= number_of_item_types) break;
+                        validate_item_type(item_type_id);
+                    }
+                };
+
+                const size_t number_of_workers = std::min(
+                    static_cast<size_t>(number_of_threads_for_pre_process_),
+                    static_cast<size_t>(number_of_item_types)
+                );
+
+                if (number_of_workers > 0) {
+                    std::vector<std::thread> worker_threads;
+                    worker_threads.reserve(number_of_workers - 1);
+                    for (size_t i = 1; i < number_of_workers; ++i) {
+                        worker_threads.emplace_back(worker);
+                    }
+                    worker();   // The calling thread is a worker too
+                    for (auto& worker_thread : worker_threads) {
+                        worker_thread.join();
+                    }
+                }
+
+                if (!task_errors.empty()) {
+                    std::ostringstream oss;
+                    oss << "Error during preprocess:";
+                    for (const auto& error : task_errors) {
+                        oss << "\n- " << error;
+                    }
+                    throw std::runtime_error(oss.str());
+                }
+
+                // Tasks complete in a non-deterministic order. Sort to keep item type order deterministic.
+                std::sort(usable_item_type_ids.begin(), usable_item_type_ids.end());
+                std::sort(unusable_item_type_ids.begin(), unusable_item_type_ids.end());
+
+            } else {
+
+                // Just store all item ids as usable
+                for (ItemTypeId item_type_id = 0;
+                     item_type_id < orig_instance.number_of_item_types();
+                     ++item_type_id
                 ) {
-                    const auto& bin_type = orig_instance.bin_type(bin_type_id);
-                    validator_builder.add_bin_type(bin_type, 1);    // Force to use only one copy of each bin
-                }
-
-                // Build validator instance
-                const Instance& validator_instance = validator_builder.build();
-
-                OptimizeParameters validator_parameters;
-                validator_parameters.timer = parameters_.timer;
-                validator_parameters.linear_programming_solver_name = parameters_.linear_programming_solver_name;
-                validator_parameters.optimization_mode = OptimizationMode::NotAnytimeSequential;
-                validator_parameters.verbosity_level = 0;
-
-                // Compute output
-                Output output = pre_process_optimize(validator_instance, validator_parameters);
-
-                if (output.solution_pool.best().full()) {
                     usable_item_type_ids.push_back(item_type_id);
-                } else {
-                    unusable_item_type_ids.push_back(item_type_id);
                 }
-
+                
             }
 
             if (unusable_item_type_ids.empty()) {
@@ -339,6 +506,9 @@ namespace Packy {
                 // Copy parameters
                 usable_builder_.instance_builder().set_parameters(orig_instance.parameters());
 
+                // Set original instance (sub-instance items and bins are copied from it)
+                usable_builder_.instance_builder().set_original_instance(orig_instance);
+
                 // Copy item types
                 for (ItemTypeId usable_item_type_id = 0;
                      usable_item_type_id < usable_item_type_ids.size();
@@ -348,30 +518,31 @@ namespace Packy {
                     auto& item_type = orig_instance.item_type(orig_item_type_id);
                     auto& item_type_meta = orig_builder_.item_type_meta(orig_item_type_id);
                     item_type_meta.usable_item_type_id = usable_item_type_id;
-                    usable_builder_.instance_builder().add_item_type(item_type, item_type.profit, item_type_meta.copies);
+                    usable_builder_.instance_builder().add_item_type_from_original_instance(orig_item_type_id);
                     usable_builder_.set_item_type_meta(usable_item_type_id, item_type_meta);
                 }
 
                 // Copy bin types
-                for (BinTypeId bin_type_id = 0;
-                     bin_type_id < orig_instance.number_of_bin_types();
-                     ++bin_type_id
+                for (BinTypeId orig_bin_type_id = 0;
+                     orig_bin_type_id < orig_instance.number_of_bin_types();
+                     ++orig_bin_type_id
                 ) {
-                    const auto& bin_type = orig_instance.bin_type(bin_type_id);
-                    const auto& bin_type_meta = orig_builder_.bin_type_meta(bin_type_id);
+                    const auto& bin_type = orig_instance.bin_type(orig_bin_type_id);
+                    const auto& bin_type_meta = orig_builder_.bin_type_meta(orig_bin_type_id);
                     BinPos copies = bin_type_meta.copies == -1 && usable_item_type_ids.empty() ? 1 : bin_type_meta.copies;  // Retrieve copies from bin_typ_meta to keep -1 = infinite and force copies to 1 if no item types
-                    usable_builder_.instance_builder().add_bin_type(bin_type, copies, bin_type.copies_min);
-                    usable_builder_.set_bin_type_meta(bin_type_id, bin_type_meta);
+                    const auto bin_type_id = usable_builder_.instance_builder().add_bin_type_from_original_instance(orig_bin_type_id);
+                    usable_builder_.instance_builder().set_bin_type_copies(bin_type_id, copies);
+                    usable_builder_.set_bin_type_meta(orig_bin_type_id, bin_type_meta);
                 }
 
                 // Tag usable builder as used
                 usable_builder_.set_used(true);
 
-                return std::move(usable_builder_.instance_builder().build());
+                return usable_builder_.instance_builder().build();
             }
 
             // Nothing to exclude returns 'orig_instance' directly
-            return std::move(orig_instance);
+            return orig_instance;
         }
 
         virtual Output pre_process_optimize(
@@ -396,9 +567,17 @@ namespace Packy {
         ) {
 
             json j;
-            write_best_solution(j, output, true);
 
-            return std::move(j);
+            const auto solution = post_process_solution(output.solution_pool.best());
+            write_solution(j, solution, output.time, true);
+
+            return j;
+        }
+
+        virtual Solution post_process_solution(
+            const Solution& solution
+        ) {
+            return solution;
         }
 
         /*
@@ -424,10 +603,20 @@ namespace Packy {
                 }
             }
             if (j.contains("length_truncate_precision")) {
-                length_truncate_precision_ = j.value("length_truncate_precision", 3);
-                if (length_truncate_precision_ < 0) {
-                    length_truncate_precision_ = 0;
+                // Clamp before the int8_t conversion. 15 = maximum significant decimal digits of a double.
+                length_truncate_precision_ = static_cast<int8_t>(std::clamp(j.value("length_truncate_precision", 3), 0, 15));
+            }
+
+            if (j.contains("use_pre_process")) {
+                use_pre_process_ = j.value("use_pre_process", true) == true;
+            }
+            if (j.contains("number_of_threads_for_pre_process")) {
+                number_of_threads_for_pre_process_ = j.value("number_of_threads_for_pre_process", 0u);
+                if (number_of_threads_for_pre_process_ == 0) {
+                    number_of_threads_for_pre_process_ = std::max(1u, std::thread::hardware_concurrency());
                 }
+            } else {
+                number_of_threads_for_pre_process_ = std::max(1u, std::thread::hardware_concurrency());
             }
 
             if (j.contains("time_limit")) {
@@ -468,17 +657,23 @@ namespace Packy {
             }
 
             if (j.contains("linear_programming_solver")) {
-                columngenerationsolver::SolverName linear_programming_solver_name;
+                columngenerationsolver::SolverName linear_programming_solver_name = columngenerationsolver::SolverName::Highs;
                 std::stringstream ss(j.value("linear_programming_solver", "highs"));
                 ss >> linear_programming_solver_name;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown linear_programming_solver=" + j.value("linear_programming_solver", ""));
+                }
                 parameters_.linear_programming_solver_name = linear_programming_solver_name;
             } else {
                 parameters_.linear_programming_solver_name = columngenerationsolver::SolverName::Highs;
             }
             if (j.contains("optimization_mode")) {
-                OptimizationMode optimization_mode;
+                OptimizationMode optimization_mode = OptimizationMode::NotAnytimeDeterministic;
                 std::stringstream ss(j.value("optimization_mode", "not-anytime-deterministic"));
                 ss >> optimization_mode;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown optimization_mode=" + j.value("optimization_mode", ""));
+                }
                 parameters_.optimization_mode = optimization_mode;
             }
 
@@ -499,16 +694,16 @@ namespace Packy {
             }
 
             if (j.contains("not_anytime_tree_search_queue_size")) {
-                parameters_.not_anytime_tree_search_queue_size = j["not_anytime_tree_search_queue_size"].get<Counter>();
+                parameters_.not_anytime_tree_search_queue_size = j["not_anytime_tree_search_queue_size"].get<NodeId>();
             }
-            if (j.contains("not_anytime_sequential_single_knapsack_subproblem_queue_size")) {
-                parameters_.not_anytime_sequential_single_knapsack_subproblem_queue_size = j["not_anytime_sequential_single_knapsack_subproblem_queue_size"].get<Counter>();
+            if (j.contains("not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size")) {
+                parameters_.not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size = j["not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size"].get<NodeId>();
             }
             if (j.contains("not_anytime_sequential_value_correction_number_of_iterations")) {
                 parameters_.not_anytime_sequential_value_correction_number_of_iterations = j["not_anytime_sequential_value_correction_number_of_iterations"].get<Counter>();
             }
-            if (j.contains("not_anytime_dichotomic_search_subproblem_queue_size")) {
-                parameters_.not_anytime_dichotomic_search_subproblem_queue_size = j["not_anytime_dichotomic_search_subproblem_queue_size"].get<Counter>();
+            if (j.contains("not_anytime_dichotomic_search_subproblem_tree_search_queue_size")) {
+                parameters_.not_anytime_dichotomic_search_subproblem_tree_search_queue_size = j["not_anytime_dichotomic_search_subproblem_tree_search_queue_size"].get<NodeId>();
             }
 
             if (j.contains("maximum_size_of_the_solution_pool")) {
@@ -518,12 +713,17 @@ namespace Packy {
             parameters_.new_solution_callback = [&](
                     const packingsolver::Output<Instance, Solution>& output
             ) {
-                std::lock_guard<std::mutex> lock(solutions_mutex_);
-                json j_solution;
-                write_best_solution(j_solution, dynamic_cast<const Output&>(output), false);
-                solutions_.push_back(j_solution);
+                try {
+                    std::lock_guard<std::mutex> lock(solutions_mutex_);
+                    json j_solution;
+                    write_solution(j_solution, output.solution_pool.best(), output.time, false);
+                    last_solution_ = std::move(j_solution);
+                    ++solutions_count_;
+                } catch (...) {
+                    // Never let an exception escape into PackingSolver threads.
+                    // The final 'write_solution' will reraise it on the optimize thread where it is caught and reported.
+                }
             };
-
 
         };
 
@@ -533,9 +733,12 @@ namespace Packy {
         ) {
 
             if (j.contains("objective")) {
-                Objective objective;
+                Objective objective = Objective::BinPackingWithLeftovers;
                 std::stringstream ss(j.value("objective", "default"));
                 ss >> objective;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown objective=" + j.value("objective", ""));
+                }
                 builder.instance_builder().set_objective(objective);
             }
             if (j.contains("parameters")) {
@@ -597,7 +800,7 @@ namespace Packy {
                 bin_type_meta.copies = j_item_value.value("copies", static_cast<BinPos>(1));
                 bin_type_meta.width_dbl = j_item_value.value("width", static_cast<double>(0));
                 bin_type_meta.height_dbl = j_item_value.value("height", static_cast<double>(0));
-                orig_builder_.set_bin_type_meta(bin_type_id, bin_type_meta);
+                builder.set_bin_type_meta(bin_type_id, bin_type_meta);
 
             }
 
@@ -612,17 +815,24 @@ namespace Packy {
          * Write
          */
 
-        virtual void write_best_solution(
+        virtual void write_instance(
+            Instance& instance,
+            std::string& instance_path
+        ) {
+            instance.write(instance_path);  // Export the instance to a file with PackingSolver 'write' method
+        }
+
+        virtual void write_solution(
             json& j,
-            const Output& output,
+            const Solution& solution,
+            const double time,
             const bool final
         ) {
 
-            const auto& solution = output.solution_pool.best();
             const auto& instance = solution.instance();
             auto& builder = usable_builder_.used() ? usable_builder_ : orig_builder_;
 
-            j["time"] = output.time;
+            j["time"] = time;
 
             j["full_waste"] = to_area_dbl(solution.full_waste());
             j["full_efficiency"] = solution.number_of_bins() > 0 ? 1 - solution.full_waste_percentage() : 0.0;
@@ -793,11 +1003,18 @@ namespace Packy {
         ) override {
             TypedSolver::read_parameters(j);
 
-            if (j.contains("sequential_value_correction_subproblem_queue_size")) {
-                parameters_.sequential_value_correction_subproblem_queue_size = j["sequential_value_correction_subproblem_queue_size"].get<NodeId>();
+            if (j.contains("use_tree_search_maximal_spaces")) {
+                parameters_.use_tree_search_maximal_spaces = j["use_tree_search_maximal_spaces"].get<bool>();
             }
-            if (j.contains("column_generation_subproblem_queue_size")) {
-                parameters_.column_generation_subproblem_queue_size = j["column_generation_subproblem_queue_size"].get<NodeId>();
+            if (j.contains("use_benders_decomposition")) {
+                parameters_.use_benders_decomposition = j["use_benders_decomposition"].get<bool>();
+            }
+
+            if (j.contains("sequential_value_correction_subproblem_tree_search_queue_size")) {
+                parameters_.sequential_value_correction_subproblem_tree_search_queue_size = j["sequential_value_correction_subproblem_tree_search_queue_size"].get<NodeId>();
+            }
+            if (j.contains("column_generation_subproblem_tree_search_queue_size")) {
+                parameters_.column_generation_subproblem_tree_search_queue_size = j["column_generation_subproblem_tree_search_queue_size"].get<NodeId>();
             }
 
         }
@@ -806,6 +1023,16 @@ namespace Packy {
                 basic_json<>& j,
                 TypedBuilder<rectangle::InstanceBuilder>& builder
         ) override {
+
+            if (j.contains("leftover_mode")) {
+                rectangle::LeftoverMode leftover_mode = rectangle::LeftoverMode::Area;   // PackingSolver default
+                std::stringstream ss(j.value("leftover_mode", "area"));
+                ss >> leftover_mode;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown leftover_mode=" + j.value("leftover_mode", ""));
+                }
+                builder.instance_builder().set_leftover_mode(leftover_mode);
+            }
 
             if (j.contains("fake_trimming")) {
                 fake_trimming_ = read_length(j, "fake_trimming", 0);
@@ -825,6 +1052,7 @@ namespace Packy {
             Length height = read_length(j, "height", -1);
             const Profit profit = j.value("profit", static_cast<Profit>(-1));
             const ItemPos copies = j.value("copies", static_cast<ItemPos>(1));
+            const ItemPos copies_min = j.value("copies_min", static_cast<ItemPos>(0));
             const bool oriented = j.value("oriented", false);
             const GroupId group_id = j.value("group_id", static_cast<GroupId>(0));
 
@@ -833,14 +1061,11 @@ namespace Packy {
                 if (height >= 0) height += fake_spacing_;
             }
 
-            ItemTypeId item_type_id = builder.instance_builder().add_item_type(
-                    width,
-                    height,
-                    profit,
-                    copies,
-                    oriented,
-                    group_id
-            );
+            ItemTypeId item_type_id = builder.instance_builder().add_item_type(width, height, oriented);
+            if (profit > 0) builder.instance_builder().set_item_type_profit(item_type_id, profit);
+            builder.instance_builder().set_item_type_copies(item_type_id, copies);
+            if (copies_min > 0) builder.instance_builder().set_item_type_copies_min(item_type_id, copies_min);
+            builder.instance_builder().set_item_type_group(item_type_id, group_id);
 
             return item_type_id;
         }
@@ -857,21 +1082,28 @@ namespace Packy {
             const BinPos copies_min = j.value("copies_min", static_cast<BinPos>(0));
 
             if (fake_trimming_ > 0) {
-                if (width >= 0) width -= fake_trimming_ * 2;
-                if (height >= 0) height -= fake_trimming_ * 2;
+                if (width >= 0) {
+                    width -= fake_trimming_ * 2;
+                    if (width <= 0) {
+                        throw std::invalid_argument("Bin type width=" + std::to_string(j.value("width", 0.0)) + " is too small for trimming=" + std::to_string(to_length_dbl(fake_trimming_)));
+                    }
+                }
+                if (height >= 0) {
+                    height -= fake_trimming_ * 2;
+                    if (height <= 0) {
+                        throw std::invalid_argument("Bin type height=" + std::to_string(j.value("height", 0.0)) + " is too small for trimming=" + std::to_string(to_length_dbl(fake_trimming_)));
+                    }
+                }
             }
             if (fake_spacing_ > 0) {
                 if (width >= 0) width += fake_spacing_;
                 if (height >= 0) height += fake_spacing_;
             }
 
-            BinTypeId bin_type_id = builder.instance_builder().add_bin_type(
-                    width,
-                    height,
-                    cost,
-                    copies,
-                    copies_min
-            );
+            BinTypeId bin_type_id = builder.instance_builder().add_bin_type(width, height);
+            if (cost > 0) builder.instance_builder().set_bin_type_cost(bin_type_id, cost);
+            builder.instance_builder().set_bin_type_copies(bin_type_id, copies);
+            builder.instance_builder().set_bin_type_copies_min(bin_type_id, copies_min);
 
             // Defects
 
@@ -896,10 +1128,12 @@ namespace Packy {
             Length height = read_length(j, "height", -1);
 
             if (fake_spacing_ > 0) {
-                if (x >= 0) x -= fake_spacing_ / 2;
-                if (y >= 0) y -= fake_spacing_ / 2;
                 if (width >= 0) width += fake_spacing_;
                 if (height >= 0) height += fake_spacing_;
+            }
+            if (fake_trimming_ > 0) {
+                if (x >= 0) x -= fake_trimming_;
+                if (y >= 0) y -= fake_trimming_;
             }
 
             builder.instance_builder().add_defect(
@@ -918,13 +1152,26 @@ namespace Packy {
             const rectangle::Instance& instance,
             const rectangle::OptimizeParameters& parameters
         ) override {
-            return std::move(rectangle::optimize(instance, parameters));
+            return rectangle::optimize(instance, parameters);
         }
 
         rectangle::Output process(
             const rectangle::Instance& instance
         ) override {
-            return std::move(rectangle::optimize(instance, parameters_));
+            return rectangle::optimize(instance, parameters_);
+        }
+
+        rectangle::Solution post_process_solution(
+            const rectangle::Solution& solution
+        ) override {
+            return rectangle::group_identical_bins(solution).solution_pool.best();
+        }
+
+        void write_instance(
+            rectangle::Instance& instance,
+            std::string& instance_path
+        ) override {
+            instance.write(instance_path, InstanceFormat::Json);
         }
 
         void populate_best_solution_bin(
@@ -948,7 +1195,9 @@ namespace Packy {
 
             j_bin["space"] = to_area_dbl(bin_space);
             j_bin["waste"] = to_area_dbl(bin_space - items_space);
-            j_bin["efficiency"] = static_cast<double>(items_space) / bin_space;
+            j_bin["efficiency"] = bin_space > 0 ? static_cast<double>(items_space) / static_cast<double>(bin_space) : 0.0;
+
+            Length cut_length = 0;
 
             // Add x_max and y_max attributes to the last bin
             if (bin_pos == solution.number_of_different_bins() - 1) {
@@ -978,9 +1227,14 @@ namespace Packy {
                     });
                 }
 
+                cut_length += (item_type.rect.x - fake_spacing_ + item_type.rect.y - fake_spacing_) * 2;
+
             }
 
             j_bin["number_of_items"] = j_items.size();
+            j_bin["number_of_leftovers"] = 0;
+            j_bin["number_of_cuts"] = j_items.size();
+            j_bin["cut_length"] = to_length_dbl(cut_length);
 
         }
 
@@ -1004,6 +1258,22 @@ namespace Packy {
         ) override {
             TypedSolver::read_parameters(j);
 
+            if (j.contains("use_column_generation_strips")) {
+                parameters_.use_column_generation_strips = j["use_column_generation_strips"].get<bool>();
+            }
+            if (j.contains("use_sequential_strips_onedimensional")) {
+                parameters_.use_sequential_strips_onedimensional = j["use_sequential_strips_onedimensional"].get<bool>();
+            }
+            if (j.contains("use_tree_search_hypergraph_infinite_copies")) {
+                parameters_.use_tree_search_hypergraph_infinite_copies = j["use_tree_search_hypergraph_infinite_copies"].get<bool>();
+            }
+            if (j.contains("use_tree_search_maximal_spaces")) {
+                parameters_.use_tree_search_maximal_spaces = j["use_tree_search_maximal_spaces"].get<bool>();
+            }
+            if (j.contains("use_tree_search_hypergraph")) {
+                parameters_.use_tree_search_hypergraph = j["use_tree_search_hypergraph"].get<bool>();
+            }
+
             if (j.contains("json_search_tree_path")) {
                 parameters_.json_search_tree_path = j["json_search_tree_path"].get<std::string>();
             }
@@ -1017,23 +1287,25 @@ namespace Packy {
 
             using namespace rectangleguillotine;
 
-            if (j.contains("use_column_generation_2")) {
-                parameters_.use_column_generation_2 = j["use_column_generation_2"].get<bool>();
-            }
-
             if (j.contains("number_of_stages")) {
                 builder.instance_builder().set_number_of_stages(j["number_of_stages"].get<Counter>());
             }
             if (j.contains("cut_type")) {
-                CutType cut_type;
+                CutType cut_type = CutType::NonExact;
                 std::stringstream ss(j.value("cut_type", "non-exact"));
                 ss >> cut_type;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown cut_type=" + j.value("cut_type", ""));
+                }
                 builder.instance_builder().set_cut_type(cut_type);
             }
             if (j.contains("first_stage_orientation")) {
-                CutOrientation first_stage_orientation;
+                CutOrientation first_stage_orientation = CutOrientation::Horizontal;
                 std::stringstream ss(j.value("first_stage_orientation", "horizontal"));
                 ss >> first_stage_orientation;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown first_stage_orientation=" + j.value("first_stage_orientation", ""));
+                }
                 builder.instance_builder().set_first_stage_orientation(first_stage_orientation);
             }
             if (j.contains("minimum_distance_1_cuts")) {
@@ -1045,17 +1317,57 @@ namespace Packy {
             if (j.contains("minimum_distance_2_cuts")) {
                 builder.instance_builder().set_minimum_distance_2_cuts(read_length(j, "minimum_distance_2_cuts"));
             }
+            if (j.contains("maximum_distance_2_cuts")) {
+                builder.instance_builder().set_maximum_distance_2_cuts(read_length(j, "maximum_distance_2_cuts"));
+            }
             if (j.contains("minimum_waste_length")) {
                 builder.instance_builder().set_minimum_waste_length(read_length(j, "minimum_waste_length"));
             }
+            if (j.contains("maximum_number_1_cuts")) {
+                builder.instance_builder().set_maximum_number_1_cuts(j["maximum_number_1_cuts"].get<Counter>());
+            }
             if (j.contains("maximum_number_2_cuts")) {
-                builder.instance_builder().set_maximum_number_2_cuts(j["maximum_number_2_cuts"].get<bool>());
+                builder.instance_builder().set_maximum_number_2_cuts(j["maximum_number_2_cuts"].get<Counter>());
             }
             if (j.contains("cut_through_defects")) {
                 builder.instance_builder().set_cut_through_defects(j["cut_through_defects"].get<bool>());
             }
             if (j.contains("cut_thickness")) {
                 builder.instance_builder().set_cut_thickness(read_length(j, "cut_thickness"));
+            }
+            if (j.contains("fixed_cutting_costs") && j["fixed_cutting_costs"].is_array()) {
+                Counter stage_id = 0;
+                for (auto& j_fixed_cutting_cost: j["fixed_cutting_costs"].items()) {
+                    builder.instance_builder().set_fixed_cutting_cost(stage_id, j_fixed_cutting_cost.value().get<CuttingCost>());
+                    ++stage_id;
+                }
+            }
+            if (j.contains("variable_cutting_costs") && j["variable_cutting_costs"].is_array()) {
+                Counter stage_id = 0;
+                for (auto& j_variable_cutting_cost: j["variable_cutting_costs"].items()) {
+                    builder.instance_builder().set_variable_cutting_cost(stage_id, j_variable_cutting_cost.value().get<CuttingCost>());
+                    ++stage_id;
+                }
+            }
+
+            if (j.contains("sort_subplates_criteria") && j["sort_subplates_criteria"].is_array()) {
+                sort_subplates_criteria_.clear();
+                for (auto& j_sort_subplates_criterion: j["sort_subplates_criteria"].items()) {
+                    if (!j_sort_subplates_criterion.value().is_string()) {
+                        continue;
+                    }
+                    auto s_criterion = j_sort_subplates_criterion.value().get<std::string>();
+                    std::transform(s_criterion.begin(), s_criterion.end(), s_criterion.begin(), [](unsigned char c) { return std::tolower(c); });
+                    if (s_criterion == "length1" || s_criterion == "l1") {
+                        sort_subplates_criteria_.emplace_back(SortSubplatesCriterion::Length1);
+                    } else if (s_criterion == "length2" || s_criterion == "l2") {
+                        sort_subplates_criteria_.emplace_back(SortSubplatesCriterion::Length2);
+                    } else if (s_criterion == "waste" || s_criterion == "w") {
+                        sort_subplates_criteria_.emplace_back(SortSubplatesCriterion::Waste);
+                    } else if (s_criterion == "density" || s_criterion == "d") {
+                        sort_subplates_criteria_.emplace_back(SortSubplatesCriterion::Density);
+                    }
+                }
             }
 
             if (j.contains("keep_width")) {
@@ -1075,18 +1387,16 @@ namespace Packy {
             Length width = read_length(j, "width", -1);
             Length height = read_length(j, "height", -1);
             const Profit profit = j.value("profit", static_cast<Profit>(-1));
-            const ItemPos copies = j.value("copies", static_cast<ItemPos>(-1));
+            const ItemPos copies = j.value("copies", static_cast<ItemPos>(1));
+            const ItemPos copies_min = j.value("copies_min", static_cast<ItemPos>(0));
             const bool oriented = j.value("oriented", false);
             const StackId stack_id = j.value("stack_id", static_cast<StackId>(-1));
 
-            ItemTypeId item_type_id = builder.instance_builder().add_item_type(
-                    width,
-                    height,
-                    profit,
-                    copies,
-                    oriented,
-                    stack_id
-            );
+            ItemTypeId item_type_id = builder.instance_builder().add_item_type(width, height, oriented);
+            builder.instance_builder().set_item_type_stack_id(item_type_id, stack_id);
+            if (profit > 0) builder.instance_builder().set_item_type_profit(item_type_id, profit);
+            builder.instance_builder().set_item_type_copies(item_type_id, copies);
+            if (copies_min > 0) builder.instance_builder().set_item_type_copies_min(item_type_id, copies_min);
 
             return item_type_id;
         }
@@ -1104,13 +1414,10 @@ namespace Packy {
             const BinPos copies = j.value("copies", static_cast<BinPos>(1));
             const BinPos copies_min = j.value("copies_min", static_cast<BinPos>(0));
 
-            BinTypeId bin_type_id = builder.instance_builder().add_bin_type(
-                    width,
-                    height,
-                    cost,
-                    copies,
-                    copies_min
-            );
+            BinTypeId bin_type_id = builder.instance_builder().add_bin_type(width, height);
+            if (cost > 0) builder.instance_builder().set_bin_type_cost(bin_type_id, cost);
+            builder.instance_builder().set_bin_type_copies(bin_type_id, copies);
+            builder.instance_builder().set_bin_type_copies_min(bin_type_id, copies_min);
 
             // Trims
 
@@ -1122,6 +1429,9 @@ namespace Packy {
             if (j.contains("left_trim_type")) {
                 std::stringstream ss(j.value("left_trim_type", "hard"));
                 ss >> left_trim_type;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown left_trim_type=" + j.value("left_trim_type", ""));
+                }
             }
 
             Length right_trim = 0;
@@ -1132,6 +1442,9 @@ namespace Packy {
             if (j.contains("right_trim_type")) {
                 std::stringstream ss(j.value("right_trim_type", "soft"));
                 ss >> right_trim_type;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown right_trim_type=" + j.value("right_trim_type", ""));
+                }
             }
 
             Length bottom_trim = 0;
@@ -1142,6 +1455,9 @@ namespace Packy {
             if (j.contains("bottom_trim_type")) {
                 std::stringstream ss(j.value("bottom_trim_type", "hard"));
                 ss >> bottom_trim_type;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown bottom_trim_type=" + j.value("bottom_trim_type", ""));
+                }
             }
 
             Length top_trim = 0;
@@ -1152,6 +1468,9 @@ namespace Packy {
             if (j.contains("top_trim_type")) {
                 std::stringstream ss(j.value("top_trim_type", "soft"));
                 ss >> top_trim_type;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown top_trim_type=" + j.value("top_trim_type", ""));
+                }
             }
 
             builder.instance_builder().add_trims(
@@ -1204,20 +1523,37 @@ namespace Packy {
             const rectangleguillotine::Instance& instance,
             const rectangleguillotine::OptimizeParameters& parameters
         ) override {
-            return std::move(rectangleguillotine::optimize(instance, parameters));
+            return rectangleguillotine::optimize(instance, parameters);
         }
 
         rectangleguillotine::Output process(
             const rectangleguillotine::Instance& instance
         ) override {
-            return std::move(rectangleguillotine::optimize(instance, parameters_));
+            return rectangleguillotine::optimize(instance, parameters_);
         }
 
-        json post_process(
-            const rectangleguillotine::Output& output
-            ) override {
+        rectangleguillotine::Solution post_process_solution(
+            const rectangleguillotine::Solution& solution
+        ) override {
 
-            return std::move(TypedSolver::post_process(output));
+            using namespace rectangleguillotine;
+
+            Solution grouped_solution = group_identical_bins(solution).solution_pool.best();
+
+            if (!sort_subplates_criteria_.empty()) {
+                Solution sorted_solution = sort_subplates(grouped_solution, sort_subplates_criteria_);
+                if (sorted_solution.feasible()) {
+                    return sorted_solution;
+                }
+            }
+            return grouped_solution;
+        }
+
+        void write_instance(
+            rectangleguillotine::Instance& instance,
+            std::string& instance_path
+        ) override {
+            instance.write(instance_path, InstanceFormat::Json);
         }
 
         void populate_best_solution_bin(
@@ -1243,7 +1579,7 @@ namespace Packy {
 
             j_bin["space"] = to_area_dbl(bin_space);
             j_bin["waste"] = to_area_dbl(bin_space - items_space);
-            j_bin["efficiency"] = static_cast<double>(items_space) / bin_space;
+            j_bin["efficiency"] = bin_space > 0 ? static_cast<double>(items_space) / static_cast<double>(bin_space) : 0.0;
 
             Length cut_length = 0;
             int32_t number_of_leftovers_to_keep = 0;
@@ -1261,6 +1597,7 @@ namespace Packy {
 
                     if (item_type.rect.w != node.r - node.l /* rotated */) {
                         j_items.push_back(json{
+                                {"depth",        node.d - 1},
                                 {"item_type_id", item_type_meta.orig_item_type_id},
                                 {"x",            to_length_dbl(node.r)},
                                 {"y",            to_length_dbl(node.b)},
@@ -1268,6 +1605,7 @@ namespace Packy {
                         });
                     } else {
                         j_items.push_back(json{
+                                {"depth",        node.d - 1},
                                 {"item_type_id", item_type_meta.orig_item_type_id},
                                 {"x",            to_length_dbl(node.l)},
                                 {"y",            to_length_dbl(node.b)},
@@ -1413,6 +1751,12 @@ namespace Packy {
 
     private:
 
+        std::vector<rectangleguillotine::SortSubplatesCriterion> sort_subplates_criteria_ = {
+            rectangleguillotine::SortSubplatesCriterion::Density,
+            rectangleguillotine::SortSubplatesCriterion::Length2,
+            rectangleguillotine::SortSubplatesCriterion::Length1
+        };
+
         Length keep_width_ = std::numeric_limits<Length>::max();
         Length keep_height_ = std::numeric_limits<Length>::max();
 
@@ -1431,11 +1775,11 @@ namespace Packy {
         ) override {
             TypedSolver::read_parameters(j);
 
-            if (j.contains("sequential_value_correction_subproblem_queue_size")) {
-                parameters_.sequential_value_correction_subproblem_queue_size = j["sequential_value_correction_subproblem_queue_size"].get<NodeId>();
+            if (j.contains("sequential_value_correction_subproblem_tree_search_queue_size")) {
+                parameters_.sequential_value_correction_subproblem_tree_search_queue_size = j["sequential_value_correction_subproblem_tree_search_queue_size"].get<NodeId>();
             }
-            if (j.contains("column_generation_subproblem_queue_size")) {
-                parameters_.column_generation_subproblem_queue_size = j["column_generation_subproblem_queue_size"].get<NodeId>();
+            if (j.contains("column_generation_subproblem_tree_search_queue_size")) {
+                parameters_.column_generation_subproblem_tree_search_queue_size = j["column_generation_subproblem_tree_search_queue_size"].get<NodeId>();
             }
 
         }
@@ -1462,16 +1806,16 @@ namespace Packy {
             Length width = read_length(j, "width", -1);
             const Profit profit = j.value("profit", static_cast<Profit>(-1));
             const ItemPos copies = j.value("copies", static_cast<ItemPos>(1));
+            const ItemPos copies_min = j.value("copies_min", static_cast<ItemPos>(0));
 
             if (fake_spacing_ > 0) {
                 if (width >= 0) width += fake_spacing_;
             }
 
-            ItemTypeId item_type_id = builder.instance_builder().add_item_type(
-                    width,
-                    profit,
-                    copies
-            );
+            ItemTypeId item_type_id = builder.instance_builder().add_item_type(width);
+            if (profit > 0) builder.instance_builder().set_item_type_profit(item_type_id, profit);
+            builder.instance_builder().set_item_type_copies(item_type_id, copies);
+            if (copies_min > 0) builder.instance_builder().set_item_type_copies_min(item_type_id, copies_min);
 
             return item_type_id;
         }
@@ -1487,18 +1831,21 @@ namespace Packy {
             const BinPos copies_min = j.value("copies_min", static_cast<BinPos>(0));
 
             if (fake_trimming_ > 0) {
-                if (width >= 0) width -= fake_trimming_ * 2;
+                if (width >= 0) {
+                    width -= fake_trimming_ * 2;
+                    if (width <= 0) {
+                        throw std::invalid_argument("Bin type width=" + std::to_string(j.value("width", 0.0)) + " is too small for trimming=" + std::to_string(to_length_dbl(fake_trimming_)));
+                    }
+                }
             }
             if (fake_spacing_ > 0) {
                 if (width >= 0) width += fake_spacing_;
             }
 
-            BinTypeId bin_type_id = builder.instance_builder().add_bin_type(
-                    width,
-                    cost,
-                    copies,
-                    copies_min
-            );
+            BinTypeId bin_type_id = builder.instance_builder().add_bin_type(width);
+            if (cost > 0) builder.instance_builder().set_bin_type_cost(bin_type_id, cost);
+            builder.instance_builder().set_bin_type_copies(bin_type_id, copies);
+            builder.instance_builder().set_bin_type_copies_min(bin_type_id, copies_min);
 
             return bin_type_id;
         }
@@ -1509,13 +1856,26 @@ namespace Packy {
             const onedimensional::Instance& instance,
             const onedimensional::OptimizeParameters& parameters
         ) override {
-            return std::move(onedimensional::optimize(instance, parameters));
+            return onedimensional::optimize(instance, parameters);
         }
 
         onedimensional::Output process(
             const onedimensional::Instance& instance
         ) override {
-            return std::move(onedimensional::optimize(instance, parameters_));
+            return onedimensional::optimize(instance, parameters_);
+        }
+
+        onedimensional::Solution post_process_solution(
+            const onedimensional::Solution& solution
+        ) override {
+            return onedimensional::group_identical_bins(solution).solution_pool.best();
+        }
+
+        void write_instance(
+            onedimensional::Instance& instance,
+            std::string& instance_path
+        ) override {
+            instance.write(instance_path, InstanceFormat::Json);
         }
 
         void populate_best_solution_bin(
@@ -1539,7 +1899,7 @@ namespace Packy {
 
             j_bin["space"] = to_length_dbl(bin_space);
             j_bin["waste"] = to_length_dbl(bin_space - items_space);
-            j_bin["efficiency"] = static_cast<double>(items_space) / bin_space;
+            j_bin["efficiency"] = bin_space > 0 ? static_cast<double>(items_space) / static_cast<double>(bin_space) : 0.0;
 
             // Items, Leftover & Cuts.
             basic_json<>& j_items = j_bin["items"] = json::array();
@@ -1619,11 +1979,11 @@ namespace Packy {
                 parameters_.maximum_approximation_ratio_factor = j["maximum_approximation_ratio_factor"].get<double>();
             }
 
-            if (j.contains("sequential_value_correction_subproblem_queue_size")) {
-                parameters_.sequential_value_correction_subproblem_queue_size = j["sequential_value_correction_subproblem_queue_size"].get<NodeId>();
+            if (j.contains("sequential_value_correction_subproblem_tree_search_queue_size")) {
+                parameters_.sequential_value_correction_subproblem_tree_search_queue_size = j["sequential_value_correction_subproblem_tree_search_queue_size"].get<NodeId>();
             }
-            if (j.contains("column_generation_subproblem_queue_size")) {
-                parameters_.column_generation_subproblem_queue_size = j["column_generation_subproblem_queue_size"].get<NodeId>();
+            if (j.contains("column_generation_subproblem_tree_search_queue_size")) {
+                parameters_.column_generation_subproblem_tree_search_queue_size = j["column_generation_subproblem_tree_search_queue_size"].get<NodeId>();
             }
             if (j.contains("not_anytime_maximum_approximation_ratio")) {
                 parameters_.not_anytime_maximum_approximation_ratio = j["not_anytime_maximum_approximation_ratio"].get<double>();
@@ -1649,8 +2009,14 @@ namespace Packy {
             if (j.contains("item_item_minimum_spacing")) {
                 builder.instance_builder().set_item_item_minimum_spacing(j["item_item_minimum_spacing"].get<irregular::LengthDbl>());
             }
-            if (j.contains("item_bin_minimum_spacing")) {
-                builder.instance_builder().set_item_bin_minimum_spacing(j["item_bin_minimum_spacing"].get<irregular::LengthDbl>());
+            if (j.contains("leftover_mode")) {
+                irregular::LeftoverMode leftover_mode = irregular::LeftoverMode::BottomLeft;   // PackingSolver default
+                std::stringstream ss(j.value("leftover_mode", "bottom-left"));
+                ss >> leftover_mode;
+                if (ss.fail()) {
+                    throw std::invalid_argument("Unknown leftover_mode=" + j.value("leftover_mode", ""));
+                }
+                builder.instance_builder().set_leftover_mode(leftover_mode);
             }
 
             if (j.contains("fake_trimming_y")) {
@@ -1671,39 +2037,43 @@ namespace Packy {
 
                 // Multiple item shape.
                 for (auto& j_item: j["shapes"].items()) {
-                    item_shapes.push_back(read_item_shape(j_item.value()));
+                    for (auto& item_shape : read_item_shape(j_item.value())) {
+                        item_shapes.push_back(item_shape);
+                    }
                 }
 
             } else {
 
                 // Single item shape.
-                item_shapes.push_back(read_item_shape(j));
+                for (auto& item_shape : read_item_shape(j)) {
+                    item_shapes.push_back(item_shape);
+                }
 
+            }
+
+            if (item_shapes.empty()) {
+                throw std::invalid_argument("Item type has no valid shape (empty or degenerate geometry)");
             }
 
             const Profit profit = j.value("profit", static_cast<Profit>(-1));
             const ItemPos copies = j.value("copies", static_cast<ItemPos>(1));
+            const ItemPos copies_min = j.value("copies_min", static_cast<ItemPos>(0));
 
-            // Read allowed rotations. (Angles are read in degrees)
-            std::vector<std::pair<Angle, Angle>> allowed_rotations;
+            ItemTypeId item_type_id = builder.instance_builder().add_item_type(item_shapes);
+            if (profit > 0) builder.instance_builder().set_item_type_profit(item_type_id, profit);
+            builder.instance_builder().set_item_type_copies(item_type_id, copies);
+            if (copies_min > 0) builder.instance_builder().set_item_type_copies_min(item_type_id, copies_min);
+
+            // Read allowed rotations + mirror. (Angles are read in degrees)
             if (j.contains("allowed_rotations")) {
                 for (auto& j_item: j["allowed_rotations"].items()) {
                     auto& j_angles = j_item.value();
-                    Angle angle_start = j_angles.value("start", static_cast<Angle>(0));
-                    Angle angle_end = j_angles.value("end", angle_start);
-                    allowed_rotations.emplace_back(angle_start, angle_end);
+                    const Angle start_angle = j_angles.value("start", static_cast<Angle>(0));
+                    const Angle end_angle = j_angles.value("end", start_angle);
+                    const bool mirror = j_angles.value("mirror", false);
+                    builder.instance_builder().add_item_type_allowed_rotation(item_type_id, start_angle, end_angle, mirror);
                 }
             }
-
-            ItemTypeId item_type_id = builder.instance_builder().add_item_type(
-                    item_shapes,
-                    profit,
-                    copies,
-                    allowed_rotations
-            );
-
-            const bool allow_mirroring = j.value("allow_mirroring", false);
-            builder.instance_builder().set_item_type_allow_mirroring(item_type_id, allow_mirroring);
 
             return item_type_id;
         }
@@ -1721,14 +2091,14 @@ namespace Packy {
             const BinPos copies_min = j.value("copies_min", static_cast<BinPos>(0));
 
             if (/*shape.is_rectangle() && */fake_trimming_y_ > 0) {
-                auto[min, max] = shape.compute_min_max();
+                auto aabb = shape.compute_min_max();
 
                 // TODO find a best way to enlarge the shape
 
-                auto x = min.x;
-                auto y = min.y;
-                auto width = max.x - min.x;
-                auto height = max.y - min.y + fake_trimming_y_ * 2;
+                auto x = aabb.x_min;
+                auto y = aabb.y_min;
+                auto width = aabb.x_max - aabb.x_min;
+                auto height = aabb.y_max - aabb.y_min + fake_trimming_y_ * 2;
 
                 Shape fake_shape;
                 ShapeElement element_1;
@@ -1756,12 +2126,16 @@ namespace Packy {
 
             }
 
-            BinTypeId bin_type_id = builder.instance_builder().add_bin_type(
-                    shape,
-                    cost,
-                    copies,
-                    copies_min
-            );
+            BinTypeId bin_type_id = builder.instance_builder().add_bin_type(shape);
+            if (cost > 0) builder.instance_builder().set_bin_type_cost(bin_type_id, cost);
+            builder.instance_builder().set_bin_type_copies(bin_type_id, copies);
+            builder.instance_builder().set_bin_type_copies_min(bin_type_id, copies_min);
+
+            // Trim
+
+            if (j.contains("item_bin_minimum_spacing")) {
+                builder.instance_builder().set_item_bin_minimum_spacing(bin_type_id, j["item_bin_minimum_spacing"].get<LengthDbl>());
+            }
 
             // Defects
 
@@ -1774,7 +2148,7 @@ namespace Packy {
             return bin_type_id;
         }
 
-        void read_defect(
+        static void read_defect(
                 BinTypeId bin_type_id,
                 basic_json<>& j,
                 TypedBuilder<irregular::InstanceBuilder>& builder
@@ -1785,11 +2159,15 @@ namespace Packy {
             const DefectTypeId type = j.value("defect_type", static_cast<DefectTypeId>(-1));
             const ShapeWithHoles shape = ShapeWithHoles::from_json(j);
 
-            builder.instance_builder().add_defect(
+            DefectId defect_id = builder.instance_builder().add_defect(
                     bin_type_id,
                     type,
                     shape
             );
+
+            if (j.contains("item_defect_minimum_spacing")) {
+                builder.instance_builder().set_item_defect_minimum_spacing(bin_type_id, defect_id, j["item_defect_minimum_spacing"].get<LengthDbl>());
+            }
 
         }
 
@@ -1799,13 +2177,19 @@ namespace Packy {
             const irregular::Instance& instance,
             const irregular::OptimizeParameters& parameters
         ) override {
-            return std::move(irregular::optimize(instance, parameters));
+            return irregular::optimize(instance, parameters);
         }
 
         irregular::Output process(
             const irregular::Instance& instance
         ) override {
-            return std::move(irregular::optimize(instance, parameters_));
+            return irregular::optimize(instance, parameters_);
+        }
+
+        irregular::Solution post_process_solution(
+            const irregular::Solution& solution
+        ) override {
+            return irregular::group_identical_bins(solution).solution_pool.best();
         }
 
         void populate_best_solution_bin(
@@ -1829,7 +2213,10 @@ namespace Packy {
 
             j_bin["space"] = to_area_dbl(bin_space);
             j_bin["waste"] = to_area_dbl(bin_space - items_space);
-            j_bin["efficiency"] = items_space / bin_space;
+            j_bin["efficiency"] = bin_space > 0 ? items_space / bin_space : 0.0;
+
+            int number_of_cuts = 0;
+            LengthDbl cut_length = 0;
 
             // Add x_min, x_max and y_min, y_max attributes to the last bin
             if (bin_pos == solution.number_of_different_bins() - 1) {
@@ -1842,6 +2229,7 @@ namespace Packy {
             basic_json<>& j_items = j_bin["items"] = json::array();
             for (const auto& item: bin.items) {
 
+                const ItemType& item_type = solution.instance().item_type(item.item_type_id);
                 ItemTypeMeta& item_type_meta = builder.item_type_meta(item.item_type_id);
 
                 j_items.emplace_back(json{
@@ -1852,11 +2240,21 @@ namespace Packy {
                     {"mirror", item.mirror}
                 });
 
+                for (const auto& item_shape : item_type.shapes) {
+                    number_of_cuts += 1;
+                    cut_length += item_shape.shape_orig.shape.compute_length();
+                    for (const auto& hole : item_shape.shape_orig.holes) {
+                        number_of_cuts += 1;
+                        cut_length += hole.compute_length();
+                    }
+                }
+
             }
 
             j_bin["number_of_items"] = j_items.size();
             j_bin["number_of_leftovers"] = 0;
-            j_bin["number_of_cuts"] = 0;
+            j_bin["number_of_cuts"] = number_of_cuts;
+            j_bin["cut_length"] = to_length_dbl(cut_length);
 
         }
 
@@ -1871,7 +2269,11 @@ namespace Packy {
 
                 auto item_type = solution.instance().item_type(item_type_id);
 
-                irregular::ItemShape largest_item_shape;
+                if (item_type.shapes.empty()) {
+                    return;     // No shape, no label offset ('read_item_type' normally rejects such items)
+                }
+
+                const irregular::ItemShape* largest_item_shape = &item_type.shapes.front();
                 std::pair<shape::Point, shape::Point> min_max;
 
                 if (item_type.shapes.size() > 1) {
@@ -1887,11 +2289,11 @@ namespace Packy {
                     for (const auto& item_shape : item_type.shapes) {
 
                         // Compute min max
-                        auto shape_min_max = item_shape.shape_orig.compute_min_max();
-                        if (shape_min_max.first.x < min_max.first.x) min_max.first.x = shape_min_max.first.x;
-                        if (shape_min_max.first.y < min_max.first.y) min_max.first.y = shape_min_max.first.y;
-                        if (shape_min_max.second.x > min_max.second.x) min_max.second.x = shape_min_max.second.x;
-                        if (shape_min_max.second.y > min_max.second.y) min_max.second.y = shape_min_max.second.y;
+                        auto aabb = item_shape.shape_orig.compute_min_max();
+                        if (aabb.x_min < min_max.first.x) min_max.first.x = aabb.x_min;
+                        if (aabb.y_min < min_max.first.y) min_max.first.y = aabb.y_min;
+                        if (aabb.x_max > min_max.second.x) min_max.second.x = aabb.x_max;
+                        if (aabb.y_max > min_max.second.y) min_max.second.y = aabb.y_max;
 
                         shape::AreaDbl area = item_shape.shape_orig.shape.compute_area();
                         for (const auto& hole : item_shape.shape_orig.holes) {
@@ -1900,18 +2302,19 @@ namespace Packy {
 
                         if (area > max_area) {
                             max_area = area;
-                            largest_item_shape = item_shape;
+                            largest_item_shape = &item_shape;
                         }
 
                     }
 
                 } else {
 
-                    // Use the first item shape
-                    largest_item_shape = item_type.shapes.front();
-
-                    // Compute min max
-                    min_max = largest_item_shape.shape_orig.compute_min_max();
+                    // Compute min max of the single item shape
+                    auto aabb = largest_item_shape->shape_orig.compute_min_max();
+                    min_max = {
+                        { aabb.x_min, aabb.y_min },
+                        { aabb.x_max, aabb.y_max }
+                    };
 
                 }
 
@@ -1919,8 +2322,12 @@ namespace Packy {
                 auto item_length = min_max.second.x - min_max.first.x;
                 auto item_width = min_max.second.y - min_max.first.y;
 
+                if (!std::isfinite(item_length) || !std::isfinite(item_width)) {
+                    return;     // Degenerate geometry, the label offset would be NaN
+                }
+
                 // Find label position
-                shape::Point label_position = shape::find_label_position(largest_item_shape.shape_orig);
+                shape::Point label_position = shape::find_label_position(largest_item_shape->shape_orig);
 
                 // Write the label offset (relative to the item shapes center)
                 j_item_type_stats["label_offset"] = json{
@@ -1934,20 +2341,28 @@ namespace Packy {
 
     private:
 
-        irregular::LengthDbl fake_trimming_y_ = false;
+        irregular::LengthDbl fake_trimming_y_ = 0.0;
 
         bool label_offsets_ = false;
 
-        static irregular::ItemShape read_item_shape(
+        static std::vector<irregular::ItemShape> read_item_shape(
                 basic_json<>& j
         ) {
 
             using namespace irregular;
 
-            ItemShape item_shape;
-            item_shape.shape_orig = ShapeWithHoles::from_json(j);
+            // Build the shape from JSON
+            ShapeWithHoles shape = ShapeWithHoles::from_json(j);
 
-            return std::move(item_shape);
+            // Fix self-intersections
+            const MultiShapeWithHoles fixed_shapes = fix_self_intersections(shape);
+            std::vector<ItemShape> item_shapes;
+
+            for (const auto& fixed_shape: fixed_shapes.shapes_with_holes) {
+                item_shapes.emplace_back(ItemShape{fixed_shape});
+            }
+
+            return item_shapes;
         }
 
     };

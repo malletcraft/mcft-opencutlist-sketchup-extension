@@ -6,6 +6,14 @@ module Ladb::OpenCutList
 
   class CommonEvalFormulaWorker
 
+    # Maximum number of Ruby-level events (line/call) a single formula may execute. Guards against
+    # runaway loops or heavy recursion hanging SketchUp, since eval() itself has no such limit.
+    MAX_EVAL_STEPS = 200_000
+
+    # A formula that only reads a variable (ex : the default "@part") can't loop : evaluated without the step
+    # limit guard, whose TracePoint costs ~30 ms to enable (:c_call tracing touches all the loaded Ruby code).
+    TRIVIAL_FORMULA_REGEX = /\A\s*@\w+\s*\z/
+
     def initialize(
 
                   formula:,
@@ -34,7 +42,11 @@ module Ladb::OpenCutList
 
       begin
 
-        value = eval(@formula, @data.get_binding)  # Discussed here : https://forums.sketchup.com/t/how-to-secure-ruby-code-passed-to-eval/
+        value = if @formula =~ TRIVIAL_FORMULA_REGEX
+                  eval(@formula, @data.get_binding)
+                else
+                  _eval_with_step_limit(@formula, @data.get_binding)
+                end  # Discussed here : https://forums.sketchup.com/t/how-to-secure-ruby-code-passed-to-eval/
         value = value.export if value.is_a?(FormulaWrapper)
 
       rescue Exception => e
@@ -46,6 +58,21 @@ module Ladb::OpenCutList
 
     private
 
+    def _eval_with_step_limit(formula, binding)
+      steps = 0
+      calling_thread = Thread.current
+
+      trace = TracePoint.new(:line, :call, :c_call, :b_call) do |tp|
+        next unless Thread.current.equal?(calling_thread)
+        steps += 1
+        raise FormulaTooComplexError.new('Formula exceeded the maximum number of evaluation steps') if steps > MAX_EVAL_STEPS
+      end
+
+      trace.enable do
+        eval(formula, binding)
+      end
+    end
+
     def _sanitize_error_message(e)
       return e.class unless e.respond_to?(:message)
       message = e.message.split(/common_eval_formula_worker[.]rb:\d+:/).last  # Remove the path in the exception message
@@ -54,6 +81,9 @@ module Ladb::OpenCutList
       message.nil? ? '' : message
     end
 
+  end
+
+  class FormulaTooComplexError < StandardError
   end
 
 end

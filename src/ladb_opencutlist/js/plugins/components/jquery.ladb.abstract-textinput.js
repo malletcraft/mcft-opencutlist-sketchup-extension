@@ -52,6 +52,10 @@ LadbTextinputAbstract.prototype.isMultiple = function () {
     return this.$element.data('multiple') === true;
 };
 
+LadbTextinputAbstract.prototype.scrollToTheEnd = function () {
+    this.$element[0].scrollLeft = this.$element[0].scrollWidth
+};
+
 /////
 
 LadbTextinputAbstract.prototype.createLeftToolsContainer = function () {
@@ -79,6 +83,9 @@ LadbTextinputAbstract.prototype.appendRightTools = function ($toolsContainer) {
     const $resetBtn =
         $('<div class="ladb-textinput-tool ladb-textinput-tool-btn ladb-btn-reset" tabindex="-1" data-toggle="tooltip" title="' + i18next.t('core.component.textinput.reset') + '"><i class="ladb-opencutlist-icon-clear"></i></div>')
             .on('click', function() {
+                if (that.$element.prop('disabled') || that.$element.prop('readonly')) {
+                    return;   // Disabled after init - by prop rather than disable()
+                }
                 that.reset();
                 $(this).blur();
                 that.focus();
@@ -155,6 +162,15 @@ LadbTextinputAbstract.prototype.init = function () {
     // Disabled ?
     if (this.$element.prop('disabled')) {
         this.disable();
+    }
+
+    // Disabled or readonly later by prop rather than disable() : the reset button follows
+    if (typeof MutationObserver !== 'undefined') {
+        new MutationObserver(function () {
+            if (that.$resetBtn) {
+                that.$resetBtn.toggle(!that.$element.prop('disabled') && !that.$element.prop('readonly'));
+            }
+        }).observe(this.$element[0], { attributes: true, attributeFilter: [ 'disabled', 'readonly' ] });
     }
 
 };

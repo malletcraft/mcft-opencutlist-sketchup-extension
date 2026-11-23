@@ -2,15 +2,14 @@ module Ladb::OpenCutList
 
   require_relative 'cutlist_packing_worker'
   require_relative '../../constants'
-  require_relative '../../helper/sanitizer_helper'
   require_relative '../../helper/dxf_writer_helper'
   require_relative '../../helper/svg_writer_helper'
   require_relative '../../helper/part_drawing_helper'
   require_relative '../../utils/color_utils'
+  require_relative '../../utils/file_path_utils'
 
   class CutlistPackingWriteWorker < AbstractCutlistPackingWorker
 
-    include SanitizerHelper
     include DxfWriterHelper
     include SvgWriterHelper
     include PartDrawingHelper
@@ -27,6 +26,7 @@ module Ladb::OpenCutList
 
                    file_format: FILE_FORMAT_SVG,
                    dxf_structure: DXF_STRUCTURE_LAYER,
+                   dxf_depth_to_z: true,
                    unit: Length::Millimeter,
                    smoothing: false,
                    merge_holes: false,
@@ -63,6 +63,7 @@ module Ladb::OpenCutList
 
       @file_format = file_format
       @dxf_structure = dxf_structure.to_i
+      @dxf_depth_to_z = dxf_depth_to_z
       @unit = unit
       @smoothing = smoothing
       @merge_holes = merge_holes
@@ -108,7 +109,7 @@ module Ladb::OpenCutList
 
         packing_def = @packing.def
         group = packing_def.group
-        folder_name = _sanitize_filename("#{group.material_display_name} - #{group.std_dimension}")
+        folder_name = FilePathUtils.sanitize_folder_name("#{group.material_display_name} - #{group.std_dimension}")
         folder_path = File.join(dir, folder_name)
 
         begin
@@ -203,113 +204,118 @@ module Ladb::OpenCutList
 
       unless @parts_hidden
         _svg_write_group_start(file, id: LAYER_PART)
-        bin_def.item_defs.each do |item_def|
+        _each_bin_item_def(bin_def, is_1d, bin_length, bin_width, options_def) do |item_def, origin_x = 0, origin_y = 0, position_relative = false|
 
-          item_type_def = item_def.item_type_def
-          part = item_type_def.part
-          part_def = part.def
-          text = _evaluate_item_text(options_def.items_formula, part, item_def.instance_info, item_def.thickness_layer, item_def.position_in_batch)
-          text = '!!' unless text.is_a?(String)
-          projection_def = _get_part_projection_def(part)
+            item_type_def = item_def.item_type_def
+            part = item_type_def.part
+            part_def = part.def
+            text = _evaluate_item_text(options_def.items_formula, part, item_def.instance_info, item_def.thickness_layer, item_def.position_in_batch)
+            text = '!!' unless text.is_a?(String)
+            projection_def = _get_part_projection_def(part)
 
-          id = _svg_sanitize_identifier("#{LAYER_PART}_#{part.number.to_s.rjust(3, '_')}")
+            id = _svg_sanitize_identifier("#{LAYER_PART}_#{part.number.to_s.rjust(3, '_')}")
 
-          item_length = item_type_def.length
-          item_width = is_1d ? bin_width : item_type_def.width
-          item_x = item_def.x
-          item_y = item_def.y
+            item_length = item_type_def.length
+            item_width = is_1d ? bin_width : item_type_def.width
+            item_x = item_def.x
+            item_y = item_def.y
 
-          part_length = part_def.edge_cutting_length
-          part_width = part_def.edge_cutting_width
+            part_length = part_def.edge_cutting_length
+            part_width = part_def.edge_cutting_width
 
-          bounds = _compute_item_bounds_in_bin_space(item_length, item_width, item_def)
+            bounds = _compute_item_bounds_in_bin_space(item_length, item_width, item_def)
 
-          item_rect_width = bounds.width.to_f
-          item_rect_height = bounds.height.to_f
-          item_rect_x = _compute_x_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_x + bounds.min.x.to_f, item_rect_width, bin_length)
-          item_rect_y = _compute_y_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_y + bounds.min.y.to_f, item_rect_height, bin_width)
+            item_rect_width = bounds.width.to_f
+            item_rect_height = bounds.height.to_f
+            if position_relative
+              item_rect_x = origin_x + item_x
+              item_rect_y = origin_y + item_y
+            else
+              item_rect_x = _compute_x_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_x + bounds.min.x.to_f, item_rect_width, bin_length)
+              item_rect_y = _compute_y_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_y + bounds.min.y.to_f, item_rect_height, bin_width)
+            end
 
-          position = Geom::Point3d.new(
-            item_rect_x,
-            bin_width - item_rect_y - item_rect_height
-          ).transform(unit_transformation)
-          size = Geom::Point3d.new(
-            item_rect_width,
-            item_rect_height
-          ).transform(unit_transformation)
-
-          unless @texts_hidden
-            position_ = Geom::Point3d.new.offset!(item_def.label_offset).transform!(Geom::Transformation.rotation(ORIGIN, Z_AXIS, item_def.angle.degrees))
-            position_.transform!(Geom::Transformation.scaling(-1, 1, 1)) if item_def.mirror
-            position_.transform!(unit_transformation)
-            position_.y *= -1
-            size_ = Geom::Point3d.new(
-              part_length,
-              part_width
+            position = Geom::Point3d.new(
+              item_rect_x,
+              bin_width - item_rect_y - item_rect_height
             ).transform(unit_transformation)
-          end
+            size = Geom::Point3d.new(
+              item_rect_width,
+              item_rect_height
+            ).transform(unit_transformation)
 
-          if projection_def.is_a?(DrawingProjectionDef)
+            unless @texts_hidden
+              position_ = Geom::Point3d.new.offset!(item_def.label_offset).transform!(Geom::Transformation.rotation(ORIGIN, Z_AXIS, item_def.angle.degrees))
+              position_.transform!(Geom::Transformation.scaling(-1, 1, 1)) if item_def.mirror
+              position_.transform!(unit_transformation)
+              position_.y *= -1
+              size_ = Geom::Point3d.new(
+                part_length,
+                part_width
+              ).transform(unit_transformation)
+            end
 
-            transformation = unit_transformation
-            transformation *= Geom::Transformation.translation(Geom::Vector3d.new(item_rect_x, item_rect_y - bin_width))
-            transformation *= Geom::Transformation.translation(Geom::Vector3d.new(item_rect_width / 2, item_rect_height / 2))
-            transformation *= Geom::Transformation.rotation(ORIGIN, Z_AXIS, item_def.angle.degrees) if item_def.angle != 0
-            transformation *= Geom::Transformation.scaling(-1.0, 1.0, 1.0) if item_def.mirror
-            transformation *= Geom::Transformation.translation(Geom::Vector3d.new(-part_length / 2, -part_width / 2))
+            if projection_def.is_a?(DrawingProjectionDef)
 
-            _svg_write_group_start(file, {
-              id: id,
-              'serif:id': id,
-              'inkscape:label': id
-            })
+              transformation = unit_transformation
+              transformation *= Geom::Transformation.translation(Geom::Vector3d.new(item_rect_x, item_rect_y - bin_width))
+              transformation *= Geom::Transformation.translation(Geom::Vector3d.new(item_rect_width / 2, item_rect_height / 2))
+              transformation *= Geom::Transformation.rotation(ORIGIN, Z_AXIS, item_def.angle.degrees) if item_def.angle != 0
+              transformation *= Geom::Transformation.scaling(-1.0, 1.0, 1.0) if item_def.mirror
+              transformation *= Geom::Transformation.translation(Geom::Vector3d.new(-part_length / 2, -part_width / 2))
 
-              _svg_write_projection_def(file, projection_def,
-                                        smoothing: @smoothing,
-                                        transformation: transformation,
-                                        unit_transformation: unit_transformation,
-                                        unit_sign: unit_sign,
-                                        stroke_color: @parts_stroke_color,
-                                        fill_color: @parts_fill_color,
-                                        depths_stroke_color: @parts_depths_stroke_color,
-                                        depths_fill_color: @parts_depths_fill_color,
-                                        holes_stroke_color: @parts_holes_stroke_color,
-                                        holes_fill_color: @parts_holes_fill_color,
-                                        paths_stroke_color: @parts_paths_stroke_color,
-                                        paths_fill_color: @parts_paths_fill_color,
-                                        prefix: LAYER_PART)
+              _svg_write_group_start(file, {
+                id: id,
+                'serif:id': id,
+                'inkscape:label': id
+              })
+
+                _svg_write_projection_def(file, projection_def,
+                                          smoothing: @smoothing,
+                                          transformation: transformation,
+                                          unit_transformation: unit_transformation,
+                                          unit_sign: unit_sign,
+                                          stroke_color: @parts_stroke_color,
+                                          fill_color: @parts_fill_color,
+                                          depths_stroke_color: @parts_depths_stroke_color,
+                                          depths_fill_color: @parts_depths_fill_color,
+                                          holes_stroke_color: @parts_holes_stroke_color,
+                                          holes_fill_color: @parts_holes_fill_color,
+                                          paths_stroke_color: @parts_paths_stroke_color,
+                                          paths_fill_color: @parts_paths_fill_color,
+                                          prefix: LAYER_PART)
+                _svg_write_label(file, position.x, position.y, size.x, size.y, text, size_.x, size_.y, position_.x, position_.y, item_def.angle, _svg_stroke_color_hex(@texts_color)) unless @texts_hidden
+
+              _svg_write_group_end(file)
+
+            else
+
+              _svg_write_tag(file, 'rect', {
+                x: _svg_value(position.x),
+                y: _svg_value(position.y),
+                width: _svg_value(size.x),
+                height: _svg_value(size.y),
+                stroke: _svg_stroke_color_hex(@parts_stroke_color, @parts_fill_color),
+                fill: _svg_fill_color_hex(@parts_fill_color),
+                id: id,
+                'serif:id': id,
+                'inkscape:label': id
+              })
               _svg_write_label(file, position.x, position.y, size.x, size.y, text, size_.x, size_.y, position_.x, position_.y, item_def.angle, _svg_stroke_color_hex(@texts_color)) unless @texts_hidden
 
-            _svg_write_group_end(file)
+            end
 
-          else
-
-            _svg_write_tag(file, 'rect', {
+            virtual_rect_cuts_attributes << {
               x: _svg_value(position.x),
               y: _svg_value(position.y),
               width: _svg_value(size.x),
               height: _svg_value(size.y),
-              stroke: _svg_stroke_color_hex(@parts_stroke_color, @parts_fill_color),
-              fill: _svg_fill_color_hex(@parts_fill_color),
-              id: id,
-              'serif:id': id,
-              'inkscape:label': id
-            })
-            _svg_write_label(file, position.x, position.y, size.x, size.y, text, size_.x, size_.y, position_.x, position_.y, item_def.angle, _svg_stroke_color_hex(@texts_color)) unless @texts_hidden
+              stroke: _svg_stroke_color_hex(@cuts_color),
+              fill: 'none',
+              'stroke-dasharray': '5,5'
+            } unless @cuts_hidden || options_def.problem_type != Packy::PROBLEM_TYPE_RECTANGLE && (options_def.problem_type != Packy::PROBLEM_TYPE_IRREGULAR || !item_type_def.boxed)
 
           end
-
-          virtual_rect_cuts_attributes << {
-            x: _svg_value(position.x),
-            y: _svg_value(position.y),
-            width: _svg_value(size.x),
-            height: _svg_value(size.y),
-            stroke: _svg_stroke_color_hex(@cuts_color),
-            fill: 'none',
-            'stroke-dasharray': '5,5'
-          } unless @cuts_hidden || options_def.problem_type != Packy::PROBLEM_TYPE_RECTANGLE && (options_def.problem_type != Packy::PROBLEM_TYPE_IRREGULAR || !item_type_def.boxed)
-
-        end
         _svg_write_group_end(file)
       end
 
@@ -404,7 +410,7 @@ module Ladb::OpenCutList
       is_1d = options_def.problem_type == Packy::PROBLEM_TYPE_ONEDIMENSIONAL
 
       unit_factor = _dxf_get_unit_factor(@unit)
-      unit_transformation = Geom::Transformation.scaling(ORIGIN, unit_factor, unit_factor, 1.0)
+      unit_transformation = Geom::Transformation.scaling(ORIGIN, unit_factor, unit_factor, unit_factor)
 
       bin_type_def = bin_def.bin_type_def
 
@@ -413,22 +419,25 @@ module Ladb::OpenCutList
 
       bin_size = Geom::Point3d.new(
         bin_type_def.length,
-        bin_type_def.width
+        bin_type_def.width,
       ).transform(unit_transformation)
 
-      min = Geom::Point3d.new
+      min = Geom::Point3d.new(0, 0, -packing_def.group.def.std_thickness).transform(unit_transformation)
       max = Geom::Point3d.new(bin_size.x, bin_size.y)
 
       layer_defs = []
       layer_defs << DxfLayerDef.new(LAYER_BIN, @bin_stroke_color) unless @bin_hidden
       layer_defs << DxfLayerDef.new(LAYER_PART, @parts_stroke_color) unless @parts_hidden || @dxf_structure != DXF_STRUCTURE_LAYER_AND_BLOCK && @part_drawing_type != PART_DRAWING_TYPE_NONE
       layer_defs << DxfLayerDef.new(LAYER_LEFTOVER, @leftovers_stroke_color) unless @leftovers_hidden
-      layer_defs << DxfLayerDef.new(LAYER_CUT, @cuts_color, DXF_LINE_TYPE_DOT2) unless @cuts_hidden
+      layer_defs << DxfLayerDef.new(LAYER_CUT, @cuts_color, DXF_LINE_TYPE_DASHED2) unless @cuts_hidden
       layer_defs << DxfLayerDef.new(LAYER_TEXT, @texts_color) unless @parts_hidden || @texts_hidden
+
+      item_defs = _get_flat_bin_item_defs(bin_def)
+      uniq_item_defs = item_defs.uniq { |item_def| item_def.item_type_def.part.id }
 
       unless @parts_hidden
         depth_layer_defs = []
-        bin_def.item_defs.uniq { |item_def| item_def.item_type_def.part.id }.each do |item_def|
+        uniq_item_defs.each do |item_def|
           projection_def = _get_part_projection_def(item_def.item_type_def.part)
           if projection_def.is_a?(DrawingProjectionDef)
             depth_layer_defs.concat(_dxf_get_projection_def_depth_layer_defs(projection_def,
@@ -455,7 +464,7 @@ module Ladb::OpenCutList
         if @dxf_structure == DXF_STRUCTURE_LAYER_AND_BLOCK
 
           unless @parts_hidden
-            bin_def.item_defs.uniq { |item_def| item_def.item_type_def.part.id }.each do |item_def|
+            uniq_item_defs.each do |item_def|
               projection_def = _get_part_projection_def(item_def.item_type_def.part)
               if projection_def.is_a?(DrawingProjectionDef)
                 _dxf_write_projection_def_block_record(file, projection_def, fn_part_block_name.call(item_def.item_type_def.part), owner_id)
@@ -473,7 +482,7 @@ module Ladb::OpenCutList
         if @dxf_structure == DXF_STRUCTURE_LAYER_AND_BLOCK
 
           unless @parts_hidden
-            bin_def.item_defs.uniq { |item_def| item_def.item_type_def.part.id }.each do |item_def|
+            uniq_item_defs.each do |item_def|
 
               item_type_def = item_def.item_type_def
               part = item_type_def.part
@@ -487,10 +496,12 @@ module Ladb::OpenCutList
 
               part_length = part_def.edge_cutting_length
               part_width = part_def.edge_cutting_width
+              part_thickness = part_def.cutting_size.thickness
 
               position = Geom::Point3d.new(
                 -item_length / 2,
-                -item_width / 2
+                -item_width / 2,
+                -part_thickness
               ).transform(unit_transformation)
               size = Geom::Point3d.new(
                 item_length,
@@ -516,17 +527,18 @@ module Ladb::OpenCutList
                                                 smoothing: @smoothing,
                                                 transformation: transformation,
                                                 unit_transformation: unit_transformation,
+                                                depth_to_z: @dxf_depth_to_z,
                                                 layer: LAYER_PART) do
-                  _dxf_write_rect(file, position.x, position.y, size.x, size.y, LAYER_CUT) unless @cuts_hidden || options_def.problem_type != Packy::PROBLEM_TYPE_RECTANGLE && (options_def.problem_type != Packy::PROBLEM_TYPE_IRREGULAR || !item_type_def.boxed)
-                  _dxf_write_label(file, position.x, position.y, size.x, size.y, text, size_.x, size_.y, position_.x, position_.y, 0, LAYER_TEXT) unless @texts_hidden
+                  _dxf_write_rect(file, position.x, position.y, position.z, size.x, size.y, LAYER_CUT) unless @cuts_hidden || options_def.problem_type != Packy::PROBLEM_TYPE_RECTANGLE && (options_def.problem_type != Packy::PROBLEM_TYPE_IRREGULAR || !item_type_def.boxed)
+                  _dxf_write_label(file, position.x, position.y, 0, size.x, size.y, text, size_.x, size_.y, position_.x, position_.y, 0, LAYER_TEXT) unless @texts_hidden
                 end
 
               else
 
                 _dxf_write_section_blocks_block(file, fn_part_block_name.call(part), @_dxf_model_space_id) do
-                  _dxf_write_rect(file, position.x, position.y, size.x, size.y, LAYER_PART)
-                  _dxf_write_rect(file, position.x, position.y, size.x, size.y, LAYER_CUT) unless @cuts_hidden || options_def.problem_type != Packy::PROBLEM_TYPE_RECTANGLE && (options_def.problem_type != Packy::PROBLEM_TYPE_IRREGULAR || !item_type_def.boxed)
-                  _dxf_write_label(file, position.x, position.y, size.x, size.y, text, size_.y, position_.x, position_.y, 0, LAYER_TEXT) unless @texts_hidden
+                  _dxf_write_rect(file, position.x, position.y, position.z, size.x, size.y, LAYER_PART)
+                  _dxf_write_rect(file, position.x, position.y, position.z, size.x, size.y, LAYER_CUT) unless @cuts_hidden || options_def.problem_type != Packy::PROBLEM_TYPE_RECTANGLE && (options_def.problem_type != Packy::PROBLEM_TYPE_IRREGULAR || !item_type_def.boxed)
+                  _dxf_write_label(file, position.x, position.y, 0, size.x, size.y, text, size_.y, position_.x, position_.y, 0, LAYER_TEXT) unless @texts_hidden
                 end
 
               end
@@ -540,11 +552,11 @@ module Ladb::OpenCutList
       _dxf_write_section_entities(file) do
 
         unless @bin_hidden
-          _dxf_write_rect(file, 0, 0, bin_size.x, bin_size.y, LAYER_BIN)
+          _dxf_write_rect(file, 0, 0, 0, bin_size.x, bin_size.y, LAYER_BIN)
         end
 
         unless @parts_hidden
-          bin_def.item_defs.each do |item_def|
+          _each_bin_item_def(bin_def, is_1d, bin_length, bin_width, options_def) do |item_def, origin_x = 0, origin_y = 0, position_relative = false|
 
             item_type_def = item_def.item_type_def
             part = item_type_def.part
@@ -563,14 +575,20 @@ module Ladb::OpenCutList
 
             item_rect_width = bounds.width.to_f
             item_rect_height = bounds.height.to_f
-            item_rect_x = _compute_x_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_x + bounds.min.x, item_rect_width, bin_length)
-            item_rect_y = _compute_y_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_y + bounds.min.y, item_rect_height, bin_width)
+            if position_relative
+              item_rect_x = origin_x + item_x
+              item_rect_y = origin_y + item_y
+            else
+              item_rect_x = _compute_x_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_x + bounds.min.x, item_rect_width, bin_length)
+              item_rect_y = _compute_y_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_y + bounds.min.y, item_rect_height, bin_width)
+            end
+            item_rect_z = -part_def.cutting_size.thickness
 
             if @dxf_structure == DXF_STRUCTURE_LAYER_AND_BLOCK
 
               position = Geom::Point3d.new(
                 item_rect_x + item_rect_width / 2,
-                item_rect_y + item_rect_height / 2
+                item_rect_y + item_rect_height / 2,
               ).transform(unit_transformation)
 
               _dxf_write_insert(file, fn_part_block_name.call(part), position.x, position.y, 0, item_def.mirror ? -1.0 : 1.0, 1.0, 1.0, item_def.angle, LAYER_PART)
@@ -582,7 +600,8 @@ module Ladb::OpenCutList
 
               position = Geom::Point3d.new(
                 item_rect_x,
-                item_rect_y
+                item_rect_y,
+                item_rect_z
               ).transform(unit_transformation)
               size = Geom::Point3d.new(
                 item_rect_width,
@@ -612,16 +631,17 @@ module Ladb::OpenCutList
                                                    smoothing: @smoothing,
                                                    transformation: transformation,
                                                    unit_transformation: unit_transformation,
+                                                   depth_to_z: @dxf_depth_to_z,
                                                    layer: LAYER_PART)
 
               else
 
-                _dxf_write_rect(file, position.x, position.y, size.x, size.y, LAYER_PART)
+                _dxf_write_rect(file, position.x, position.y, position.z, size.x, size.y, LAYER_PART)
 
               end
 
-              _dxf_write_rect(file, position.x, position.y, size.x, size.y, LAYER_CUT) unless @cuts_hidden || options_def.problem_type != Packy::PROBLEM_TYPE_RECTANGLE && (options_def.problem_type != Packy::PROBLEM_TYPE_IRREGULAR || !item_type_def.boxed)
-              _dxf_write_label(file, position.x, position.y, size.x, size.y, text, size_.x, size_.y, position_.x, position_.y, item_def.angle, LAYER_TEXT) unless @texts_hidden
+              _dxf_write_rect(file, position.x, position.y, position.z, size.x, size.y, LAYER_CUT) unless @cuts_hidden || options_def.problem_type != Packy::PROBLEM_TYPE_RECTANGLE && (options_def.problem_type != Packy::PROBLEM_TYPE_IRREGULAR || !item_type_def.boxed)
+              _dxf_write_label(file, position.x, position.y, 0, size.x, size.y, text, size_.x, size_.y, position_.x, position_.y, item_def.angle, LAYER_TEXT) unless @texts_hidden
 
             end
 
@@ -645,7 +665,7 @@ module Ladb::OpenCutList
               leftover_rect_height
             ).transform(unit_transformation)
 
-            _dxf_write_rect(file, position.x, position.y, size.x, size.y, LAYER_LEFTOVER)
+            _dxf_write_rect(file, position.x, position.y, 0, size.x, size.y, LAYER_LEFTOVER)
 
           end
         end
@@ -682,7 +702,7 @@ module Ladb::OpenCutList
               cut_rect_y + (cut_def.vertical? ? cut_def.length : 0)
             ).transform(unit_transformation)
 
-            _dxf_write_line(file, position1.x, position1.y, position2.x, position2.y, LAYER_CUT)
+            _dxf_write_line(file, position1.x, position1.y, 0, position2.x, position2.y, 0, LAYER_CUT)
 
           end
         end
@@ -691,6 +711,44 @@ module Ladb::OpenCutList
       _dxf_write_section_objects(file)
       _dxf_write_end(file)
 
+    end
+
+    def _get_flat_bin_item_defs(bin_def)
+      bin_def.item_defs.flat_map { |item_def|
+        case item_def
+        when PackingCompositeItemDef
+          item_def.item_defs
+        else
+          item_def
+        end
+      }
+    end
+
+    def _each_bin_item_def(bin_def, is_1d, bin_length, bin_width, options_def, &block)
+      bin_def.item_defs.each do |item_def|
+        case item_def
+        when PackingCompositeItemDef
+
+          item_type_def = item_def.item_type_def
+
+          item_length = item_type_def.length
+          item_width = is_1d ? bin_width : item_type_def.width
+          item_x = item_def.x
+          item_y = item_def.y
+
+          bounds = _compute_item_bounds_in_bin_space(item_length, item_width, item_def)
+
+          item_rect_width = bounds.width.to_f
+          item_rect_height = bounds.height.to_f
+          item_rect_x = _compute_x_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_x + bounds.min.x, item_rect_width, bin_length)
+          item_rect_y = _compute_y_with_origin_corner(options_def.problem_type, options_def.origin_corner, item_y + bounds.min.y, item_rect_height, bin_width)
+
+          item_def.item_defs.each { |sub_item_def| block.call(sub_item_def, item_rect_x, item_rect_y, true) }
+
+        else
+          block.call(item_def)
+        end
+      end
     end
 
     def _get_part_projection_def(part)

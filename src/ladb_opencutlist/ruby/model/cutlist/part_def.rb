@@ -2,6 +2,7 @@ module Ladb::OpenCutList
 
   require 'digest'
   require_relative '../data_container'
+  require_relative 'instance_info'
 
   class PartDef < DataContainer
 
@@ -10,16 +11,17 @@ module Ladb::OpenCutList
 
     VENEERS_Z = [ :zmin, :zmax ]
 
-    attr_accessor :id, :definition_id, :number, :saved_number, :name, :is_dynamic_attributes_name, :description, :url, :count,
+    attr_accessor :id, :definition_id, :number, :saved_number, :name, :name_source, :description, :url, :count,
                   :cutting_size, :size, :scale, :flipped,
                   :material_name, :material_origins,
-                  :cumulable, :instance_count_by_part, :mass, :price, :thickness_layer_count, :orientation_locked_on_axis,
-                  :tags, :symmetrical, :ignore_grain_direction,
+                  :tags,
+                  :cumulable, :instance_count_by_part, :mass, :price, :thickness_layer_count, :orientation_locked_on_axis, :symmetrical, :ignore_grain_direction, :follow_grain_direction,
+                  :length_increase, :length_increased, :width_increase, :width_increased, :thickness_increase, :thickness_increased,
                   :edge_count, :edge_pattern, :edge_entity_ids, :edge_decrements, :edge_length_decrement, :edge_width_decrement, :edge_decremented,
                   :face_count, :face_pattern, :face_entity_ids, :face_decrements, :face_texture_angles, :face_thickness_decrement, :face_decremented,
                   :auto_oriented, :not_aligned_on_axes, :unused_instance_count, :content_layers, :final_area,
                   :children_warning_count
-    attr_reader :id, :virtual, :edge_material_names, :edge_material_colors, :edge_std_dimensions, :edge_errors, :face_material_names, :face_material_colors, :face_std_dimensions, :face_errors, :entity_ids, :entity_serialized_paths, :entity_names, :children, :instance_infos, :edge_materials, :edge_group_defs, :veneer_materials, :veneer_group_defs,
+    attr_reader :id, :virtual, :is_dynamic_attributes_name, :edge_material_names, :edge_material_colors, :edge_std_dimensions, :edge_errors, :face_material_names, :face_material_colors, :face_std_dimensions, :face_errors, :entity_ids, :entity_serialized_paths, :entity_names, :children, :instance_infos, :edge_materials, :edge_group_defs, :veneer_materials, :veneer_group_defs,
                 :drawing_defs, :projection_defs
 
     def initialize(id, virtual = false)
@@ -29,25 +31,38 @@ module Ladb::OpenCutList
       @number = nil
       @saved_number = nil
       @name = ''
-      @is_dynamic_attributes_name = false
+      @name_source = InstanceInfo::NAME_SOURCE_DEFINITION
       @description = ''
       @url = ''
       @count = 0
+
       @cutting_size = Size3d.new
       @size = Size3d.new
       @scale = Scale3d.new
       @flipped = false
+
       @material_name = ''
       @material_origins = []
+
+      @tags = []
+
       @cumulable = DefinitionAttributes::CUMULABLE_NONE
       @instance_count_by_part = 1
       @mass = ''
       @price = ''
       @thickness_layer_count = 1
-      @tags = []
       @orientation_locked_on_axis = false
       @symmetrical = false
       @ignore_grain_direction = false
+      @follow_grain_direction = false
+
+      @length_increase = 0
+      @length_increased = false
+      @width_increase = 0
+      @width_increased = false
+      @thickness_increase = 0
+      @thickness_increased = false
+
       @edge_count = 0
       @edge_pattern = nil                 # A string from 0000 to 1111
       @edge_material_names = {}
@@ -59,6 +74,7 @@ module Ladb::OpenCutList
       @edge_width_decrement = 0
       @edge_decremented = false
       @edge_errors = []
+
       @face_count = 0
       @face_pattern = nil                 # A string from 00 to 11
       @face_material_names = {}
@@ -70,6 +86,7 @@ module Ladb::OpenCutList
       @face_thickness_decrement = 0
       @face_decremented = false
       @face_errors = []
+
       @entity_ids = []                    # All unique entity ids (array count could be smaller than @count)
       @entity_serialized_paths = []       # All Serialized paths to each entity (array count should be egals to @count)
       @entity_names = {}                  # All non empty entity instance names (key = name, value = array of 'named path')
@@ -100,10 +117,8 @@ module Ladb::OpenCutList
 
       # Uses name for dynamic components to separate instances with the same definition, but different name
       entity_id = definition_attributes.uuid.nil? ? definition.entityID : definition_attributes.uuid
-      if dynamic_attributes_name
-        name, is_dynamic_attributes_name = instance_info.read_name(dynamic_attributes_name)
-        entity_id = "#{entity_id}|#{name}" if is_dynamic_attributes_name
-      end
+      name, name_source = instance_info.read_name(dynamic_attributes_name)
+      entity_id = "#{entity_id}|#{name}" if name_source != InstanceInfo::NAME_SOURCE_DEFINITION
 
       # Include scale in part_id to separate instances with the same definition, but different scale
       Digest::MD5.hexdigest("#{group_id}|#{entity_id}|#{DimensionUtils.to_ocl_precision_f(instance_info.size.length).to_s}|#{DimensionUtils.to_ocl_precision_f(instance_info.size.width).to_s}|#{DimensionUtils.to_ocl_precision_f(instance_info.size.thickness).to_s}|#{flipped_detection && (definition_attributes.symmetrical ? false : instance_info.flipped)}")
@@ -132,14 +147,14 @@ module Ladb::OpenCutList
           end
           case property
             when 'length'
-              a_value = [ part_def_a.cumulative_cutting_length ]
-              b_value = [ part_def_b.cumulative_cutting_length ]
+              a_value = [ part_def_a.cumulative_cutting_length.to_f.round(6) ]
+              b_value = [ part_def_b.cumulative_cutting_length.to_f.round(6) ]
             when 'width'
-              a_value = [ part_def_a.cumulative_cutting_width ]
-              b_value = [ part_def_b.cumulative_cutting_width ]
+              a_value = [ part_def_a.cumulative_cutting_width.to_f.round(6) ]
+              b_value = [ part_def_b.cumulative_cutting_width.to_f.round(6) ]
             when 'thickness'
-              a_value = [ part_def_a.size.thickness ]
-              b_value = [ part_def_b.size.thickness ]
+              a_value = [ part_def_a.size.thickness.to_f.round(6) ]
+              b_value = [ part_def_b.size.thickness.to_f.round(6) ]
             when 'name'
               a_value = [ part_def_a.name.downcase ]
               b_value = [ part_def_b.name.downcase ]
@@ -207,6 +222,20 @@ module Ladb::OpenCutList
 
     def merge_instance_infos(instance_infos)
       @instance_infos.merge!(instance_infos)
+    end
+
+    # ---
+
+    def is_definition_name
+      @name_source == InstanceInfo::NAME_SOURCE_DEFINITION
+    end
+
+    def is_instance_name
+      @name_source == InstanceInfo::NAME_SOURCE_INSTANCE
+    end
+
+    def is_dynamic_attributes_name
+      @name_source == InstanceInfo::NAME_SOURCE_DYNAMIC_ATTRIBUTE
     end
 
     # ---

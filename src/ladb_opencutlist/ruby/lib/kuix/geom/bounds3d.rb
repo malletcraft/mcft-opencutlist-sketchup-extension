@@ -201,6 +201,19 @@ module Ladb::OpenCutList::Kuix
       end
     end
 
+    def self.normal_by_face(face)
+      case face
+      when LEFT then X_AXIS.reverse
+      when RIGHT then X_AXIS
+      when FRONT then Y_AXIS.reverse
+      when BACK then Y_AXIS
+      when BOTTOM then Z_AXIS.reverse
+      when TOP then Z_AXIS
+      else
+        throw "Invalid normale_by_face face (face=#{face})"
+      end
+    end
+
     def min
       Point3d.new(
         x_min,
@@ -275,6 +288,18 @@ module Ladb::OpenCutList::Kuix
         y_section_min
       when BACK
         y_section_max
+      else
+        throw "Invalid section index (index=#{index})"
+      end
+    end
+
+    def section_by_axis(axis)
+      case axis
+      when X_AXIS then x_section
+      when Y_AXIS then y_section
+      when Z_AXIS then z_section
+      else
+        throw "Invalid section_by_axis axis (axis=#{axis})"
       end
     end
 
@@ -395,21 +420,26 @@ module Ladb::OpenCutList::Kuix
       end
     end
 
-    def get_quads
+    def get_sliced_quads
       quads = []
-      quads.concat(get_quad(LEFT)) if height > 0 && depth > 0
-      quads.concat(get_quad(RIGHT)) if width > 0 && height > 0 && depth > 0
-      quads.concat(get_quad(FRONT)) if width > 0 && depth > 0
-      quads.concat(get_quad(BACK)) if width > 0 && height > 0 && depth > 0
-      quads.concat(get_quad(BOTTOM)) if width > 0 && height > 0
-      quads.concat(get_quad(TOP)) if width > 0 && height > 0 && depth > 0
+      # Keep this order, it's important for the face normals when drawing.
+      quads << get_quad(RIGHT) if width > 0 && height > 0 && depth > 0
+      quads << get_quad(TOP) if width > 0 && height > 0 && depth > 0
+      quads << get_quad(BACK) if width > 0 && height > 0 && depth > 0
+      quads << get_quad(LEFT) if height > 0 && depth > 0
+      quads << get_quad(BOTTOM) if width > 0 && height > 0
+      quads << get_quad(FRONT) if width > 0 && depth > 0
       quads
+    end
+
+    def get_quads
+      get_sliced_quads.flatten!
     end
 
     # --
 
     def to_b
-      Geom::BoundingBox.new.add([ min, max ])
+      Geom::BoundingBox.new.add([ min.to_p, max.to_p ])
     end
 
     def to_s

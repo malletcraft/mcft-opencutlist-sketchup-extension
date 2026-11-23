@@ -175,6 +175,20 @@ class TC_Ladb_Lib_Geometrix < TestUp::TestCase
 
   end
 
+  def test_arc_num_segments_by_radius
+
+    fn = Ladb::OpenCutList::Geometrix::ArcUtils.method(:num_segments_by_radius)
+
+    assert_equal(8, fn.call(2.5.mm))                      # Ø5 : 8 by the 2 mm chord, the minimum
+    assert_equal(14, fn.call(4.mm))                       # Ø8 : 13, made even
+    assert_equal(24, fn.call(17.5.mm))                    # Ø35 : capped
+    assert_equal(12, fn.call(17.5.mm, max_num_segments: 12))
+    assert_equal(8, fn.call(0.5.mm))                      # Chord longer than the diameter
+    assert_equal(8, fn.call(0))
+    assert_equal(4, fn.call(1.5.mm, min_num_segments: 4, arc_angle: Ladb::OpenCutList::Geometrix::HALF_PI))
+
+  end
+
   def test_curve_finder
 
     assert_curve(@triangle, true, true, 3,false, false, 'triangle')
@@ -186,7 +200,7 @@ class TC_Ladb_Lib_Geometrix < TestUp::TestCase
     assert_curve(@loop_a.reverse, true, true, 3, false, false, 'loop_a.reverse')
     assert_curve(@loop_b, true, true, 3, false, false, 'loop_b')
     assert_curve(@loop_b.reverse, true, true, 3, false, false, 'loop_b.reverse')
-    assert_curve(@loop_c, true, true, 8, false, false, 'loop_c')
+    assert_curve(@loop_c, true, true, 6, false, false, 'loop_c')
     assert_curve(@loop_d, true, true, nil, nil, nil, 'loop_d')  # This loop doesn't returns unique arc portion if starts at index 22
     assert_curve(@loop_e, true, true, nil, nil, nil, 'loop_e')
     assert_curve(@loop_f, true, true, 1, true, true, 'loop_f')

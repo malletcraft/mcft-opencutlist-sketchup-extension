@@ -1,0 +1,97 @@
+//
+// Importer
+//
+
+.ladb-importers-page {
+
+  .ladb-importers-row {
+
+    &.ladb-importers-row-success {
+      background-color: lighten(#00ff00, 49%);
+
+      .ladb-importers-column-mapped {
+        background-color: lighten(#00ff00, 46%);
+      }
+
+    }
+
+    &.ladb-importers-row-error {
+      background-color: lighten(#ff0000, 49%);
+
+      .ladb-importers-column-mapped {
+        background-color: lighten(#ff0000, 46%);
+      }
+
+    }
+
+  }
+
+  .ladb-importers-column {
+    white-space: nowrap;
+
+    .ladb-importers-header {
+      font-size: 80%;
+      font-style: italic;
+      color: #aaa;
+      text-align: center;
+      margin-top: 5px;
+    }
+
+    &.ladb-invalid-value {
+      color: @ladb-brand-danger;
+    }
+
+  }
+
+  thead {
+
+    td {
+      background-color: #fafafa;
+    }
+
+    .ladb-importers-column-mapped {
+      background-color: #efefef;
+    }
+
+  }
+
+  tbody .ladb-importers-column-mapped {
+    background-color: #fafafa;
+  }
+
+  .ladb-importers-column-not-mapped {
+    color: @ladb-global-lighter-color;
+  }
+
+}
+
+#ladb_importer_modal_import {
+
+  .ladb-panel-preview {
+
+    .panel-body {
+      max-height: 35vh;
+      overflow-y: auto;
+      padding: 5px 10px;
+    }
+
+    .ladb-panel-preview-content {
+
+      table {
+        margin: 0;
+      }
+
+      td.ladb-muted {
+        color: #bbb;
+      }
+
+      th:last-child, td:last-child {
+        text-align: center;
+      }
+
+    }
+
+  }
+
+}
+

@@ -5,7 +5,7 @@ module Ladb::OpenCutList
   class DrawingContainerDef < DataContainer
 
     attr_accessor :transformation
-    attr_reader :face_manipulators, :surface_manipulators, :edge_manipulators, :curve_manipulators, :cline_manipulators,
+    attr_reader :face_manipulators, :surface_manipulators, :edge_manipulators, :curve_manipulators, :cline_manipulators, :snap_manipulators,
                 :container, :container_defs
 
     def initialize(container, transformation = IDENTITY)
@@ -23,6 +23,7 @@ module Ladb::OpenCutList
       @edge_manipulators = []
       @curve_manipulators = []
       @cline_manipulators = []
+      @snap_manipulators = []
 
       @container_defs = []
 
@@ -42,18 +43,23 @@ module Ladb::OpenCutList
     end
 
     def faces_bounds
-      _compute_bounds if @bounds.nil?
+      _compute_bounds if @faces_bounds.nil?
       @faces_bounds
     end
 
     def edges_bounds
-      _compute_bounds if @bounds.nil?
+      _compute_bounds if @edges_bounds.nil?
       @edges_bounds
     end
 
     def clines_bounds
-      _compute_bounds if @bounds.nil?
+      _compute_bounds if @clines_bounds.nil?
       @clines_bounds
+    end
+
+    def snap_bounds
+      _compute_bounds if @snap_bounds.nil?
+      @snap_bounds
     end
 
     # -----
@@ -85,6 +91,10 @@ module Ladb::OpenCutList
 
       @cline_manipulators.each do |cline_manipulator|
         cline_manipulator.transformation = ti * cline_manipulator.transformation
+      end
+
+      @snap_manipulators.each do |snap_manipulator|
+        snap_manipulator.transformation = ti * snap_manipulator.transformation
       end
 
       @container_defs.each do |container_def|
@@ -121,6 +131,7 @@ module Ladb::OpenCutList
       @faces_bounds = Geom::BoundingBox.new
       @edges_bounds = Geom::BoundingBox.new
       @clines_bounds = Geom::BoundingBox.new
+      @snap_bounds = Geom::BoundingBox.new
 
       @face_manipulators.each do |face_manipulator|
         @faces_bounds.add(face_manipulator.outer_loop_manipulator.points)
@@ -140,11 +151,17 @@ module Ladb::OpenCutList
       end
       @bounds.add(@clines_bounds) if @clines_bounds.valid?
 
+      @snap_manipulators.each do |snap_manipulator|
+        @snap_bounds.add(snap_manipulator.position)
+      end
+      @bounds.add(@snap_bounds) if @snap_bounds.valid?
+
       @container_defs.each do |container_def|
         @bounds.add(container_def.bounds) if container_def.bounds.valid?
         @faces_bounds.add(container_def.faces_bounds) if container_def.faces_bounds.valid?
         @edges_bounds.add(container_def.edges_bounds) if container_def.edges_bounds.valid?
         @clines_bounds.add(container_def.clines_bounds) if container_def.clines_bounds.valid?
+        @snap_bounds.add(container_def.snap_bounds) if container_def.snap_bounds.valid?
       end
 
     end
@@ -162,9 +179,15 @@ module Ladb::OpenCutList
     INPUT_VIEW_BACK = 'back'.freeze
 
     attr_accessor :input_plane_manipulator, :input_line_manipulator, :input_view
+    attr_accessor :container_transformation   # container DEFINITION space -> drawing space (IDENTITY when container is nil / model root)
+    attr_accessor :container_path             # Occurrence path of the container (Array of instances, model root first, container last ; [] when container is the model, nil when unknown)
+    attr_writer :container                    # The container (with its occurrence path) may be remapped onto another instance when an occurrence is separated from its shared ancestors (see CommonSolidBooleanApplyWorker)
 
-    def initialize(container)
+    def initialize(container, transformation = IDENTITY)
       super
+
+      @container_transformation = IDENTITY
+      @container_path = nil
 
       @input_plane_manipulator = nil
       @input_line_manipulator = nil
@@ -189,6 +212,8 @@ module Ladb::OpenCutList
       return false unless super(transformation)
 
       ti = transformation.inverse
+
+      @container_transformation = ti * @container_transformation
 
       @input_plane_manipulator.transformation = ti * @input_plane_manipulator.transformation unless @input_plane_manipulator.nil?
       @input_line_manipulator.transformation = ti * @input_line_manipulator.transformation unless @input_line_manipulator.nil?

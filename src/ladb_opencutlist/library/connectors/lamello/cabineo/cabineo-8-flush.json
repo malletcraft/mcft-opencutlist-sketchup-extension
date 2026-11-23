@@ -1,0 +1,20 @@
+{
+  "format": "ocl-hardware",
+  "version": 1,
+  "id": "d9202bd7-1e1b-42be-9f7a-663efe4f07ea",
+  "extends": "connectors/lamello/cabineo/cabineo-8.json",
+  "name": "Cabineo 8 Flush",
+  "variables": {
+    "thickness_a_min": "34.35",
+    "drilling_depth": "11.5"
+  },
+  "components": {
+    "a": {
+      "name": "Cabineo 8",
+      "machining": {
+        "mortises": [ { "axis": "y", "length_axis": "z", "z": "-13", "length": "42.7", "width": "16.7", "depth": "0.8", "material": "$OCL/materials/machinings/POCKET.skm" } ]
+      }
+    }
+  },
+  "options": { "height": "5.8" }
+}

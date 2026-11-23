@@ -11,7 +11,7 @@
 # what proves, on every push, that no such merge got in.
 #
 # Asserted:
-#   - every HEAD path outside MCFT-PATHS has the build's mode and object id
+#   - every HEAD (or, with --index, staged) path outside MCFT-PATHS has the build's mode and object id
 #     (equal ids are equal bytes, so no blob is downloaded);
 #   - every build path outside MCFT-PATHS exists at HEAD (nothing missing);
 #   - every own: path exists at HEAD and not at the build, every changed:
@@ -22,6 +22,8 @@
 # The build is fetched trees-only when this checkout lacks it (CI's shallow
 # checkout does): a promisor remote, --depth=1 --filter=blob:none, ~50 KiB.
 require 'open3'
+# git's output is UTF-8; a CI runner or a bare shell may default to US-ASCII.
+Encoding.default_external = Encoding::UTF_8
 require_relative 'mcft_paths'
 
 ROOT = File.expand_path('..', __dir__)
@@ -66,7 +68,14 @@ def tree(rev)
   end
 end
 
-head = tree('HEAD')
+# --index checks what is STAGED (before `git commit` of a merge), not HEAD.
+here = 'HEAD'
+if ARGV.include?('--index')
+  out, err, ok = git('write-tree')
+  die "git write-tree: #{err.strip} (unresolved conflicts?)" unless ok
+  here = out.strip
+end
+head = tree(here)
 build = tree(sha)
 problems = []
 
@@ -103,7 +112,7 @@ build_const = lambda do |rev|
   (m = src.match(/EXTENSION_BUILD\s*=\s*'([^']+)'/)) ? m[1] : nil
 end
 theirs = build_const.call(sha)
-ours = build_const.call('HEAD')
+ours = build_const.call(here)
 unless theirs && theirs == ours
   problems << "EXTENSION_BUILD is #{ours.inspect} here and #{theirs.inspect} in the build #{sha[0, 9]}"
 end

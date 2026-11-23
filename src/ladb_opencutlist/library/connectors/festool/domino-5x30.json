@@ -1,0 +1,11 @@
+{
+  "format": "ocl-hardware",
+  "version": 1,
+  "id": "ea4817cd-8ca7-4327-9012-d51940728637",
+  "extends": "connectors/festool/domino.json",
+  "name": "Domino 5x30",
+  "variables": {
+    "width": { "value": "5" },
+    "length": { "value": "30" }
+  }
+}

@@ -1,6 +1,5 @@
 module Ladb::OpenCutList
 
-  require_relative '../../helper/material_attributes_caching_helper'
   require_relative '../../helper/definition_attributes_caching_helper'
   require_relative '../../helper/estimation_helper'
   require_relative '../../model/attributes/material_attributes'
@@ -11,7 +10,6 @@ module Ladb::OpenCutList
 
   class CutlistEstimateWorker
 
-    include MaterialAttributesCachingHelper
     include DefinitionAttributesCachingHelper
 
     attr_reader :cutlist, :estimate_def
@@ -55,12 +53,12 @@ module Ladb::OpenCutList
         parts = @cutlist.get_parts(@part_ids)
         return { :errors => [ 'tab.cutlist.error.no_part' ] } if parts.empty?
 
-        @parts_by_group = parts.group_by { |part| part.group }
+        @parts_by_group = parts.group_by(&:group)
 
         # Create runs
         @parts_by_group.each do |group, parts|
           next if group.material_type == MaterialAttributes::TYPE_UNKNOWN
-          @runs << _create_run(group, parts.map { |part| part.id })
+          @runs << _create_run(group, parts.map(&:id))
         end
 
         return {
@@ -157,7 +155,7 @@ module Ladb::OpenCutList
 
     def _create_run(cutlist_group, part_ids = nil)
 
-      material_attributes = _get_material_attributes(cutlist_group.material_name)
+      material_attributes = cutlist_group.def.material_attributes
 
       case material_attributes.type
 
@@ -398,12 +396,24 @@ module Ladb::OpenCutList
           total_used_mass = 0
           total_used_cost = 0
           packing_bin.items.each do |packing_item|
-            item_type_def = packing_item.def.item_type_def
-            part_def = item_type_def.part.def
-            total_used_length += part_def.size.length * packing_bin.def.count
-            total_used_area += part_def.size.area * packing_bin.def.count
-            total_used_mass += part_def.size.volume * mass_per_inch3 * packing_bin.def.count
-            total_used_cost += part_def.size.volume * price_per_inch3 * packing_bin.def.count
+            case packing_item
+            when PackingCompositeItem
+              packing_item.items.each do |packing_sub_item|
+                item_type_def = packing_sub_item.def.item_type_def
+                part_def = item_type_def.part.def
+                total_used_length += part_def.size.length * packing_bin.def.count
+                total_used_area += part_def.size.area * packing_bin.def.count
+                total_used_mass += part_def.size.volume * mass_per_inch3 * packing_bin.def.count
+                total_used_cost += part_def.size.volume * price_per_inch3 * packing_bin.def.count
+              end
+            else
+              item_type_def = packing_item.def.item_type_def
+              part_def = item_type_def.part.def
+              total_used_length += part_def.size.length * packing_bin.def.count
+              total_used_area += part_def.size.area * packing_bin.def.count
+              total_used_mass += part_def.size.volume * mass_per_inch3 * packing_bin.def.count
+              total_used_cost += part_def.size.volume * price_per_inch3 * packing_bin.def.count
+            end
           end
 
           estimate_entry_bin_def.total_used_length += total_used_length if estimate_entry_bin_def.respond_to?(:total_used_length=)
@@ -599,17 +609,19 @@ module Ladb::OpenCutList
 
     def _create_entry_defs
 
+      cutlist_parts = @worker.cutlist.get_parts(@part_ids)
+
       estimate_group_def = _get_group_def
 
       estimate_entry_def = @entry_def_class.new(estimate_group_def, @cutlist_group)
-      estimate_entry_def.total_count = @cutlist_group.def.part_count
+      estimate_entry_def.total_count = cutlist_parts.inject(0) { |sum, part| sum + part.def.count }
 
       fn_compute_hardware_part = lambda do |cutlist_part, estimate_entry_def|
 
         estimate_entry_part_def = @item_def_class.new(estimate_entry_def, cutlist_part)
         estimate_entry_def.part_defs << estimate_entry_part_def
 
-        definition_attributes = @worker._get_definition_attributes(cutlist_part.def.definition_id)
+        definition_attributes = @worker._get_definition_attributes(cutlist_part.def.get_one_instance_info.definition)
 
         total_instance_count = cutlist_part.def.instance_count_by_part * cutlist_part.def.count
         total_used_instance_count = cutlist_part.def.instance_count_by_part * cutlist_part.def.count - cutlist_part.def.unused_instance_count
@@ -655,15 +667,9 @@ module Ladb::OpenCutList
 
       end
 
-      @cutlist_group.parts.each do |cutlist_part|
+      cutlist_parts.each do |cutlist_part|
 
-        if cutlist_part.is_a?(FolderPart)
-          cutlist_part.children.each { |cutlist_child_part|
-            fn_compute_hardware_part.call(cutlist_child_part, estimate_entry_def)
-          }
-        else
-          fn_compute_hardware_part.call(cutlist_part, estimate_entry_def)
-        end
+        fn_compute_hardware_part.call(cutlist_part, estimate_entry_def)
 
       end
 

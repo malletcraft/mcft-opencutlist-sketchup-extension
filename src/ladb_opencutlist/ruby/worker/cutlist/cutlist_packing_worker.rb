@@ -215,12 +215,15 @@ module Ladb::OpenCutList
         { start: 90, end: 90 },
         { start: 180, end: 180 },
         { start: 270, end: 270 },
+      ],
+      "free" => [
+        { start: 0, end: 360 }
       ]
     }
 
     def initialize(cutlist,
 
-                   part_ids: ,
+                   part_ids:,
 
                    std_bin_1d_sizes: '',
                    std_bin_2d_sizes: '',
@@ -233,9 +236,11 @@ module Ladb::OpenCutList
                    spacing: '20mm',
                    trimming: '10mm',
                    time_limit: 0,
-                   not_anytime_tree_search_queue_size: 16,
                    verbosity_level: 0,
-                   input_to_json_bin_dir: '',
+                   use_pre_process: false,
+                   write_input: false,
+                   write_instance: false,
+                   write_certificate: false,
 
                    items_formula: '',
                    bin_folding: true,
@@ -250,10 +255,14 @@ module Ladb::OpenCutList
                    rectangleguillotine_cut_type: Packy::RECTANGLEGUILLOTINE_CUT_TYPE_NON_EXACT,
                    rectangleguillotine_number_of_stages: 3,
                    rectangleguillotine_first_stage_orientation: 'horizontal',
+                   rectangleguillotine_sort_subplates_criteria: 'd,l2,l1',
                    rectangleguillotine_keep_size: '',
+
+                   rectangle_leftover_mode: nil,
 
                    irregular_allowed_rotations: '0',
                    irregular_allow_mirroring: false,
+                   irregular_leftover_mode: nil,
 
                    hide_material_colors: false,
 
@@ -278,9 +287,11 @@ module Ladb::OpenCutList
       @spacing = DimensionUtils.str_to_ifloat(DimensionUtils.str_add_units(spacing)).to_l.to_f
       @trimming = DimensionUtils.str_to_ifloat(DimensionUtils.str_add_units(trimming)).to_l.to_f
       @time_limit = Plugin::IS_RBZ ? 300 : [ 0 , time_limit.to_i ].max # Only dev from src uses custom time limit
-      @not_anytime_tree_search_queue_size = [ 1 , not_anytime_tree_search_queue_size.to_i ].max
       @verbosity_level = verbosity_level.to_i
-      @input_to_json_bin_dir = input_to_json_bin_dir
+      @use_pre_process = use_pre_process
+      @write_input = write_input
+      @write_instance = write_instance
+      @write_certificate = write_certificate
 
       @items_formula = items_formula.empty? ? '@number' : items_formula
       @bin_folding = @items_formula.include?('@instance_name') || @items_formula.include?('@component_instance') || @items_formula.include?('@batch') ? false : bin_folding  # Disable bin folding if items_formula uses instance-dependent attributes.
@@ -303,10 +314,14 @@ module Ladb::OpenCutList
       @rectangleguillotine_cut_type = rectangleguillotine_cut_type
       @rectangleguillotine_number_of_stages = [ [ 2, rectangleguillotine_number_of_stages.to_i ].max, 3 ].min
       @rectangleguillotine_first_stage_orientation = rectangleguillotine_first_stage_orientation
+      @rectangleguillotine_sort_subplates_criteria = rectangleguillotine_sort_subplates_criteria.to_s.split(',').map { |s| s.strip.to_s }.compact
       @rectangleguillotine_keep_length, @rectangleguillotine_keep_width = DimensionUtils.dxd_to_ifloats(rectangleguillotine_keep_size).split(DimensionUtils::DXD_SEPARATOR).compact.map { |s| s.strip.to_l.to_f }
+
+      @rectangle_leftover_mode = rectangle_leftover_mode.to_s
 
       @irregular_allowed_rotations = irregular_allowed_rotations.to_s
       @irregular_allow_mirroring = irregular_allow_mirroring
+      @irregular_leftover_mode = irregular_leftover_mode.to_s
 
       @hide_material_colors = hide_material_colors
 
@@ -328,6 +343,7 @@ module Ladb::OpenCutList
 
         return _create_packing(errors: [ 'default.error' ]) unless @_run_id.nil?
         return _create_packing(errors: [ 'default.error' ]) unless @cutlist
+        return _create_packing(errors: [ 'tab.cutlist.error.obsolete_cutlist' ]) if @cutlist.obsolete?
 
         model = Sketchup.active_model
         return _create_packing(errors: [ 'default.error' ]) unless model
@@ -372,6 +388,7 @@ module Ladb::OpenCutList
             bin_type[:left_trim] = bin_type[:right_trim] = bin_type[:bottom_trim] = bin_type[:top_trim] = _to_packy_length(@trimming)
           elsif @problem_type == Packy::PROBLEM_TYPE_IRREGULAR
             bin_type[:type] = 'rectangle'
+            bin_type[:item_bin_minimum_spacing] = _to_packy_length(@trimming)
           end
           bin_types << bin_type
           @bin_type_defs << PackingBinTypeDef.new(
@@ -414,20 +431,39 @@ module Ladb::OpenCutList
             bin_type[:left_trim] = bin_type[:right_trim] = bin_type[:bottom_trim] = bin_type[:top_trim] = _to_packy_length(@trimming)
           elsif @problem_type == Packy::PROBLEM_TYPE_IRREGULAR
             bin_type[:type] = 'rectangle'
+            bin_type[:item_bin_minimum_spacing] = _to_packy_length(@trimming)
           end
 
           # Test for primary cut 0
+          defect_defs = []
           # if @problem_type != Packy::PROBLEM_TYPE_ONEDIMENSIONAL
-          #   defect = {
-          #       x: _to_packy_length(@trimming),
-          #       y: _to_packy_length(1247.mm),
-          #       width: _to_packy_length(length - @trimming * 2),
-          #       height: _to_packy_length(@spacing),
+          #   v_pos = 1500.mm
+          #   h_pos = 410.mm
+          #   saw_kerf = 10.mm
+          #   # Vertical
+          #   defect_defs << PackingDefectDef.new(
+          #     x: v_pos,
+          #     y: @trimming,
+          #     length: saw_kerf,
+          #     width: width - @trimming * 2,
+          #   )
+          #   # Horizontal
+          #   defect_defs << PackingDefectDef.new(
+          #     x: @trimming,
+          #     y: h_pos,
+          #     length: v_pos - @trimming - @spacing,
+          #     width: saw_kerf,
+          #   )
+          #   bin_type[:defects] = defect_defs.map { |defect_def|
+          #     defect = {
+          #       x: _to_packy_length(defect_def.x),
+          #       y: _to_packy_length(defect_def.y),
+          #       width: _to_packy_length(defect_def.length),
+          #       height: _to_packy_length(defect_def.width)
           #     }
-          #   if @problem_type == Packy::PROBLEM_TYPE_IRREGULAR
-          #     defect[:type] = 'rectangle'
-          #   end
-          #   bin_type[:defects] = [ defect ]
+          #     defect[:type] = 'rectangle' if @problem_type == Packy::PROBLEM_TYPE_IRREGULAR
+          #     defect
+          #   }
           # end
 
           bin_types << bin_type
@@ -439,7 +475,8 @@ module Ladb::OpenCutList
             cost: cost,
             std_price: std_price,
             std_cut_price: std_cut_price,
-            type: BIN_TYPE_STD
+            type: BIN_TYPE_STD,
+            defect_defs: defect_defs
           )
 
         end
@@ -455,26 +492,155 @@ module Ladb::OpenCutList
 
         item_types = []
 
+        # Add items from grain groups
+        unless @problem_type == Packy::PROBLEM_TYPE_ONEDIMENSIONAL
+          group.grain_groups.each do |grain_group|
+
+            # Exclude grain groups with less than 2 items
+            next if grain_group.items.size < 2
+
+            # Compute grain group axes transformation
+            x_axis = grain_group.x_axis
+            z_axis = grain_group.z_axis
+            y_axis = z_axis * x_axis
+            at = Geom::Transformation.axes(ORIGIN, x_axis, y_axis, z_axis)
+            ati = at.inverse
+
+            # Finding grain group layout
+            layout_def = Geometrix::LayoutFinder.find_layout(grain_group.items.map { |grain_item|
+
+              grain_item_def = grain_item.def
+              instance_info = grain_item_def.instance_info
+              bounds = instance_info.definition_bounds
+
+              t = instance_info.transformation
+              b = Geom::BoundingBox.new.add(
+                bounds.min.transform(t).transform(ati),
+                bounds.max.transform(t).transform(ati)
+              )
+
+              Geometrix::BoxDef.new(b.min.x, b.min.y, b.width, b.height, data: grain_item)
+            })
+
+            # debug_g = Sketchup.active_model.active_entities.add_group
+            # Geometrix::LayoutFinder.iterate_on_box_defs(layout_def) do |box_def, depth|
+            #
+            #   g = debug_g.entities.add_group
+            #   g.entities.add_face([
+            #                         Geom::Point3d.new(box_def.x, box_def.y, 0),
+            #                         Geom::Point3d.new(box_def.x + box_def.width, box_def.y, 0),
+            #                         Geom::Point3d.new(box_def.x + box_def.width, box_def.y + box_def.height, 0),
+            #                         Geom::Point3d.new(box_def.x, box_def.y + box_def.height, 0)
+            #                       ])
+            #
+            # end
+
+            # Set boxes size to part cutting size
+            Geometrix::LayoutFinder.each_box_def(layout_def) do |box_def, depth|
+              grain_item = box_def.data
+              grain_item_def = grain_item.def
+              part_def = grain_item_def.part_def
+              box_def.width = part_def.cutting_length
+              box_def.height = part_def.cutting_width
+            end
+
+            # Layout boxes
+            total_length, total_width, box_defs, gutter_defs = Geometrix::LayoutFinder.layout(layout_def, spacing: @spacing)
+
+            if @problem_type == Packy::PROBLEM_TYPE_IRREGULAR
+
+              shapes = [{
+                          type: 'rectangle',
+                          width: _to_packy_length(total_length),
+                          height: _to_packy_length(total_width),
+                        }]
+
+              item_types << {
+                copies: 1,
+                shapes: shapes,
+                allowed_rotations: AVAILABLE_ROTATIONS.fetch(@irregular_allowed_rotations, []).map { |ar| ar.merge({ mirror: @irregular_allow_mirroring }) },
+              }
+
+            else
+
+              item_types << {
+                copies: 1,
+                width: _to_packy_length(total_length),
+                height: _to_packy_length(total_width),
+                oriented: true
+              }
+
+            end
+
+            # RTL if part drawing type is 2D BOTTOM
+            if @part_drawing_type == PART_DRAWING_TYPE_2D_BOTTOM
+              box_defs.each do |box_def|
+                box_def.x = total_length - box_def.x - box_def.width
+              end
+              gutter_defs.each do |gutter_def|
+                gutter_def.x = total_length - gutter_def.x - gutter_def.width
+              end
+            end
+
+            @item_type_defs << PackingCompositeItemTypeDef.new(
+              length: total_length,
+              width: total_width,
+              name: grain_group.name,
+              item_type_defs: box_defs.map { |box_def|
+                grain_item = box_def.data
+                grain_item_def = grain_item.def
+                part = grain_item.part
+                PackingCompositeSubItemTypeDef.new(
+                  depth: box_def.depth,
+                  x: box_def.x,
+                  y: box_def.y,
+                  length: box_def.width,
+                  width: box_def.height,
+                  part: part,
+                  projection_def: _compute_part_projection_def(@part_drawing_type, part,
+                                                               compute_shell: true),
+                  color: _compute_color_from_part(part),
+                  instance_info: grain_item_def.instance_info
+                )
+              },
+              gutter_defs: gutter_defs
+            )
+
+            grain_group.items.each do |grain_item|
+              grain_item_def = grain_item.def
+              part = grain_item.part
+              instance_info = grain_item_def.instance_info
+
+              ((@gg ||= {})[part] ||= []) << instance_info
+
+            end
+
+          end
+        end
+
         # Add items from parts
         parts.flat_map { |part| part.instance_of?(FolderPart) ? part.children : part }.each do |part|
 
           count = part.count
+          count -= @gg[part].size if @gg && @gg.has_key?(part)
+
+          next if count <= 0
+
           projection_def = _compute_part_projection_def(@part_drawing_type, part,
                                                         compute_shell: true)
 
           if @problem_type == Packy::PROBLEM_TYPE_IRREGULAR
 
             part_def = part.def
-            group_def = part.group.def
-            material_length_increase = group_def.material_attributes.l_length_increase
-            material_width_increase = group_def.material_attributes.l_width_increase
+            length_increased = group.material_length_increased || part.length_increased
+            width_increased = group.material_width_increased || part.width_increased
 
-            if material_length_increase > 0 || material_width_increase > 0
+            if length_increased || width_increased
 
               # Part is oversized: use cutting rect instead of the real part shape
 
-              length = part.def.cutting_length
-              width = part.def.cutting_width
+              length = part_def.cutting_length
+              width = part_def.cutting_width
               boxed = true
 
               shapes = [{
@@ -495,8 +661,8 @@ module Ladb::OpenCutList
                   vertices: poly_def.points.map { |point| { x: _to_packy_length(point.x), y: _to_packy_length(point.y) } }
                 }},
               }}
-              length = part.def.edge_cutting_length
-              width = part.def.edge_cutting_width
+              length = part_def.edge_cutting_length
+              width = part_def.edge_cutting_width
               boxed = false
 
             end
@@ -504,10 +670,9 @@ module Ladb::OpenCutList
             return _create_packing(errors: [ [ [ 'tab.cutlist.packing.error.invalid_part_shapes' ], { :name => part.name } ] ]) if shapes.empty?
 
             item_types << {
-              copies: part.count,
+              copies: count,
               shapes: shapes,
-              allowed_rotations: AVAILABLE_ROTATIONS.fetch(@irregular_allowed_rotations, []),
-              allow_mirroring: @irregular_allow_mirroring
+              allowed_rotations: AVAILABLE_ROTATIONS.fetch(@irregular_allowed_rotations, []).map { |ar| ar.merge({ mirror: @irregular_allow_mirroring }) },
             }
 
           else
@@ -531,7 +696,7 @@ module Ladb::OpenCutList
             count: count,
             part: part,
             projection_def: projection_def,
-            color: @colorization > COLORIZATION_NONE ? ColorUtils.color_lighten(ColorUtils.color_create("##{Digest::SHA1.hexdigest(part.number.to_s)[0..5]}"), 0.8) : nil,
+            color: _compute_color_from_part(part),
             boxed: boxed
           )
 
@@ -550,16 +715,23 @@ module Ladb::OpenCutList
                              else
                                @optimization_mode
                              end,
-          not_anytime_tree_search_queue_size: @not_anytime_tree_search_queue_size,
-          verbosity_level: @verbosity_level
+          verbosity_level: @verbosity_level,
+          use_pre_process: @use_pre_process,
+          # use_tree_search: true,
+          # use_sequential_single_knapsack: true,
+          # use_sequential_value_correction: false,
+          # use_dichotomic_search: true,
+          # use_tree_search_maximal_spaces: false,
+          # use_benders_decomposition: false,
         }
         parameters.merge!({ time_limit: @time_limit }) if @time_limit > 0 # time_limit = 0 == not time limit
         instance_parameters = {}
         if @problem_type == Packy::PROBLEM_TYPE_RECTANGLE || @problem_type == Packy::PROBLEM_TYPE_ONEDIMENSIONAL
           instance_parameters = {
             fake_trimming: _to_packy_length(@trimming),
-            fake_spacing: _to_packy_length(@spacing)
+            fake_spacing: _to_packy_length(@spacing),
           }
+          instance_parameters.merge!({ leftover_mode: @rectangle_leftover_mode }) unless @problem_type == Packy::PROBLEM_TYPE_RECTANGLE && @rectangle_leftover_mode.empty?
         elsif @problem_type == Packy::PROBLEM_TYPE_RECTANGLEGUILLOTINE
           instance_parameters = {
             cut_type: @rectangleguillotine_cut_type,
@@ -567,16 +739,23 @@ module Ladb::OpenCutList
             number_of_stages: @rectangleguillotine_number_of_stages,
             first_stage_orientation: @rectangleguillotine_first_stage_orientation
           }
+          instance_parameters.merge!({
+                                       fixed_cutting_costs: Array.new(@rectangleguillotine_number_of_stages + 2) { |stage| stage * 10 },
+                                       variable_cutting_costs: Array.new(@rectangleguillotine_number_of_stages + 2) { |stage| 0 }
+                                     }) if @objective == Packy::OBJECTIVE_BIN_PACKING_CUTTING_COST
+          instance_parameters.merge!({ sort_subplates_criteria: @rectangleguillotine_sort_subplates_criteria }) unless @rectangleguillotine_sort_subplates_criteria.empty?
           instance_parameters.merge!({ keep_width: _to_packy_length(@rectangleguillotine_keep_length) }) unless @rectangleguillotine_keep_length.nil?
           instance_parameters.merge!({ keep_height: _to_packy_length(@rectangleguillotine_keep_width) }) unless @rectangleguillotine_keep_width.nil?
         elsif @problem_type == Packy::PROBLEM_TYPE_IRREGULAR
           parameters.merge!({ label_offsets: true })
           instance_parameters = {
             item_item_minimum_spacing: _to_packy_length(@spacing),
-            item_bin_minimum_spacing: _to_packy_length(@trimming),
-            fake_trimming_y: @group.material_is_1d ? _to_packy_length(@trimming) : 0
+            fake_trimming_y: @group.material_is_1d ? _to_packy_length(@trimming) : 0.0
           }
+          instance_parameters.merge!({ leftover_mode: @irregular_leftover_mode }) unless @irregular_leftover_mode.empty?
         end
+        parameters.merge!({ instance_path: File.join(Packy.lib_dir, "instance#{'.json' if @problem_type == Packy::PROBLEM_TYPE_IRREGULAR}") }) if @write_instance
+        parameters.merge!({ certificate_path: File.join(Packy.lib_dir, "certificate.json") }) if @write_certificate
 
         input = {
           problem_type: @problem_type,
@@ -604,9 +783,9 @@ module Ladb::OpenCutList
           puts '-- input --'
         end
 
-        unless @input_to_json_bin_dir.empty?
+        if @write_input
           # Write input to a JSON file in the bin directory for debug purpose
-          File.write(File.join(PLUGIN_DIR, 'bin', @input_to_json_bin_dir, 'lib', 'input.json'), JSON.pretty_generate(input))
+          File.write(File.join(Packy.lib_dir, 'input.json'), JSON.pretty_generate(input))
         end
 
         Packy.optimize_cancel_all
@@ -663,24 +842,41 @@ module Ladb::OpenCutList
 
       instance_metas_by_item_type_def = {}
       @item_type_defs.each do |item_type_def|
-        part_def = item_type_def.part.def
-        instance_infos = part_def.instance_infos.values.sort_by! { |instance_info| instance_info.entity.name }
-        instance_count = part_def.count / part_def.thickness_layer_count
-        instance_metas = []
-        position_in_batch = 0
-        instance_count.times do |i|
-          thickness_layer = 0
-          part_def.thickness_layer_count.times do
-            thickness_layer += 1
-            position_in_batch += 1
-            instance_metas << {
-              instance_info: instance_infos[i],
-              thickness_layer: thickness_layer,
+        case item_type_def
+        when PackingCompositeItemTypeDef
+          item_type_def.item_type_defs.each do |sub_item_type_def|
+            part = sub_item_type_def.part
+            gg_instance_infos = @gg && @gg.has_key?(part) ? @gg[part] : []
+            position_in_batch = gg_instance_infos.index(sub_item_type_def.instance_info) + 1
+            instance_metas_by_item_type_def[sub_item_type_def] = [{
+              instance_info: sub_item_type_def.instance_info,
+              thickness_layer: 1,
               position_in_batch: position_in_batch
-            }
+            }]
           end
+        else
+          part = item_type_def.part
+          part_def = part.def
+          gg_instance_infos = @gg && @gg.has_key?(part) ? @gg[part] : []
+          instance_infos = part_def.instance_infos.values
+          instance_infos -= gg_instance_infos if gg_instance_infos.any?
+          instance_infos.sort_by! { |instance_info| instance_info.entity.name }
+          instance_metas = []
+          position_in_batch = gg_instance_infos.size
+          instance_infos.size.times do |i|
+            thickness_layer = 0
+            part_def.thickness_layer_count.times do
+              thickness_layer += 1
+              position_in_batch += 1
+              instance_metas << {
+                instance_info: instance_infos[i],
+                thickness_layer: thickness_layer,
+                position_in_batch: position_in_batch
+              }
+            end
+          end
+          instance_metas_by_item_type_def[item_type_def] = instance_metas
         end
-        instance_metas_by_item_type_def[item_type_def] = instance_metas
       end
 
       label_offsets_by_item_type_def = raw_solution['item_types_stats'].is_a?(Array) ? raw_solution['item_types_stats'].map { |raw_item_type_stats|
@@ -732,13 +928,29 @@ module Ladb::OpenCutList
               defs
             }.flatten(1).sort_by!{ |bin_type_stats| [ bin_type_stats.used ? 1 : 0, -bin_type_stats.bin_type_def.type, bin_type_stats.bin_type_def.length ]} : []
           ),
-          unused_part_info_defs: raw_solution['item_types_stats'].is_a?(Array) ? raw_solution['item_types_stats'].map { |raw_item_type_stats|
+          unused_part_info_defs: raw_solution['item_types_stats'].is_a?(Array) ? raw_solution['item_types_stats'].flat_map { |raw_item_type_stats|
             item_type_def = @item_type_defs[raw_item_type_stats['item_type_id']]
             unused_copies = raw_item_type_stats.fetch('unused_copies', 0)
             next if unused_copies == 0
             usable = raw_item_type_stats.fetch('usable', true)
-            PackingPartInfoDef.new(part: item_type_def.part, count: unused_copies, usable: usable)
-          }.compact.sort_by! { |part_info_def| part_info_def._sorter } : [],
+            case item_type_def
+            when PackingCompositeItemTypeDef
+              item_type_def.item_type_defs.group_by(&:part).map { |part, sub_item_type_defs|
+                PackingPartInfoDef.new(part: part, count: unused_copies * sub_item_type_defs.size, usable: usable, unusable_reason: usable ? PackingPartInfoDef::UNUSABLE_REASON_NONE : PackingPartInfoDef::UNUSABLE_REASON_GRAIN_GROUP_TOO_LARGE)
+              }
+            else
+              PackingPartInfoDef.new(part: item_type_def.part, count: unused_copies, usable: usable, unusable_reason: usable ? PackingPartInfoDef::UNUSABLE_REASON_NONE : PackingPartInfoDef::UNUSABLE_REASON_PART_TOO_LARGE)
+            end
+          }.compact.group_by { |pi|
+            [ pi.part, pi.usable, pi.unusable_reason ]  # Regroup by part, usable and unusable_reason
+          }.map { |(part, usable, unusable_reason), part_info_defs|
+            PackingPartInfoDef.new(
+              part: part,
+              count: part_info_defs.inject(0) { |sum, part_info_def| sum + part_info_def.count },
+              usable: usable,
+              unusable_reason: unusable_reason
+            )
+          }.sort_by! { |part_info_def| part_info_def._sorter } : [],
           bin_defs: raw_solution['bins'].flat_map { |raw_bin|
             bin_type_def = @bin_type_defs[raw_bin['bin_type_id']]
             bin_copies = raw_bin['copies']
@@ -748,20 +960,48 @@ module Ladb::OpenCutList
                 count: @bin_folding ? bin_copies : 1,
                 efficiency: raw_bin['efficiency'],
                 item_defs: raw_bin['items'].is_a?(Array) ? raw_bin['items'].map { |raw_item|
-                  item_type_def = @item_type_defs[raw_item['item_type_id']]
-                  label_offset = label_offsets_by_item_type_def[item_type_def]
-                  instance_metas = instance_metas_by_item_type_def[item_type_def].is_a?(Array) ? instance_metas_by_item_type_def[item_type_def].shift : nil
-                  PackingItemDef.new(
-                    item_type_def: item_type_def,
-                    instance_info: instance_metas[:instance_info],
-                    thickness_layer: instance_metas[:thickness_layer],
-                    position_in_batch: instance_metas[:position_in_batch],
-                    x: _from_packy_length(raw_item.fetch('x', 0)),
-                    y: _from_packy_length(raw_item.fetch('y', 0)),
-                    angle: raw_item.fetch('angle', 0),
-                    mirror: raw_item.fetch('mirror', false),
-                    label_offset: label_offset ? label_offset : Geom::Vector3d.new(0, 0)
-                  )
+                  case (item_type_def = @item_type_defs[raw_item['item_type_id']])
+                  when PackingCompositeItemTypeDef
+                    x = _from_packy_length(raw_item.fetch('x', 0))
+                    y = _from_packy_length(raw_item.fetch('y', 0))
+                    depth = raw_item.fetch('depth', 0)
+                    PackingCompositeItemDef.new(
+                      item_type_def: item_type_def,
+                      depth: raw_item.fetch('depth', 0),
+                      x: x,
+                      y: y,
+                      item_defs: item_type_def.item_type_defs.map { |sub_item_type_def|
+                        instance_metas = (instance_metas_by_item_type_def[sub_item_type_def].is_a?(Array) ? instance_metas_by_item_type_def[sub_item_type_def].shift : nil) || {}
+                        PackingItemDef.new(
+                          item_type_def: sub_item_type_def,
+                          instance_info: instance_metas[:instance_info],
+                          thickness_layer: instance_metas[:thickness_layer],
+                          position_in_batch: instance_metas[:position_in_batch],
+                          depth: depth + sub_item_type_def.depth,
+                          x: sub_item_type_def.x, # Relative to the composite item x
+                          y: sub_item_type_def.y, # Relative to the composite item y
+                          angle: sub_item_type_def.part.flipped ? 180 : 0,  # Flipped part can only be Y flipped. So added 180° rotation to the default X mirroring.
+                          mirror: false,
+                          label_offset: Geom::Vector3d.new(0, 0)
+                        )
+                      }
+                    )
+                  else
+                    label_offset = label_offsets_by_item_type_def[item_type_def]
+                    instance_metas = (instance_metas_by_item_type_def[item_type_def].is_a?(Array) ? instance_metas_by_item_type_def[item_type_def].shift : nil) || {}
+                    PackingItemDef.new(
+                      item_type_def: item_type_def,
+                      instance_info: instance_metas[:instance_info],
+                      thickness_layer: instance_metas[:thickness_layer],
+                      position_in_batch: instance_metas[:position_in_batch],
+                      depth: raw_item.fetch('depth', 0),
+                      x: _from_packy_length(raw_item.fetch('x', 0)),
+                      y: _from_packy_length(raw_item.fetch('y', 0)),
+                      angle: raw_item.fetch('angle', 0),
+                      mirror: raw_item.fetch('mirror', false),
+                      label_offset: label_offset ? label_offset : Geom::Vector3d.new(0, 0)
+                    )
+                  end
                 } : [],
                 leftover_defs: raw_bin['leftovers'].is_a?(Array) ? raw_bin['leftovers'].map { |raw_leftover|
                   PackingLeftoverDef.new(
@@ -778,15 +1018,30 @@ module Ladb::OpenCutList
                     x: _from_packy_length(raw_cut.fetch('x', 0)),
                     y: _from_packy_length(raw_cut.fetch('y', 0)),
                     length: (raw_cut['length'] ? _from_packy_length(raw_cut['length']) : bin_type_def.width.to_l),
-                    orientation: raw_cut.fetch('orientation', 'vertical')
+                    orientation: raw_cut.fetch('orientation', :vertical).to_s.to_sym,
                   )
                 }.sort_by { |cut_def| [ cut_def.depth, cut_def.x, cut_def.y ] } : [],
                 part_info_defs: raw_bin['items'].is_a?(Array) ? raw_bin['items'].map { |raw_item|
                   @item_type_defs[raw_item['item_type_id']]
-                }.group_by { |i| i }.map { |item_type_def, v|
+                }.group_by { |i| i }.flat_map { |item_type_def, v|
+                  case item_type_def
+                  when PackingCompositeItemTypeDef
+                    item_type_def.item_type_defs.map { |sub_item_type_def|
+                      PackingPartInfoDef.new(
+                        part: sub_item_type_def.part,
+                        count: 1
+                      )
+                    }
+                  else
+                    PackingPartInfoDef.new(
+                      part: item_type_def.part,
+                      count: v.length
+                    )
+                  end
+                }.group_by(&:part).map { |part, part_info_defs|
                   PackingPartInfoDef.new(
-                    part: item_type_def.part,
-                    count: v.length
+                    part: part,
+                    count: part_info_defs.inject(0) { |sum, part_info_def| sum + part_info_def.count }
                   )
                 }.sort_by { |part_info_def| part_info_def._sorter } : [],
                 number_of_items: raw_bin.fetch('number_of_items', 0),
@@ -804,6 +1059,85 @@ module Ladb::OpenCutList
         ),
         cached: output[:cached].is_a?(TrueClass)
       )
+
+      # Post process if grain groups exist
+
+      if @gg
+
+        noi_btd = Hash.new(0)
+        packing_def.solution_def.bin_defs.each do |bin_def|
+
+          # Fixed number of items
+          bin_def.number_of_items = bin_def.item_defs.inject(0) { |sum, item_def|
+            case item_def
+            when PackingCompositeItemDef
+              sum + item_def.item_defs.size
+            else
+              sum + 1
+            end
+          }
+          noi_btd[bin_def.bin_type_def] += bin_def.number_of_items * bin_def.count
+
+          # Add missing cuts
+          bin_def.item_defs.each do |item_def|
+            case item_def
+            when PackingCompositeItemDef
+
+              item_type_def = item_def.item_type_def
+
+              case @problem_type
+                when Packy::PROBLEM_TYPE_RECTANGLEGUILLOTINE
+                  item_type_def.gutter_defs.each do |gutter_def|
+
+                    orientation = gutter_def.width == @spacing ? :vertical : :horizontal
+                    length = (orientation == :vertical ? gutter_def.height : gutter_def.width).to_l
+                    x = gutter_def.x.to_l
+                    y = gutter_def.y.to_l
+
+                    bin_def.cut_defs << PackingCutDef.new(
+                      depth: item_def.depth + gutter_def.depth,
+                      x: (item_def.x + _compute_x_with_origin_corner(@problem_type, @origin_corner, x, gutter_def.width, item_type_def.length)).to_l,
+                      y: (item_def.y + _compute_y_with_origin_corner(@problem_type, @origin_corner, y, gutter_def.height, item_type_def.width)).to_l,
+                      length: length,
+                      orientation: orientation
+                    )
+
+                    bin_def.number_of_cuts += 1
+                    bin_def.cut_length += length
+
+                  end
+
+              when Packy::PROBLEM_TYPE_RECTANGLE, Packy::PROBLEM_TYPE_IRREGULAR
+
+                bin_def.number_of_cuts -= 1
+                bin_def.cut_length -= (item_type_def.length + item_type_def.width) * 2
+
+                item_def.item_defs.each do |sub_item_def|
+
+                  sub_item_type_def = sub_item_def.item_type_def
+
+                  bin_def.number_of_cuts += 1
+                  bin_def.cut_length += (sub_item_type_def.length + sub_item_type_def.width) * 2
+
+                end
+
+              end
+
+            else
+              next
+            end
+          end
+
+        end
+
+        # Propagate new number of items to bin type stats defs
+        noi_btd.each do |bin_type_def, number_of_items|
+          if (bin_type_stats_def = packing_def.solution_def.summary_def.bin_type_stats_defs.find { |bin_type_stats_def| bin_type_stats_def.bin_type_def == bin_type_def })
+            bin_type_stats_def.number_of_items = number_of_items
+          end
+        end
+
+      end
 
       # Computed values
 
@@ -897,10 +1231,12 @@ module Ladb::OpenCutList
       px_node_dimension_font_size_min = 8
       px_node_label_font_size_max = 24
       px_node_label_font_size_min = 8
+      px_composite_name_font_size_min = 12
 
       px_bin_dimension_offset = light ? 0 : 10
       px_node_dimension_offset = 4
       px_node_edge_offset = 1
+      px_composite_name_offset = 4
 
       px_bin_outline_width = 1
       px_cut_outline_width = 2
@@ -913,7 +1249,7 @@ module Ladb::OpenCutList
       px_trimming = _to_px(@trimming)
       px_spacing = _to_px(@spacing)
 
-      is_1d = @group.material_is_1d
+      is_1d = @group.material_is_1d || @problem_type == Packy::PROBLEM_TYPE_ONEDIMENSIONAL
       is_2d = !is_1d
       is_irregular = @problem_type == Packy::PROBLEM_TYPE_IRREGULAR
       is_cut_bg = px_spacing >= 5 && !light
@@ -990,132 +1326,55 @@ module Ladb::OpenCutList
             svg += "</g>"
           end
         svg += '</g>'
+
+        # Capture local binding
+        ctx = binding
+
         bin_def.item_defs.each do |item_def|
 
-          item_type_def = item_def.item_type_def
-          projection_def = item_type_def.projection_def
-          part = item_type_def.part
-          part_def = part.def
+          case item_def
+          when PackingCompositeItemDef
 
-          px_item_length = _to_px(item_type_def.length)
-          px_item_width = is_1d ? px_bin_width : _to_px(item_type_def.width)
-          px_item_x = _to_px(item_def.x)
-          px_item_y = _to_px(item_def.y)
+            item_type_def = item_def.item_type_def
 
-          px_part_length = _to_px(part_def.edge_cutting_length)
-          px_part_width = _to_px(part_def.edge_cutting_width)
+            px_item_length = _to_px(item_type_def.length)
+            px_item_width = is_1d ? px_bin_width : _to_px(item_type_def.width)
+            px_item_x = _to_px(item_def.x)
+            px_item_y = _to_px(item_def.y)
 
-          bounds = _compute_item_bounds_in_bin_space(px_item_length, px_item_width, item_def)
+            bounds = _compute_item_bounds_in_bin_space(px_item_length, px_item_width, item_def)
 
-          px_item_rect_width = bounds.width.to_f
-          px_item_rect_height = bounds.height.to_f
-          px_item_rect_half_width = px_item_rect_width / 2
-          px_item_rect_half_height = px_item_rect_height / 2
-          px_item_rect_x = _compute_x_with_origin_corner(@problem_type, @origin_corner, px_item_x + bounds.min.x.to_f, px_item_rect_width, px_bin_length)
-          px_item_rect_y = px_bin_width - _compute_y_with_origin_corner(@problem_type, @origin_corner, px_item_y + bounds.min.y.to_f, px_item_rect_height, px_bin_width)
+            px_item_rect_width = bounds.width.to_f
+            px_item_rect_height = bounds.height.to_f
+            px_item_rect_x = _compute_x_with_origin_corner(@problem_type, @origin_corner, px_item_x + bounds.min.x.to_f, px_item_rect_width, px_bin_length)
+            px_item_rect_y = px_bin_width - _compute_y_with_origin_corner(@problem_type, @origin_corner, px_item_y + bounds.min.y.to_f, px_item_rect_height, px_bin_width)
 
-          svg += "<g class='item' transform='translate(#{px_item_rect_x} #{px_item_rect_y})'#{" data-toggle='tooltip' data-html='true' title='#{_render_item_def_tooltip(item_def)}' data-part-id='#{part.id}'" unless light}>"
-            svg += "<rect class='item-outer' x='0' y='#{-px_item_rect_height}' width='#{px_item_rect_width}' height='#{px_item_rect_height}'#{" style='fill:#{projection_def.nil? && colorized ? ColorUtils.color_to_hex(item_type_def.color) : '#eee'};stroke:#555'" if light || (projection_def.nil? && colorized)}/>" unless is_irregular && !item_type_def.boxed
+            svg += "<g class='item-composite' transform='translate(#{px_item_rect_x} #{px_item_rect_y})'>"
+              svg += "<rect class='item-composite-outer' x='0' y='#{-px_item_rect_height}' width='#{px_item_rect_width}' height='#{px_item_rect_height}'/>" unless light
 
-            unless projection_def.nil? || light && (!is_irregular || item_type_def.boxed)
-              if light
-                # Projection from Shell
-                d = projection_def.shell_def.shape_defs.map { |shape_def| "M #{shape_def.outer_poly_def.points.map { |point| "#{_to_px(point.x).round(2)},#{-_to_px(point.y).round(2)}" }.join(' L ')} Z #{shape_def.holes_poly_defs.map { |poly_def| "M #{poly_def.points.reverse.map { |point| "#{_to_px(point.x).round(2)},#{-_to_px(point.y).round(2)}" }.join(' L ')} Z" }.join(' ')}" }.join(' ')
-              else
-                # Projection from layers
-                d = projection_def.layer_defs.map { |layer_def| "#{layer_def.poly_defs.map { |poly_def| "M #{(layer_def.type_holes? ? poly_def.points.reverse : poly_def.points).map { |point| "#{_to_px(point.x).round(2)},#{-_to_px(point.y).round(2)}" }.join(' L ')} Z" }.join(' ')}" }.join(' ')
+              item_def.item_defs.each do |sub_item_def|
+                svg += _render_item_def_svg(ctx, sub_item_def, true)
               end
-              svg += "<g class='item-projection' transform='translate(#{px_item_rect_half_width} #{-px_item_rect_half_height})#{" rotate(#{-item_def.angle})" if item_def.angle != 0}#{' scale(-1 1)' if item_def.mirror} translate(#{-px_part_length / 2} #{px_part_width / 2})'>"
-                svg += "<path stroke='#{colorized && !is_irregular ? ColorUtils.color_to_hex(ColorUtils.color_darken(item_type_def.color, 0.4)) : '#000'}' fill='#{colorized ? ColorUtils.color_to_hex(item_type_def.color) : '#eee'}' stroke-width='0.5' class='item-projection-shape' d='#{d}' />"
-              svg += '</g>'
-            end
+              unless light
 
-            unless light
+                px_name_w, px_name_h = _compute_text_size(text: item_type_def.name, size: px_composite_name_font_size_min)
+                px_name_w += px_composite_name_offset * 2
+                px_name_h += px_composite_name_offset * 2
+                px_name_x = _compute_x_with_origin_corner(@problem_type, @origin_corner, 0, px_name_w, px_item_rect_width)
+                px_name_y = -_compute_y_with_origin_corner(@problem_type, @origin_corner, 0, px_name_h, px_item_rect_height)
 
-              if !@hide_edges_preview && part_def.edge_count > 0
-
-                left, right, bottom, top = _get_part_edge_keys_by_drawing_type(@part_drawing_type)
-
-                svg += "<g class='item-projection' transform='translate(#{px_item_rect_half_width} #{-px_item_rect_half_height})#{" rotate(#{-item_def.angle})" if item_def.angle != 0}'>"
-                  svg += "<rect x='#{-px_item_length / 2 + px_node_edge_offset}' y='#{px_item_width / 2 - px_node_edge_offset - px_edge_width}' width='#{px_item_length - 2 * px_node_edge_offset}' height='#{px_edge_width}' fill='#{@hide_material_colors ? EDGE_DEFAULT_COLOR : ColorUtils.color_to_hex(part_def.edge_material_colors[bottom])}'/>" unless part_def.edge_material_names[bottom].nil?
-                  svg += "<rect x='#{-px_item_length / 2 + px_node_edge_offset}' y='#{-px_item_width / 2 + px_node_edge_offset}' width='#{px_item_length - 2 * px_node_edge_offset}' height='#{px_edge_width}' fill='#{@hide_material_colors ? EDGE_DEFAULT_COLOR : ColorUtils.color_to_hex(part_def.edge_material_colors[top])}'/>" unless part_def.edge_material_names[top].nil?
-                  svg += "<rect x='#{-px_item_length / 2 + px_node_edge_offset}' y='#{-px_item_width / 2 + px_node_edge_offset}' width='#{px_edge_width}' height='#{px_item_width - 2 * px_node_edge_offset}' fill='#{@hide_material_colors ? EDGE_DEFAULT_COLOR : ColorUtils.color_to_hex(part_def.edge_material_colors[left])}'/>" unless part_def.edge_material_names[left].nil?
-                  svg += "<rect x='#{px_item_length / 2 - px_node_edge_offset - px_edge_width}' y='#{-px_item_width / 2 + px_node_edge_offset}' width='#{px_edge_width}' height='#{px_item_width - 2 * px_node_edge_offset}' fill='#{@hide_material_colors ? EDGE_DEFAULT_COLOR : ColorUtils.color_to_hex(part_def.edge_material_colors[right])}'/>" unless part_def.edge_material_names[right].nil?
+                svg += "<rect class='item-composite-overlay' x='1' y='#{-px_item_rect_height + 1}' width='#{px_item_rect_width - 2}' height='#{px_item_rect_height - 2}' fill='none'/>"
+                svg += "<g transform='translate(#{px_name_x} #{px_name_y})'>"
+                  svg += "<rect class='item-composite-name-outer' x='0' y='#{-px_name_h}' width='#{px_name_w}' height='#{px_name_h}' fill='none'/>"
+                  svg += "<text class='item-composite-name' x='#{px_composite_name_offset}' y='#{-px_composite_name_offset - 1}' font-size='#{px_composite_name_font_size_min}' fill='none'>#{CGI.escapeHTML(item_type_def.name)}</text>"
                 svg += '</g>'
 
               end
+            svg += "</g>"
 
-              item_text = _evaluate_item_text(@items_formula, part, item_def.instance_info, item_def.thickness_layer, item_def.position_in_batch)
-              if item_text.is_a?(Hash)
-                item_text = "<tspan data-toggle='tooltip' title='#{CGI::escape_html(item_text[:error])}' fill='red'>!!️</tspan>" # It's an error
-                item_text_length = 2
-              else
-                item_text = CGI::escape_html(item_text) # Normal text: escape HTML
-                item_text += '*' if item_def.mirror
-                item_text_length = item_text.length
-              end
-
-              label_font_size = [ [ px_node_label_font_size_max, px_item_width / 2, px_item_length / (item_text_length * 0.6) ].min, px_node_label_font_size_min ].max
-
-              px_item_label_x = px_item_rect_half_width
-              px_item_label_y = px_item_rect_half_height
-
-              if is_irregular
-
-                p = Geom::Point3d.new(_to_px(item_def.label_offset.x), _to_px(item_def.label_offset.y))
-                p.transform!(Geom::Transformation.scaling(-1, 1, 1)) if item_def.mirror
-                p.transform!(Geom::Transformation.rotation(ORIGIN, Z_AXIS, item_def.angle.degrees))
-
-                px_item_label_x += p.x
-                px_item_label_y += p.y
-
-              end
-
-              svg += "<text class='item-label' x='#{px_item_label_x}' y='#{-px_item_label_y}' font-size='#{label_font_size}' text-anchor='middle' dominant-baseline='central'#{"transform='rotate(#{-(item_def.angle % 180)} #{px_item_label_x} #{-px_item_label_y})'" unless item_def.angle % 180 == 0}>#{item_text}</text>"
-
-              unless is_irregular
-
-                dim_x = item_def.angle == 0 ? part_def.cutting_length : part_def.cutting_width
-                dim_y = item_def.angle == 0 ? part_def.cutting_width : part_def.cutting_length
-                is_cutting_dim_x = dim_x != (item_def.angle == 0 ? part_def.size.length : part_def.size.width)
-                is_cutting_dim_y = dim_y != (item_def.angle == 0 ? part_def.size.width : part_def.size.length)
-
-                dim_x_text = dim_x.to_s.gsub(/~ /, '')
-                dim_y_text = dim_y.to_s.gsub(/~ /, '')
-
-                if is_2d
-
-                  px_label_w, px_label_h = _compute_text_size(text: item_text, size: label_font_size)
-                  px_label_bounds = Geom::BoundingBox.new.add(
-                    [
-                      Geom::Point3d.new(-px_label_w / 2, -px_label_h / 2),
-                      Geom::Point3d.new(px_label_w / 2, px_label_h / 2)
-                    ].map! { |point| point.transform!(Geom::Transformation.translation(Geom::Vector3d.new(px_item_rect_half_width, px_item_rect_half_height)) * Geom::Transformation.rotation(ORIGIN, Z_AXIS, (item_def.angle % 180).degrees)) }
-                  )
-                  # svg += "<rect x='#{px_label_bounds.min.x.to_f}' y='#{(-px_item_rect_height + px_label_bounds.min.y).to_f}' width='#{px_label_bounds.width.to_f}' height='#{px_label_bounds.height.to_f}' fill='none' stroke='red'></rect>"
-
-                  dim_x_font_size = [ [ px_node_dimension_font_size_max, px_item_rect_height - px_node_dimension_offset * 2, (px_item_rect_width - px_node_dimension_offset * 2) / (dim_x_text.length * 0.6) ].min, px_node_dimension_font_size_min ].max
-                  dim_y_font_size = [ [ px_node_dimension_font_size_max, px_item_rect_width - px_node_dimension_offset * 2, (px_item_rect_height - px_node_dimension_offset * 2) / (dim_y_text.length * 0.6) ].min, px_node_dimension_font_size_min ].max
-
-                  px_dim_x_bounds = _compute_dim_x_bounds(dim_x_text, dim_x_font_size, px_node_dimension_offset, px_item_rect_width, px_item_rect_height)
-                  # svg += "<rect x='#{px_dim_x_bounds.min.x.to_f}' y='#{(-px_item_rect_height + px_dim_x_bounds.min.y).to_f}' width='#{px_dim_x_bounds.width.to_f}' height='#{px_dim_x_bounds.height.to_f}' fill='none' stroke='cyan'></rect>"
-
-                  px_dim_y_bounds = _compute_dim_y_bounds(dim_y_text, dim_y_font_size, px_node_dimension_offset, px_item_rect_width, px_item_rect_height)
-                  # svg += "<rect x='#{px_dim_y_bounds.min.x.to_f}' y='#{(-px_item_rect_height + px_dim_y_bounds.min.y).to_f}' width='#{px_dim_y_bounds.width.to_f}' height='#{px_dim_y_bounds.height.to_f}' fill='none' stroke='yellow'></rect>"
-
-                  hide_dim_x = px_label_bounds.intersect(px_dim_x_bounds).valid? || px_dim_x_bounds.width > px_item_rect_width || px_dim_x_bounds.height > px_item_rect_height
-                  hide_dim_y = px_label_bounds.intersect(px_dim_y_bounds).valid? || px_dim_y_bounds.width > px_item_rect_width || px_dim_y_bounds.height > px_item_rect_height
-
-                  svg += "<text class='item-dimension#{' item-dimension-cutting' if is_cutting_dim_x}' x='#{px_dim_x_bounds.center.x.to_f}' y='#{(-px_item_rect_height + px_dim_x_bounds.center.y).to_f}' font-size='#{dim_x_font_size}' text-anchor='middle' dominant-baseline='central'>#{dim_x_text}</text>" unless hide_dim_x
-                  svg += "<text class='item-dimension#{' item-dimension-cutting' if is_cutting_dim_y}' x='#{px_dim_y_bounds.center.x.to_f}' y='#{(-px_item_rect_height + px_dim_y_bounds.center.y).to_f}' font-size='#{dim_y_font_size}' text-anchor='middle' dominant-baseline='central' transform='rotate(-90 #{px_dim_y_bounds.center.x.to_f} #{(-px_item_rect_height + px_dim_y_bounds.center.y).to_f})'>#{dim_y_text}</text>" unless hide_dim_y
-                elsif is_1d
-                  svg += "<text class='item-dimension#{' item-dimension-cutting' if is_cutting_dim_x}' x='#{px_item_rect_half_width}' y='#{px_bin_dimension_offset}' font-size='#{px_node_dimension_font_size_max}' text-anchor='middle' dominant-baseline='hanging'>#{dim_x_text}</text>"
-                end
-
-              end
-            end
-
-          svg += "</g>"
+          else
+            svg += _render_item_def_svg(ctx, item_def)
+          end
 
         end
         unless light
@@ -1160,7 +1419,7 @@ module Ladb::OpenCutList
             px_cut_length = _to_px(cut_def.length)
             px_cut_width = [ 1, px_spacing ].max
 
-            if cut_def.orientation == 'horizontal'
+            if cut_def.horizontal?
               px_cut_rect_width = px_cut_length
               px_cut_rect_height = px_cut_width
             else
@@ -1187,10 +1446,181 @@ module Ladb::OpenCutList
             svg += "</g>"
 
           end
+          bin_def.bin_type_def.defect_defs.each do |defect_def|
+
+            px_defect_rect_width = _to_px(defect_def.length)
+            px_defect_rect_height = _to_px(defect_def.width)
+            px_defect_rect_x = _compute_x_with_origin_corner(@problem_type, @origin_corner, _to_px(defect_def.x), px_defect_rect_width, px_bin_length)
+            px_defect_rect_y = px_bin_width - _compute_y_with_origin_corner(@problem_type, @origin_corner, _to_px(defect_def.y), px_defect_rect_height, px_bin_width)
+
+            svg += "<g class='defect' transform='translate(#{px_defect_rect_x} #{px_defect_rect_y})'>"
+              svg += "<rect class='defect' x='0' y='#{-px_defect_rect_height}' width='#{px_defect_rect_width}' height='#{px_defect_rect_height}' fill='#555555' />"
+            svg += '</g>'
+
+          end
         end
       svg += '</svg>'
 
       svg
+    end
+
+    def _render_item_def_svg(ctx, item_def, position_relative = false)
+
+      light = ctx.local_variable_get(:light)
+      colorized = ctx.local_variable_get(:colorized)
+      is_1d = ctx.local_variable_get(:is_1d)
+      is_2d = ctx.local_variable_get(:is_2d)
+      is_irregular = ctx.local_variable_get(:is_irregular)
+      px_bin_width = ctx.local_variable_get(:px_bin_width)
+      px_bin_length = ctx.local_variable_get(:px_bin_length)
+      px_bin_dimension_offset = ctx.local_variable_get(:px_bin_dimension_offset)
+      px_node_dimension_font_size_max = ctx.local_variable_get(:px_node_dimension_font_size_max)
+      px_node_dimension_font_size_min = ctx.local_variable_get(:px_node_dimension_font_size_min)
+      px_node_label_font_size_max = ctx.local_variable_get(:px_node_label_font_size_max)
+      px_node_label_font_size_min = ctx.local_variable_get(:px_node_label_font_size_min)
+      px_node_dimension_offset = ctx.local_variable_get(:px_node_dimension_offset)
+      px_node_edge_offset = ctx.local_variable_get(:px_node_edge_offset)
+      px_edge_width = ctx.local_variable_get(:px_edge_width)
+
+      item_type_def = item_def.item_type_def
+      projection_def = item_type_def.projection_def
+      part = item_type_def.part
+      part_def = part.def
+
+      px_item_length = _to_px(item_type_def.length)
+      px_item_width = is_1d ? px_bin_width : _to_px(item_type_def.width)
+      px_item_x = _to_px(item_def.x)
+      px_item_y = _to_px(item_def.y)
+
+      px_part_length = _to_px(part_def.edge_cutting_length)
+      px_part_width = _to_px(part_def.edge_cutting_width)
+
+      bounds = _compute_item_bounds_in_bin_space(px_item_length, px_item_width, item_def)
+
+      px_item_rect_width = bounds.width.to_f
+      px_item_rect_height = bounds.height.to_f
+      px_item_rect_half_width = px_item_rect_width / 2
+      px_item_rect_half_height = px_item_rect_height / 2
+      if position_relative
+        px_item_rect_x = px_item_x
+        px_item_rect_y = -px_item_y
+      else
+        px_item_rect_x = _compute_x_with_origin_corner(@problem_type, @origin_corner, px_item_x + bounds.min.x.to_f, px_item_rect_width, px_bin_length)
+        px_item_rect_y = px_bin_width - _compute_y_with_origin_corner(@problem_type, @origin_corner, px_item_y + bounds.min.y.to_f, px_item_rect_height, px_bin_width)
+      end
+
+      svg = "<g class='item' transform='translate(#{px_item_rect_x} #{px_item_rect_y})'#{" data-toggle='tooltip' data-html='true' title='#{_render_item_def_tooltip(item_def)}' data-part-id='#{part.id}'" unless light}>"
+        svg += "<rect class='item-outer' x='0' y='#{-px_item_rect_height}' width='#{px_item_rect_width}' height='#{px_item_rect_height}'#{" style='fill:#{projection_def.nil? && colorized ? ColorUtils.color_to_hex(item_type_def.color) : '#eee'};stroke:#555'" if light || (projection_def.nil? && colorized)}/>" unless is_irregular && !item_type_def.boxed
+
+        unless projection_def.nil? || light && (!is_irregular || item_type_def.boxed)
+          if light
+            # Projection from Shell
+            d = projection_def.shell_def.shape_defs.map { |shape_def| "M #{shape_def.outer_poly_def.points.map { |point| "#{_to_px(point.x).round(2)},#{-_to_px(point.y).round(2)}" }.join(' L ')} Z #{shape_def.holes_poly_defs.map { |poly_def| "M #{poly_def.points.reverse.map { |point| "#{_to_px(point.x).round(2)},#{-_to_px(point.y).round(2)}" }.join(' L ')} Z" }.join(' ')}" }.join(' ')
+          else
+            # Projection from layers
+            d = projection_def.layer_defs.reject(&:type_machinings?).map { |layer_def| "#{layer_def.poly_defs.map { |poly_def| "M #{(layer_def.type_holes? ? poly_def.points.reverse : poly_def.points).map { |point| "#{_to_px(point.x).round(2)},#{-_to_px(point.y).round(2)}" }.join(' L ')} Z" }.join(' ')}" }.join(' ')
+          end
+          # Separated machinings are not dug into the part : drawn over it
+          machinings_d = projection_def.layer_defs.select(&:type_machinings?).map { |layer_def| "#{layer_def.poly_defs.map { |poly_def| "M #{poly_def.points.map { |point| "#{_to_px(point.x).round(2)},#{-_to_px(point.y).round(2)}" }.join(' L ')} Z" }.join(' ')}" }.join(' ')
+          svg += "<g class='item-projection' transform='translate(#{px_item_rect_half_width} #{-px_item_rect_half_height})#{" rotate(#{-item_def.angle})" if item_def.angle != 0}#{' scale(-1 1)' if item_def.mirror} translate(#{-px_part_length / 2} #{px_part_width / 2})'>"
+            svg += "<path stroke='#{colorized && !is_irregular ? ColorUtils.color_to_hex(ColorUtils.color_darken(item_type_def.color, 0.4)) : '#000'}' fill='#{colorized ? ColorUtils.color_to_hex(item_type_def.color) : '#eee'}' stroke-width='0.5' class='item-projection-shape' d='#{d}' />"
+            svg += "<path stroke='#{colorized && !is_irregular ? ColorUtils.color_to_hex(ColorUtils.color_darken(item_type_def.color, 0.4)) : '#000'}' fill='#{colorized ? ColorUtils.color_to_hex(ColorUtils.color_darken(item_type_def.color, 0.2)) : '#ccc'}' stroke-width='0.5' class='item-projection-machining' d='#{machinings_d}' />" unless machinings_d.empty?
+          svg += '</g>'
+        end
+
+        unless light
+
+          if !@hide_edges_preview && part_def.edge_count > 0
+
+            left, right, bottom, top = _get_part_edge_keys_by_drawing_type(@part_drawing_type)
+
+            svg += "<g class='item-projection' transform='translate(#{px_item_rect_half_width} #{-px_item_rect_half_height})#{" rotate(#{-item_def.angle})" if item_def.angle != 0}'>"
+              svg += "<rect x='#{-px_item_length / 2 + px_node_edge_offset}' y='#{px_item_width / 2 - px_node_edge_offset - px_edge_width}' width='#{px_item_length - 2 * px_node_edge_offset}' height='#{px_edge_width}' fill='#{@hide_material_colors ? EDGE_DEFAULT_COLOR : ColorUtils.color_to_hex(part_def.edge_material_colors[bottom])}'/>" unless part_def.edge_material_names[bottom].nil?
+              svg += "<rect x='#{-px_item_length / 2 + px_node_edge_offset}' y='#{-px_item_width / 2 + px_node_edge_offset}' width='#{px_item_length - 2 * px_node_edge_offset}' height='#{px_edge_width}' fill='#{@hide_material_colors ? EDGE_DEFAULT_COLOR : ColorUtils.color_to_hex(part_def.edge_material_colors[top])}'/>" unless part_def.edge_material_names[top].nil?
+              svg += "<rect x='#{-px_item_length / 2 + px_node_edge_offset}' y='#{-px_item_width / 2 + px_node_edge_offset}' width='#{px_edge_width}' height='#{px_item_width - 2 * px_node_edge_offset}' fill='#{@hide_material_colors ? EDGE_DEFAULT_COLOR : ColorUtils.color_to_hex(part_def.edge_material_colors[left])}'/>" unless part_def.edge_material_names[left].nil?
+              svg += "<rect x='#{px_item_length / 2 - px_node_edge_offset - px_edge_width}' y='#{-px_item_width / 2 + px_node_edge_offset}' width='#{px_edge_width}' height='#{px_item_width - 2 * px_node_edge_offset}' fill='#{@hide_material_colors ? EDGE_DEFAULT_COLOR : ColorUtils.color_to_hex(part_def.edge_material_colors[right])}'/>" unless part_def.edge_material_names[right].nil?
+            svg += '</g>'
+
+          end
+
+          item_text = _evaluate_item_text(@items_formula, part, item_def.instance_info, item_def.thickness_layer, item_def.position_in_batch)
+          if item_text.is_a?(Hash)
+            item_text = "<tspan data-toggle='tooltip' title='#{CGI::escape_html(item_text[:error])}' fill='red'>!!️</tspan>" # It's an error
+            item_text_length = 2
+          else
+            item_text = CGI::escape_html(item_text) # Normal text: escape HTML
+            item_text += '*' if item_def.mirror
+            item_text_length = item_text.length
+          end
+
+          label_font_size = [ [ px_node_label_font_size_max, px_item_width / 2, px_item_length / (item_text_length * 0.6) ].min, px_node_label_font_size_min ].max
+
+          px_item_label_x = px_item_rect_half_width
+          px_item_label_y = px_item_rect_half_height
+
+          if is_irregular
+
+            p = Geom::Point3d.new(_to_px(item_def.label_offset.x), _to_px(item_def.label_offset.y))
+            p.transform!(Geom::Transformation.scaling(-1, 1, 1)) if item_def.mirror
+            p.transform!(Geom::Transformation.rotation(ORIGIN, Z_AXIS, item_def.angle.degrees))
+
+            px_item_label_x += p.x
+            px_item_label_y += p.y
+
+          end
+
+          svg += "<text class='item-label' x='#{px_item_label_x}' y='#{-px_item_label_y}' font-size='#{label_font_size}' text-anchor='middle' dominant-baseline='central'#{"transform='rotate(#{-(item_def.angle % 180)} #{px_item_label_x} #{-px_item_label_y})'" unless item_def.angle % 180 == 0}>#{item_text}</text>"
+
+          unless is_irregular || item_def.angle % 90 != 0
+
+            if item_def.angle % 180 == 0
+              dim_x = part_def.cutting_length
+              dim_y = part_def.cutting_width
+              is_cutting_dim_x = dim_x != part_def.size.length
+              is_cutting_dim_y = dim_y != part_def.size.width
+            else
+              dim_x = part_def.cutting_width
+              dim_y = part_def.cutting_length
+              is_cutting_dim_x = dim_x != part_def.size.width
+              is_cutting_dim_y = dim_y != part_def.size.length
+            end
+
+            dim_x_text = dim_x.to_s.gsub(/~ /, '')
+            dim_y_text = dim_y.to_s.gsub(/~ /, '')
+
+            if is_2d
+
+              px_label_w, px_label_h = _compute_text_size(text: item_text, size: label_font_size)
+              px_label_bounds = Geom::BoundingBox.new.add(
+                [
+                  Geom::Point3d.new(-px_label_w / 2, -px_label_h / 2),
+                  Geom::Point3d.new(px_label_w / 2, px_label_h / 2)
+                ].map! { |point| point.transform!(Geom::Transformation.translation(Geom::Vector3d.new(px_item_rect_half_width, px_item_rect_half_height)) * Geom::Transformation.rotation(ORIGIN, Z_AXIS, (item_def.angle % 180).degrees)) }
+              )
+              # svg += "<rect x='#{px_label_bounds.min.x.to_f}' y='#{(-px_item_rect_height + px_label_bounds.min.y).to_f}' width='#{px_label_bounds.width.to_f}' height='#{px_label_bounds.height.to_f}' fill='none' stroke='red'></rect>"
+
+              dim_x_font_size = [ [ px_node_dimension_font_size_max, px_item_rect_height - px_node_dimension_offset * 2, (px_item_rect_width - px_node_dimension_offset * 2) / (dim_x_text.length * 0.6) ].min, px_node_dimension_font_size_min ].max
+              dim_y_font_size = [ [ px_node_dimension_font_size_max, px_item_rect_width - px_node_dimension_offset * 2, (px_item_rect_height - px_node_dimension_offset * 2) / (dim_y_text.length * 0.6) ].min, px_node_dimension_font_size_min ].max
+
+              px_dim_x_bounds = _compute_dim_x_bounds(dim_x_text, dim_x_font_size, px_node_dimension_offset, px_item_rect_width, px_item_rect_height)
+              # svg += "<rect x='#{px_dim_x_bounds.min.x.to_f}' y='#{(-px_item_rect_height + px_dim_x_bounds.min.y).to_f}' width='#{px_dim_x_bounds.width.to_f}' height='#{px_dim_x_bounds.height.to_f}' fill='none' stroke='cyan'></rect>"
+
+              px_dim_y_bounds = _compute_dim_y_bounds(dim_y_text, dim_y_font_size, px_node_dimension_offset, px_item_rect_width, px_item_rect_height)
+              # svg += "<rect x='#{px_dim_y_bounds.min.x.to_f}' y='#{(-px_item_rect_height + px_dim_y_bounds.min.y).to_f}' width='#{px_dim_y_bounds.width.to_f}' height='#{px_dim_y_bounds.height.to_f}' fill='none' stroke='yellow'></rect>"
+
+              hide_dim_x = px_label_bounds.intersect(px_dim_x_bounds).valid? || px_dim_x_bounds.width > px_item_rect_width || px_dim_x_bounds.height > px_item_rect_height
+              hide_dim_y = px_label_bounds.intersect(px_dim_y_bounds).valid? || px_dim_y_bounds.width > px_item_rect_width || px_dim_y_bounds.height > px_item_rect_height
+
+              svg += "<text class='item-dimension#{' item-dimension-cutting' if is_cutting_dim_x}' x='#{px_dim_x_bounds.center.x.to_f}' y='#{(-px_item_rect_height + px_dim_x_bounds.center.y).to_f}' font-size='#{dim_x_font_size}' text-anchor='middle' dominant-baseline='central'>#{dim_x_text}</text>" unless hide_dim_x
+              svg += "<text class='item-dimension#{' item-dimension-cutting' if is_cutting_dim_y}' x='#{px_dim_y_bounds.center.x.to_f}' y='#{(-px_item_rect_height + px_dim_y_bounds.center.y).to_f}' font-size='#{dim_y_font_size}' text-anchor='middle' dominant-baseline='central' transform='rotate(-90 #{px_dim_y_bounds.center.x.to_f} #{(-px_item_rect_height + px_dim_y_bounds.center.y).to_f})'>#{dim_y_text}</text>" unless hide_dim_y
+            elsif is_1d
+              svg += "<text class='item-dimension#{' item-dimension-cutting' if is_cutting_dim_x}' x='#{px_item_rect_half_width}' y='#{px_bin_dimension_offset}' font-size='#{px_node_dimension_font_size_max}' text-anchor='middle' dominant-baseline='hanging'>#{dim_x_text}</text>"
+            end
+
+          end
+        end
+
+      svg += "</g>"
     end
 
     def _render_item_def_tooltip(item_def)
@@ -1232,6 +1662,10 @@ module Ladb::OpenCutList
 
     def _render_bin_min_max_tooltip(value, icon)
       "<div class=\"tt-data\"><i class=\"ladb-opencutlist-icon-#{icon}\"></i> #{CGI::escape_html(value.to_s)}</div>"
+    end
+
+    def _compute_color_from_part(part)
+      @colorization > COLORIZATION_NONE ? ColorUtils.color_lighten(ColorUtils.color_create("##{Digest::SHA1.hexdigest(part.number.to_s)[0..5]}"), 0.8) : nil
     end
 
     def _compute_text_size(text:, font: 'helvetica', size:, align: TextAlignLeft)

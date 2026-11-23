@@ -1,0 +1,12 @@
+{
+  "format": "ocl-hardware",
+  "version": 1,
+  "id": "fddcc0a1-4ae8-4594-8a77-a74b28bc2b9b",
+  "extends": "connectors/generic/screws/screw.json",
+  "name": "Screw 4x20",
+  "variables": {
+    "diameter": { "value": "4" },
+    "length": { "value": "20" },
+    "embed_min": { "value": "10" }
+  }
+}

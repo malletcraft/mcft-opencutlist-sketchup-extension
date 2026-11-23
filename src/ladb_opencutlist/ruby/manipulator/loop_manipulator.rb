@@ -6,8 +6,8 @@ module Ladb::OpenCutList
 
     attr_reader :loop
 
-    def initialize(loop, transformation = IDENTITY)
-      super(transformation)
+    def initialize(loop, transformation = IDENTITY, material = nil, layer = nil)
+      super(transformation, material, layer)
       raise "loop must be a Sketchup::Loop." unless loop.is_a?(Sketchup::Loop)
       @loop = loop
     end
@@ -32,31 +32,36 @@ module Ladb::OpenCutList
     # -----
 
     def points
-      if @points.nil?
+      @points ||= begin
         @points = @loop.vertices.map { |vertex| vertex.position.transform(@transformation) }
         @points.reverse! if flipped?
+        @points
       end
-      @points
     end
 
     def bounds
       @bounds ||= Geom::BoundingBox.new.add(points)
-      @bounds
     end
 
     def segments
       @segments ||= points.each_cons(2).to_a.flatten(1)
-      @segments
     end
 
     # -----
+
+    def edge_manipulators
+      @edge_manipulators ||= @loop.edges.map { |edge| EdgeManipulator.new(edge, @transformation, material, layer) }
+    end
 
     def vertex_manipulators
-      @vertex_manipulators ||= @loop.vertices.map { |vertex| VertexManipulator.new(vertex, @transformation) }
-      @vertex_manipulators
+      @vertex_manipulators ||= @loop.vertices.map { |vertex| VertexManipulator.new(vertex, @transformation, material, layer) }
     end
 
     # -----
+
+    def nearest_edge_manipulator_to(point)
+      edge_manipulators.min { |em1, em2| point.project_to_line(em1.line).distance(point) <=> point.project_to_line(em2.line).distance(point) }
+    end
 
     def nearest_vertex_manipulator_to(point, allows_collinear = false)
       manipulators = vertex_manipulators
@@ -67,7 +72,7 @@ module Ladb::OpenCutList
           !vm.point.vector_to(vm_prev.point).parallel?(vm.point.vector_to(vm_next.point))
         }
       end
-        manipulators.min { |vm1, vm2| vm1.point.distance(point) <=> vm2.point.distance(point) }
+      manipulators.min { |vm1, vm2| vm1.point.distance(point) <=> vm2.point.distance(point) }
     end
 
     # -----

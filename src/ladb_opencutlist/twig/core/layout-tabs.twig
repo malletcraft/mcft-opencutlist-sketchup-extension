@@ -4,6 +4,17 @@
     {% for tabDef in tabDefs if tabDef.bar == 'leftbar' %}
         <a id="ladb_tab_btn_{{ tabDef.name }}"{% if tabDef.classes %} class="{{ tabDef.classes }}"{% endif %} href="#"><i class="{{ tabDef.icon }}"></i><div>{{ ('tab.'~tabDef.name~'.label')|i18next }}</div></a>
     {% endfor %}
+    <div id="ladb_leftbar_btn_more" class="ladb-leftbar-subbar ladb-leftbar-subbar-2">
+        <div class="ladb-subbar-toggle">
+            <div class="ladb-toggle-handle"><i class="ladb-opencutlist-icon-import"></i><div>{{ 'core.leftbar.import'|i18next }}</div></div>
+            <span class="ladb-toggle-arrow"></span>
+        </div>
+        <div class="ladb-subbar-panel">
+            {% for tabDef in tabDefs if tabDef.bar == 'leftbar-import' %}
+                <a id="ladb_tab_btn_{{ tabDef.name }}"{% if tabDef.classes %} class="{{ tabDef.classes }}"{% endif %} href="#"><i class="{{ tabDef.icon }}"></i><div>{{ ('tab.'~(tabDef.name|replace({'_': '.'}))~'.label')|i18next }}</div></a>
+            {% endfor %}
+        </div>
+    </div>
     <div id="ladb_leftbar_bottom" class="ladb-leftbar-bottom" style="display: none;">
         <a href="#" data-help-page=""><i class="ladb-opencutlist-icon-help"></i><div>{{ 'core.leftbar.more_docs'|i18next }}</div></a>
         <div id="ladb_leftbar_btn_more" class="ladb-leftbar-subbar ladb-leftbar-subbar-{% if capabilities.language == 'fr' %}8{% else %}6{% endif %}">
@@ -34,7 +45,7 @@
         <ul>
             <li class="ladb-last-news"></li>
             <li><a href="https://www.lairdubois.fr" target="_blank"><i class="ladb-opencutlist-icon-link"></i> www.lairdubois.fr</a></li>
-            <li{% if capabilities.is_dev and capabilities.is_rbz %} class="ladb-highlighted-bug-report"{% endif %}><a href="mailto:opencutlist@lairdubois.fr?subject=[Bug Report] OpenCutList {{ capabilities.version }} / {{ capabilities.language }} (build: {{ capabilities.build }}) - SketchUp {{ capabilities.sketchup_version }} - {{ capabilities.platform_name }}" target="_blank"><i class="ladb-opencutlist-icon-bug"></i> {{ 'core.bottombar.report_a_bug'|i18next }}</a></li>
+            <li{% if capabilities.is_lab and capabilities.is_rbz %} class="ladb-highlighted-bug-report"{% endif %}><a href="mailto:opencutlist@lairdubois.fr?subject=[Bug Report] OpenCutList {{ capabilities.version }} / {{ capabilities.language }} (build: {{ capabilities.build }}) - SketchUp {{ capabilities.sketchup_version }} - {{ capabilities.platform_name }}" target="_blank"><i class="ladb-opencutlist-icon-bug"></i> {{ 'core.bottombar.report_a_bug'|i18next }}</a></li>
             {% for tabDef in tabDefs if tabDef.bar == 'bottombar' %}
                 <li{% if tabDef.classes %} class="{{ tabDef.classes }}"{% endif %}><a id="ladb_tab_btn_{{ tabDef.name }}" href="#">{% if tabDef.icon %}<i class="{{ tabDef.icon }}"></i>{% endif %} {{ ('tab.'~tabDef.name~'.label')|i18next }}</a></li>
             {% endfor %}

@@ -9,7 +9,7 @@ module Ladb::OpenCutList
     def initialize
       super('materials')
 
-      @observed_model_ids = Set.new
+      @observed_models = {}
       @observed_entities_ids = Set.new
 
       @observing = false
@@ -26,7 +26,14 @@ module Ladb::OpenCutList
                                   AppObserver::ON_ACTIVATE_MODEL
                                 ]) do |params|
 
-        start_observing_model(Sketchup.active_model) if @observing
+        if @observing
+          stop_observing_models
+          start_observing_model(Sketchup.active_model)
+        end
+
+        # Current outliner def belongs to the previous model
+        @outliner_def = nil
+        @worker = nil
 
       end
 
@@ -339,8 +346,6 @@ module Ladb::OpenCutList
 
         definition.instances.each do |instance|
 
-          face_bounds_cache = {}
-
           node_defs = @outliner_def.get_node_defs_by_entity_id(instance.entityID)
           if node_defs
 
@@ -351,8 +356,10 @@ module Ladb::OpenCutList
 
               @worker.run(:destroy_node_def, { node_def: node_def })
 
-              node_def = @worker.run(:create_node_def, { entity: instance, path: parent_node_def.path, face_bounds_cache: face_bounds_cache })
+              node_def = @worker.run(:create_node_def, { entity: instance, path: parent_node_def.path })
               node_def.expanded = expanded
+
+              @worker.run(:compute_types, { node_def: node_def })
 
               parent_node_def.add_child(node_def)
               parent_node_def.invalidate
@@ -369,6 +376,26 @@ module Ladb::OpenCutList
 
     end
 
+    def onComponentPropertiesChanged(definitions, definition)
+      # puts "onComponentPropertiesChanged: #{definition}"
+
+      return unless @worker
+      return if definition.deleted?
+
+      definition.instances.each do |instance|
+        unless (node_defs = @outliner_def.get_node_defs_by_entity_id(instance.entityID)).nil?
+          node_defs.each do |node_def|
+            node_def.invalidate
+            @worker.run(:sort_children_node_defs, { children: node_def.parent.children }) if node_def.parent
+            @worker.run(:compute_types, { node_def: node_def }) if node_def
+          end
+        end
+      end
+
+      trigger_boo if @outliner_def.invalidated?
+
+    end
+
     # Entities Observer
 
     def onElementAdded(entities, entity)
@@ -380,7 +407,6 @@ module Ladb::OpenCutList
       if entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
 
         need_to_compute_selection = false
-        face_bounds_cache = {}
 
         parent = entity.parent
         parent_instances = parent.is_a?(Sketchup::ComponentDefinition) ? parent.instances : [ parent ]
@@ -390,13 +416,14 @@ module Ladb::OpenCutList
           unless (node_defs = @outliner_def.get_node_defs_by_entity_id(entity_id)).nil?
             node_defs.each do |node_def|
 
-              unless (child_node_def = @worker.run(:create_node_def, { entity: entity, path: node_def.path, face_bounds_cache: face_bounds_cache })).nil?
+              unless (child_node_def = @worker.run(:create_node_def, { entity: entity, path: node_def.path })).nil?
 
                 need_to_compute_selection = true if Sketchup.active_model.selection.include?(entity)
 
                 node_def.add_child(child_node_def)
                 node_def.invalidate
                 @worker.run(:sort_children_node_defs, { children: node_def.children })
+                @worker.run(:compute_types, { node_def: node_def })
 
                 child_node_def.expanded = child_node_def.expandable?
 
@@ -437,26 +464,52 @@ module Ladb::OpenCutList
             node_def.invalidate(propagation)
 
             @worker.run(:sort_children_node_defs, { children: node_def.parent.children }) if node_def.parent
+            @worker.run(:compute_types, { node_def: node_def }) if node_def
 
           end
         end
 
       elsif entity.is_a?(Sketchup::ComponentDefinition)
 
-        entity.instances.each do |instance|
-          unless (node_defs = @outliner_def.get_node_defs_by_entity_id(instance.entityID)).nil?
-            node_defs.each do |node_def|
-              node_def.invalidate
-              @worker.run(:sort_children_node_defs, { children: node_def.parent.children }) if node_def.parent
-            end
-          end
-        end
+        # May not occurs since SU 2026.2
 
       elsif entity.is_a?(Sketchup::AttributeDictionary)
 
-        if (entity.name == Plugin::ATTRIBUTE_DICTIONARY || entity.name == Plugin::SU_ATTRIBUTE_DICTIONARY) && entity.parent.parent.is_a?(Sketchup::ComponentDefinition)
+        if entity.parent.is_a?(Sketchup::Entity)
 
-          entity.parent.parent.instances.each do |instance|
+          case entity.parent.parent
+          when Sketchup::Group, Sketchup::ComponentInstance
+            if entity.name == Plugin::ATTRIBUTE_DICTIONARY
+
+              instance = entity.parent.parent
+              unless (node_defs = @outliner_def.get_node_defs_by_entity_id(instance.entityID)).nil?
+                node_defs.each do |node_def|
+                  node_def.invalidate
+                end
+              end
+
+            end
+          when Sketchup::ComponentDefinition
+            if entity.name == Plugin::ATTRIBUTE_DICTIONARY || entity.name == Plugin::SU_ATTRIBUTE_DICTIONARY
+
+              entity.parent.parent.instances.each do |instance|
+                unless (node_defs = @outliner_def.get_node_defs_by_entity_id(instance.entityID)).nil?
+                  node_defs.each do |node_def|
+                    node_def.invalidate
+                  end
+                end
+              end
+
+            end
+          end
+
+        end
+
+      elsif entity.is_a?(Sketchup::Behavior)
+
+        if entity.parent.is_a?(Sketchup::ComponentDefinition)
+
+          entity.parent.instances.each do |instance|
             unless (node_defs = @outliner_def.get_node_defs_by_entity_id(instance.entityID)).nil?
               node_defs.each do |node_def|
                 node_def.invalidate
@@ -513,13 +566,13 @@ module Ladb::OpenCutList
 
     def start_observing_model(model)
       return if model.nil?
-      return if @observed_model_ids.include?(model.object_id)
+      return if @observed_models.key?(model.object_id)
       model.add_observer(self)
       model.selection.add_observer(self)
       model.materials.add_observer(self)
       model.layers.add_observer(self)
       model.definitions.add_observer(self)
-      @observed_model_ids.add(model.object_id)
+      @observed_models[model.object_id] = model
 
       # puts "start_observing_model (#{model.object_id})"
 
@@ -528,17 +581,23 @@ module Ladb::OpenCutList
 
     def stop_observing_model(model)
       return if model.nil?
-      return unless @observed_model_ids.include?(model.object_id)
+      return unless @observed_models.key?(model.object_id)
+      @observed_models.delete(model.object_id)
+      return unless model.valid?  # Closed model
       model.remove_observer(self)
       model.selection.remove_observer(self)
       model.materials.remove_observer(self)
       model.layers.remove_observer(self)
       model.definitions.remove_observer(self)
-      @observed_model_ids.delete(model.object_id)
 
       # puts 'stop_observing_model'
 
       stop_observing_entities(model)
+    end
+
+    def stop_observing_models
+      @observed_models.values.each { |model| stop_observing_model(model) }
+      @observed_entities_ids.clear  # Closed models entities can't be unobserved
     end
 
     def start_observing_entities(parent)
@@ -579,12 +638,18 @@ module Ladb::OpenCutList
     end
 
     def stop_observing_command
-      stop_observing_model(Sketchup.active_model)
+      stop_observing_models
       @observing = false
     end
 
     def generate_command(params)
       require_relative '../worker/outliner/outliner_generate_worker'
+
+      # Observe the generated model (model change events may not fire, ex: window switch on macOS)
+      if @observing
+        stop_observing_models
+        start_observing_model(Sketchup.active_model)
+      end
 
       # Setup worker
       worker = OutlinerGenerateWorker.new(**params)
@@ -598,7 +663,7 @@ module Ladb::OpenCutList
     end
 
     def refresh_command
-      return generate_command unless @outliner_def
+      return generate_command({}) unless @outliner_def
       @outliner_def.get_hashable.to_hash
     end
 
@@ -751,7 +816,7 @@ module Ladb::OpenCutList
 
       model.overlays.remove(@overlay) if @overlay && @overlay.valid?
 
-      if highlighted
+      if highlighted && @outliner_def
 
         highlight_defs = []
         ids.each do |id|

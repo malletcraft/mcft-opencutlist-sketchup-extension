@@ -1,0 +1,25 @@
+{
+  "format": "ocl-hardware",
+  "version": 1,
+  "id": "5ced51f2-66af-4eee-92d7-eb1a3db2114f",
+  "type": "connector",
+  "length_unit": "mm",
+  "name": "Screw",
+  "abstract": true,
+  "variables": {
+    "diameter": { "value": "4", "label": "Diameter" },
+    "length": { "value": "50", "label": "Length" },
+    "embed_min": { "value": "15", "label": "Embed min"},
+    "embed": "@length - @thickness_max_b"
+  },
+  "asserts": [ "@thickness_max_b - @thickness_min_b <= 0.2", "@embed >= @embed_min", "@embed <= @thickness_a - 3" ],
+  "components": {
+    "a": {
+      "hardware": { "body": { "cylinders": [ { "diameter": "@diameter", "from": "-@length / 2", "to": "@length / 2", "countersink": { "diameter": "@diameter * 2", "angle": 90, "end": "to" } } ], "at": [ { "z": "@thickness_max_b - @length / 2" } ] } },
+      "machining": { "drillings": [ { "diameter": "@diameter - 1", "depth": "@embed" } ] },
+      "attributes": { "symmetrical":  true }
+    },
+    "b": { "machining": { "drillings": [ { "diameter": "@diameter", "depth": "through" } ] } }
+  },
+  "options": { "height": "/2", "start_offset": "37", "end_offset": "37", "min_spacing": "0", "max_spacing": "300" }
+}

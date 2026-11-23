@@ -1,13 +1,12 @@
 module Ladb::OpenCutList
 
   require_relative '../../helper/layer_visibility_helper'
-  require_relative '../../helper/sanitizer_helper'
   require_relative '../../utils/dimension_utils'
+  require_relative '../../utils/file_path_utils'
 
   class CutlistLayoutToLayoutWorker
 
     include LayerVisibilityHelper
-    include SanitizerHelper
 
     def initialize(cutlist,
 
@@ -90,7 +89,7 @@ module Ladb::OpenCutList
       doc_name = "#{@cutlist.model_name.empty? ? File.basename(@cutlist.filename, '.skp') : @cutlist.model_name}#{page_name.empty? ? '' : " - #{page_name}"}#{@cutlist.model_active_path.nil? || @cutlist.model_active_path.empty? ? '' : " - #{@cutlist.model_active_path.join('/')}"}#{target_group && target_group.material_type != MaterialAttributes::TYPE_UNKNOWN ? " - #{target_group.material_name} #{target_group.std_dimension}" : ''}"
 
       # Ask for layout file path
-      layout_path = UI.savepanel(PLUGIN.get_i18n_string('tab.cutlist.export.title'), @cutlist.dir, "#{_sanitize_filename(doc_name)}.layout")
+      layout_path = UI.savepanel(PLUGIN.get_i18n_string('tab.cutlist.export.title'), @cutlist.dir, FilePathUtils.sanitize_file_name("#{doc_name}.layout"))
       if layout_path
 
         # Force "layout" file extension
@@ -406,9 +405,12 @@ module Ladb::OpenCutList
               }
             }
 
+            # For SketchUp 2019 compatibility
+            Zip.write_zip64_support = false
+
             Zip::File.open(layout_path, create: false) do |zipfile|
 
-              require "rexml/document"
+              require 'rexml/document'
 
               style_manager_filename = 'styleManager.xml'
               xml = zipfile.read(style_manager_filename)
@@ -508,14 +510,8 @@ module Ladb::OpenCutList
       end
 
       # Remove coplanar edges created by fill_from_mesh and add_faces_from_mesh to reduce exported data
-      coplanar_edges = []
-      group.entities.grep(Sketchup::Edge).each do |edge|
-        edge.faces.each_cons(2) { |face_a, face_b|
-          if face_a.normal.parallel?(face_b.normal)
-            coplanar_edges << edge
-            break
-          end
-        }
+      coplanar_edges = group.entities.grep(Sketchup::Edge).select do |edge|
+        edge.faces.each_cons(2).any? { |face_a, face_b| face_a.normal.parallel?(face_b.normal) }
       end
       group.entities.erase_entities(coplanar_edges)
 

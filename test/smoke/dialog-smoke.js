@@ -106,7 +106,7 @@ check(realDialogMethods.length > 20,
       `dialog prototype loaded (${realDialogMethods.length} methods)`);
 
 // ---------------------------------------------------------------------------
-// The bench: canned Ruby responses for exactly the commands the pack calls.
+// The bench: canned Ruby responses for the commands the estimate calls.
 const GROUPS = [
   { id: 'g16', material_name: 'SG_PLY_V0_a_a', material_type: 2, part_count: 6,
     std_dimension: '2440 x 1220 x 16', show_cutting_dimensions: false,
@@ -123,7 +123,6 @@ const calls = [];
 // The PARAMS too, not only the names. Scenario 3 asserts what the estimate
 // buttons send, and the bug it guards against lives entirely in a parameter.
 const sent = [];
-let advanceLeft = 0;
 win.rubyCallCommand = function (name, params, cb) {
   calls.push(name);
   sent.push({ name: name, params: params });
@@ -131,13 +130,6 @@ win.rubyCallCommand = function (name, params, cb) {
   switch (name) {
     case 'core_get_model_preset':
       return reply({ preset: { std_sheet: '2440x1220', saw_kerf: '3mm' } });
-    case 'cutlist_group_cuttingdiagram2d_start':
-      advanceLeft = 2;                       // force the advance loop to run
-      return reply({ estimated_steps: 2 });
-    case 'cutlist_group_cuttingdiagram2d_advance':
-      if (advanceLeft-- > 0) return reply({});          // still working
-      return reply({ sheets: [{ index: 1, parts: [], cuts: [], leftovers: [] }],
-                     errors: [], options: {}, summary: {} });
     default:
       return reply({});
   }
@@ -188,38 +180,14 @@ tab.pushNewSlide = function (id, twigFile, params, cb) {
 tab.popSlide = function () {};
 tab.print = function () {};
 
-// ---------------------------------------------------------------------------
-console.log('\nmcftDiagramPack()');
-let threw = null;
-try {
-  tab.mcftDiagramPack();
-} catch (e) {
-  threw = e;
-}
 // requestAnimationFrame in jsdom is async; drain it.
 const drain = () => new Promise((res) => setTimeout(res, 400));
 
 (async () => {
-  await drain();
-  check(!threw, `no exception thrown${threw ? ' — ' + threw.message : ''}`);
-  check(pushed.length === 1, `exactly one slide pushed (got ${pushed.length})`);
-  if (pushed.length === 1) {
-    check(pushed[0].twigFile === 'tabs/cutlist/_slide-mcft-diagram-pack.twig',
-          'the slide is the pack template');
-    const packs = pushed[0].params.packs || [];
-    check(packs.length === 2,
-          `two sheet-good groups packed, hardware skipped (got ${packs.length})`);
-    check(pushed[0].length > 200, `the template rendered (${pushed[0].length} chars)`);
-  }
-  check(calls.filter((c) => c === 'cutlist_group_cuttingdiagram2d_start').length === 2,
-        'start called once per sheet-good group');
-  check(calls.filter((c) => c === 'cutlist_group_cuttingdiagram2d_advance').length >= 4,
-        'the advance loop ran for each group');
-  check(notified.length === 0, 'no errors reported');
-  check(uncaught.length === 0,
-        `nothing thrown inside a callback${uncaught.length ? ' — ' + uncaught.map(String).join(' | ').slice(0, 240) : ''}`);
-
-  
+  // SCENARIO 1 WAS THE ALL-BOARDS DIAGRAM PRINT, and it is gone with the
+  // engine it was built on: OpenCutList 8 deleted cutlist_group_
+  // cuttingdiagram2d_start/_advance, so MOP on 8 prints each board from 8's
+  // own Packing slide (docs/mcft/MOP-ON-OCL8.md §2.4).
   // -------------------------------------------------------------------------
   // SCENARIO 2 — the estimate screen, which is the surface Amit uses daily and
   // the one changed most this week: purchase list, totals, packet quantities,
@@ -406,6 +374,10 @@ const drain = () => new Promise((res) => setTimeout(res, 400));
   check(estimates.length > 0 &&
         estimates.every((c) => Array.isArray((c.params || {}).hidden_group_ids)),
         'every estimate carries what the Parts List hid');
+
+  check(notified.length === 0, 'no errors reported');
+  check(uncaught.length === 0,
+        `nothing thrown inside a callback${uncaught.length ? ' — ' + uncaught.map(String).join(' | ').slice(0, 240) : ''}`);
 
   console.log('');
   if (failures.length) {
